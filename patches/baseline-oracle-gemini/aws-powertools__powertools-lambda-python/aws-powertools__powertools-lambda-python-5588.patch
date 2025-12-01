@@ -1,0 +1,139 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -10,6 +10,7 @@
+ ## Features
+ 
+ * **event_source:** Extend CodePipeline Artifact Capabilities ([#5448](https://github.com/aws-powertools/powertools-lambda-python/issues/5448))
++* **event_handler:** Add exception handling mechanism for AppSyncResolver ([#2184](https://github.com/aws-powertools/powertools-lambda-python/issues/2184))
+ 
+ ## Maintenance
+ 
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -20,6 +20,7 @@
+ * **[Metrics](https://docs.powertools.aws.dev/lambda/python/latest/core/metrics/)** - Custom Metrics created asynchronously via CloudWatch Embedded Metric Format (EMF)
+ * **[Event handler: AppSync](https://docs.powertools.aws.dev/lambda/python/latest/core/event_handler/appsync/)** - AWS AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer function
+ * **[Event handler: API Gateway and ALB](https://docs.powertools.aws.dev/lambda/python/latest/core/event_handler/api_gateway/)** - Amazon API Gateway REST/HTTP API and ALB event handler for Lambda functions in
++* **[Event handler: AppSync exception handling](https://docs.powertools.aws.dev/lambda/python/latest/core/event_handler/appsync/#exception-handling)** - Catch and handle exceptions raised during AppSync resolver execution.
+```
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -1,6 +1,6 @@
+ import asyncio
+ import inspect
+-from typing import Any, Callable, Dict, Optional
++from typing import Any, Callable, Dict, List, Optional, Type, Union
+ 
+ from aws_lambda_powertools.utilities.data_classes.appsync_resolver_event import AppSyncResolverEvent
+ from aws_lambda_powertools.utilities.typing import LambdaContext
+@@ -12,7 +12,47 @@
+         self.debug = debug
+         self.resolvers: Dict[str, Callable] = {}
+         self.context: Dict[str, Any] = {}
++        self._exception_handlers: Dict[Type[Exception], Callable] = {}
+ 
++    def exception_handler(self, exc_class: Union[Type[Exception], List[Type[Exception]]]):
++        """
++        A decorator function that registers a handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class (Type[Exception] | List[Type[Exception]])
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable:
++            A decorator function that registers the exception handler.
++        """
++
++        def register_exception_handler(func: Callable):
++            if isinstance(exc_class, list):
++                for ex_class in exc_class:
++                    self._exception_handlers[ex_class] = func
++            else:
++                self._exception_handlers[exc_class] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: Type) -> Optional[Callable]:
++        """
++        Looks up the registered exception handler for the given exception type or its base classes.
++
++        Parameters
++        ----------
++        exp_type (Type):
++            The exception type to look up the handler for.
++
++        Returns
++        -------
++        Callable | None:
++            The registered exception handler function if found, otherwise None.
++        """
++        for ex_class in exp_type.__mro__:
++            if ex_class in self._exception_handlers:
++                return self._exception_handlers[ex_class]
++        return None
++
+     def resolver(self, field_name: str):
+         """
+         Decorator to register a function as a resolver for a given field name.
+@@ -49,12 +89,20 @@
+ 
+     def _resolve_sync(self, field_name: str, arguments: Dict[str, Any]) -> Any:
+         resolver = self.resolvers[field_name]
+-        return resolver(**arguments)
++        try:
++            return resolver(**arguments)
++        except Exception as ex:
++            handler = self._lookup_exception_handler(type(ex))
++            if handler:
++                return handler(ex)
++            raise
+ 
+     async def _resolve_async(self, field_name: str, arguments: Dict[str, Any]) -> Any:
+         resolver = self.resolvers[field_name]
+-        return await resolver(**arguments)
++        try:
++            return await resolver(**arguments)
++        except Exception as ex:
++            handler = self._lookup_exception_handler(type(ex))
++            if handler:
++                return handler(ex)
++            raise
+ 
+     def resolve(self, event: Dict[str, Any], context: LambdaContext) -> Any:
+         """
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,24 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++from aws_lambda_powertools.utilities.typing import LambdaContext
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    """
++    Handles ValueError exceptions raised during AppSync resolver execution.
++    """
++    return {"message": f"Error: {ex}"}
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    """
++    A resolver that raises a ValueError.
++    """
++    raise ValueError(f"Something went wrong with id: {id}")
++
++
++def lambda_handler(event: dict, context: LambdaContext):
++    return app.resolve(event, context)

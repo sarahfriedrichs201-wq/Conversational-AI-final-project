@@ -1,0 +1,63 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -8,7 +8,7 @@
+ from collections import abc
+ from functools import wraps
+ from itertools import chain
+-from typing import TYPE_CHECKING
++from typing import Iterator, TYPE_CHECKING
+ 
+ if TYPE_CHECKING:
+     from .lexer import Token
+@@ -207,6 +207,37 @@
+         for child in self.children:
+             if isinstance(child, Tree):
+                 yield from child.find_pred(pred)
++
++    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
++        """
++        Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++        The traversal order is depth-first.
++
++        Args:
++            token_type: The type of the token to search for (e.g., 'NUMBER', 'WORD').
++
++        Yields:
++            Token: All matching tokens found in the tree.
++
++        Example:
++            >>> from lark import Lark
++            >>> parser = Lark('start: (NUMBER | WORD)+', parser='lalr',
++            ...               lexer_callbacks={'NUMBER': int})
++            >>> tree = parser.parse('123 hello 456 world')
++            >>> list(tree.find_token('NUMBER'))
++            [Token('NUMBER', 123), Token('NUMBER', 456)]
++            >>> list(tree.find_token('WORD'))
++            [Token('WORD', 'hello'), Token('WORD', 'world')]
++            >>> list(tree.find_token('NON_EXISTENT'))
++            []
++        """
++        for child in self.children:
++            if isinstance(child, Token):
++                if child.type == token_type:
++                    yield child
++            elif isinstance(child, Tree):
++                yield from child.find_token(token_type)
+ 
+     def iter_subtrees(self) -> Iterator['Tree']:
+         """
+diff --git a/lark/tests/test_tree.py b/lark/tests/test_tree.py
+--- a/lark/tests/test_tree.py
++++ b/lark/tests/test_tree.py
+@@ -1,5 +1,6 @@
+ import unittest
+ 
++from lark import Lark, Tree, Token
+ from lark.tree import Tree, SlottedTree
+ 
+ 
+@@ -104,3 +105,65 @@
+         self.assertEqual(t.children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].children[0].

@@ -1,0 +1,434 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -1,6 +1,7 @@
+ import inspect
+ import json
+ from functools import wraps
++from typing import Callable, Dict, List, Type, Union
+ 
+ from .. import Logger
+ from .exceptions import BadRequestError, InternalServerError, ServiceError
+@@ -21,6 +22,7 @@ class AppSyncResolver:
+         self.logger = Logger(child=True)
+         self._routes: dict = {}
+         self._current_event: dict = None
++        self._exception_handlers: Dict[Type[Exception], Callable] = {}
+ 
+     def resolver(self, field_name: str = None, type_name: str = None):
+         """Decorator to register a function as a resolver for a given field and type.
+@@ -84,6 +86,56 @@ class AppSyncResolver:
+ 
+         return decorator
+ 
++    def exception_handler(
++        self, exc_class: Union[Type[Exception], List[Type[Exception]]]
++    ) -> Callable:
++        """Decorator to register a function as an exception handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class : Union[Type[Exception], List[Type[Exception]]]
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable
++            A decorator function that registers the exception handler.
++        """
++
++        def register_exception_handler(func: Callable) -> Callable:
++            if isinstance(exc_class, list):
++                for exc_type in exc_class:
++                    self._exception_handlers[exc_type] = func
++            else:
++                self._exception_handlers[exc_class] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: Type) -> Union[Callable, None]:
++        """Looks up the registered exception handler for the given exception type or its base classes.
++
++        Parameters
++        ----------
++        exp_type : Type
++            The exception type to look up the handler for.
++
++        Returns
++        -------
++        Union[Callable, None]
++            The registered exception handler function if found, otherwise None.
++        """
++        # First try exact match
++        if exp_type in self._exception_handlers:
++            return self._exception_handlers[exp_type]
++
++        # Then try base classes
++        for base in exp_type.__mro__[1:]:  # Skip the class itself
++            if base in self._exception_handlers:
++                return self._exception_handlers[base]
++
++        return None
++
+     def _get_resolver_key(self, field_name: str, type_name: str) -> str:
+         """Get the key for the resolver dictionary."""
+         return f"{type_name}.{field_name}" if type_name else field_name
+@@ -118,7 +170,15 @@ class AppSyncResolver:
+             if not resolver:
+                 raise BadRequestError(f"No resolver found for field '{field_name}'")
+ 
+-            result = resolver(*args, **kwargs)
++            try:
++                result = resolver(*args, **kwargs)
++            except Exception as exc:
++                # Look for exception handler
++                handler = self._lookup_exception_handler(type(exc))
++                if handler:
++                    result = handler(exc)
++                else:
++                    raise
+ 
+             # Handle async functions
+             if inspect.iscoroutine(result):
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,28 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    return {"message": "error"}
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    raise ValueError("Error")
++
++
++@app.resolver(field_name="getSomething")
++def get_something(id: str):
++    return {"id": id, "name": "test"}
++
++
++def lambda_handler(event, context):
++    return app.resolve(event, context)
+diff --git a/tests/functional/event_handler/test_appsync.py b/tests/functional/event_handler/test_appsync.py
+--- a/tests/functional/event_handler/test_appsync.py
++++ b/tests/functional/event_handler/test_appsync.py
+@@ -1,5 +1,6 @@
+ import json
+ from unittest.mock import Mock
++from typing import Dict, Any
+ 
+ import pytest
+ 
+@@ -7,6 +8,7 @@ from aws_lambda_powertools.event_handler import AppSyncResolver
+ from aws_lambda_powertools.event_handler.appsync import (
+     AppSyncResolver,
+     BadRequestError,
++    ServiceError,
+ )
+ from aws_lambda_powertools.event_handler.exceptions import (
+     InternalServerError,
+@@ -14,6 +16,7 @@ from aws_lambda_powertools.event_handler.exceptions import (
+ )
+ from aws_lambda_powertools.shared import constants
+ from tests.functional.event_handler.appsync_utils import get_appsync_event
++from tests.functional.utils import load_event
+ 
+ 
+ @pytest.fixture
+@@ -396,3 +399,85 @@ def test_appsync_resolver_with_async_function(appsync_resolver):
+ 
+     # THEN we should get the expected result
+     assert result == {"id": "test", "name": "test"}
++
++
++def test_appsync_exception_handler():
++    # GIVEN an AppSync resolver with an exception handler
++    app = AppSyncResolver()
++
++    @app.exception_handler(ValueError)
++    def handle_value_error(ex: ValueError):
++        return {"message": "custom error", "type": "ValueError"}
++
++    @app.resolver(field_name="createSomething")
++    def create_something(id: str):
++        raise ValueError("Something went wrong")
++
++    # WHEN we invoke the resolver with an event that triggers the exception
++    event = get_appsync_event(
++        field_name="createSomething",
++        arguments={"id": "test"},
++        type_name="Mutation",
++    )
++
++    result = app.resolve(event, {})
++
++    # THEN the exception handler should be called and return the custom response
++    assert result == {"message": "custom error", "type": "ValueError"}
++
++
++def test_appsync_exception_handler_multiple_exceptions():
++    # GIVEN an AppSync resolver with multiple exception handlers
++    app = AppSyncResolver()
++
++    @app.exception_handler([ValueError, TypeError])
++    def handle_value_or_type_error(ex: Exception):
++        return {"message": "handled error", "type": type(ex).__name__}
++
++    @app.resolver(field_name="createValueError")
++    def create_value_error():
++        raise ValueError("Value error")
++
++    @app.resolver(field_name="createTypeError")
++    def create_type_error():
++        raise TypeError("Type error")
++
++    # WHEN we invoke resolvers that trigger different exceptions
++    event1 = get_appsync_event(field_name="createValueError", type_name="Mutation")
++    result1 = app.resolve(event1, {})
++
++    event2 = get_appsync_event(field_name="createTypeError", type_name="Mutation")
++    result2 = app.resolve(event2, {})
++
++    # THEN both exceptions should be handled by the same handler
++    assert result1 == {"message": "handled error", "type": "ValueError"}
++    assert result2 == {"message": "handled error", "type": "TypeError"}
++
++
++def test_appsync_exception_handler_inheritance():
++    # GIVEN an AppSync resolver with a base exception handler
++    app = AppSyncResolver()
++
++    class CustomError(Exception):
++        pass
++
++    class SpecificError(CustomError):
++        pass
++
++    @app.exception_handler(CustomError)
++    def handle_custom_error(ex: CustomError):
++        return {"message": "base handler"}
++
++    @app.resolver(field_name="createSpecificError")
++    def create_specific_error():
++        raise SpecificError("Specific error")
++
++    # WHEN we invoke a resolver that triggers a subclass exception
++    event = get_appsync_event(field_name="createSpecificError", type_name="Mutation")
++    result = app.resolve(event, {})
++
++    # THEN the base exception handler should be called
++    assert result == {"message": "base handler"}
++
++
++# Add more tests for edge cases like unhandled exceptions, async functions, etc.
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,6 +8,10 @@
+ 
+ ## Features
+ 
++* **event_handler:** add exception handling mechanism for AppSyncResolver ([#2184](https://github.com/aws-powertools/powertools-lambda-python/issues/2184))
++
++## Features
++
+ * **event_source:** Extend CodePipeline Artifact Capabilities ([#5448](https://github.com/aws-powertools/powertools-lambda-python/issues/5448))
+ 
+ ## Maintenance
+diff --git a/docs/content/core/event_handler/appsync.md b/docs/content/core/event_handler/appsync.md
+--- a/docs/content/core/event_handler/appsync.md
++++ b/docs/content/core/event_handler/appsync.md
+@@ -1,5 +1,6 @@
+ ---
+ title: "AppSync"
++description: "AWS AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer function"
+ ---
+ 
+ AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer function.
+@@ -7,6 +8,7 @@ AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer
+ ## Key features
+ 
+ * Seamless integration with AppSync Direct Resolver
++* Exception handling mechanism for custom error responses
+ * Support for both sync and async resolvers
+ * Access to contextual information from the AppSync event
+ 
+@@ -14,6 +16,7 @@ AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer
+ 
+ * [AppSync Direct Resolver](https://docs.aws.amazon.com/appsync/latest/devguide/resolver-reference-overview-js.html)
+ * [Amplify GraphQL Transformer](https://docs.amplify.aws/cli/graphql-transformer/function/)
++* [Exception handling](#exception-handling)
+ 
+ ## Getting started
+ 
+@@ -21,6 +24,7 @@ AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer
+ 
+ 1. Install the library - `pip install aws-lambda-powertools`
+ 2. Create your first AppSync resolver
++3. Add exception handling for custom error responses
+ 
+ ### Required resources
+ 
+@@ -29,6 +33,7 @@ This utility helps you to handle AppSync Direct Resolver events. You'll need to
+ * An [AppSync API](https://docs.aws.amazon.com/appsync/latest/devguide/designing-a-graphql-api.html)
+ * A [Lambda function](https://docs.aws.amazon.com/lambda/latest/dg/getting-started.html) to handle the AppSync events
+ * An [AppSync DataSource](https://docs.aws.amazon.com/appsync/latest/devguide/designing-your-schema.html#add-a-data-source) configured to use your Lambda function
++* Appropriate IAM permissions for your Lambda function to interact with AppSync
+ 
+ ### Example
+ 
+@@ -36,6 +41,7 @@ Let's start with a simple example where we handle a GraphQL mutation to create a
+ 
+ ```python title="Creating an AppSync resolver"
+ from aws_lambda_powertools.event_handler import AppSyncResolver
++from typing import Dict, Any
+ 
+ app = AppSyncResolver()
+ 
+@@ -43,6 +49,11 @@ app = AppSyncResolver()
+ def create_todo(id: str, title: str, completed: bool = False) -> Dict[str, Any]:
+     return {"id": id, "title": title, "completed": completed}
+ 
++@app.resolver(field_name="getTodo")
++def get_todo(id: str) -> Dict[str, Any]:
++    # Your business logic here
++    return {"id": id, "title": "Sample Todo", "completed": False}
++
+ def handler(event, context):
+     return app.resolve(event, context)
+ ```
+@@ -50,6 +61,7 @@ def handler(event, context):
+ When using this with your AppSync API, you would configure your schema like this:
+ 
+ ```graphql title="GraphQL Schema"
++# highlight-start
+ type Mutation {
+     createTodo(id: ID!, title: String!, completed: Boolean): Todo
+ }
+@@ -58,6 +70,7 @@ type Query {
+     getTodo(id: ID!): Todo
+ }
+ 
++# highlight-end
+ type Todo {
+     id: ID!
+     title: String!
+@@ -65,6 +78,7 @@ type Todo {
+ }
+ ```
+ 
++### Resolver registration
+ You can also register resolvers for specific GraphQL types:
+ 
+ ```python title="Registering resolvers for specific types"
+@@ -78,6 +92,7 @@ def get_todo_by_id(id: str) -> Dict[str, Any]:
+     return {"id": id, "title": "Sample Todo", "completed": False}
+ ```
+ 
++### Access to contextual information
+ You can access contextual information from the AppSync event:
+ 
+ ```python title="Accessing contextual information"
+@@ -89,6 +104,7 @@ def get_todo_by_id(id: str) -> Dict[str, Any]:
+     return {"id": id, "title": "Sample Todo", "completed": False}
+ ```
+ 
++### Async support
+ Async functions are also supported:
+ 
+ ```python title="Async resolvers"
+@@ -101,6 +117,56 @@ async def get_todo_by_id(id: str) -> Dict[str, Any]:
+     return {"id": id, "title": "Sample Todo", "completed": False}
+ ```
+ 
++## Exception handling
++
++You can register exception handlers to provide custom error responses when exceptions occur in your resolvers.
++
++### Basic usage
++
++```python title="Exception handling example"
++from aws_lambda_powertools.event_handler import AppSyncResolver
++
++app = AppSyncResolver()
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    return {"message": "A validation error occurred", "error": str(ex)}
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    if not id:
++        raise ValueError("ID cannot be empty")
++    return {"id": id, "status": "created"}
++```
++
++### Multiple exception types
++
++You can handle multiple exception types with a single handler:
++
++```python title="Handling multiple exception types"
++@app.exception_handler([ValueError, TypeError])
++def handle_value_or_type_error(ex: Exception):
++    return {"message": "Input error", "type": type(ex).__name__}
++```
++
++### Exception inheritance
++
++Exception handlers support inheritance - if a specific exception type doesn't have a handler, the framework will look for handlers in the exception's base classes:
++
++```python title="Exception inheritance"
++class CustomError(Exception):
++    pass
++
++class SpecificError(CustomError):
++    pass
++
++@app.exception_handler(CustomError)
++def handle_custom_error(ex: CustomError):
++    return {"message": "Custom error occurred"}
++
++# This will also handle SpecificError since it inherits from CustomError
++```
++
+ ## Testing your resolvers
+ 
+ You can test your AppSync resolvers by creating mock events:
+@@ -120,6 +186,7 @@ def test_create_todo():
+     assert result["title"] == "Test Todo"
+ ```
+ 
++## Advanced topics
+ ## Accessing the raw event
+ 
+ In some cases, you might need access to the raw AppSync event:
+@@ -131,6 +198,7 @@ def get_user_profile() -> Dict[str, Any]:
+     return {"username": username, "profile": "..."}
+ ```
+ 
++## Error handling
+ ## Custom error responses
+ 
+ You can raise specific errors that will be properly formatted for AppSync:
+@@ -143,6 +211,7 @@ def get_todo_by_id(id: str) -> Dict[str, Any]:
+         raise BadRequestError("Todo not found")
+ ```
+ 
++## Best practices
+ ## Best practices
+ 
+ * Use type hints for better code clarity and IDE support
+@@ -150,3 +219,4 @@ You can raise specific errors that will be properly formatted for AppSync:
+ * Test your resolvers with different event scenarios
+ * Use structured logging for better observability
+ * Handle exceptions appropriately and provide meaningful error messages
++* Use exception handlers for consistent error responses across your API

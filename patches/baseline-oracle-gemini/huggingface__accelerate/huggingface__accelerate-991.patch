@@ -1,0 +1,135 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -10,6 +10,7 @@
+ from contextlib import contextmanager
+ from functools import partial
+ from pathlib import Path
++import collections
+ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+ 
+ import numpy as np
+@@ -17,6 +18,7 @@
+ from torch.utils import data
+ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+ from torch.utils.data.distributed import DistributedSampler
++import torch.utils.hooks as hooks
+ 
+ from .state import AcceleratorState, DistributedType
+ from .utils import (
+@@ -90,6 +92,8 @@
+         self._dataloaders = []
+         self._custom_objects = []
+         self._hooks = collections.OrderedDict()
++        self._save_state_pre_hooks = collections.OrderedDict()
++        self._load_state_pre_hooks = collections.OrderedDict()
+         self._accelerator_state = AcceleratorState(
+             device_placement=device_placement,
+             split_batches=split_batches,
+@@ -370,6 +374,68 @@
+         self._custom_objects.append(obj)
+         return obj
+ 
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, `weights`
++        argument are the state dicts of the `models`, and the `output_dir` argument is the `output_dir` argument passed
++        to [`Accelerator.save_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already loaded weights from the weights list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._save_state_pre_hooks)
++        self._save_state_pre_hooks[handle.id] = hook
++        return handle
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, and the
++        `input_dir` argument is the `input_dir` argument passed to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the models list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._load_state_pre_hooks)
++        self._load_state_pre_hooks[handle.id] = hook
++        return handle
++
+     def save_state(self, output_dir: str, safe_serialization: bool = True):
+         """
+         Saves the current state of the Accelerator for a later reload.
+@@ -387,10 +453,20 @@
+         if self.state.is_local_main_process:
+             output_dir = Path(output_dir)
+             output_dir.mkdir(parents=True, exist_ok=True)
++
++            models_to_save = list(self._models)
++            # Provide weights for the hook, even if default saving recomputes them.
++            # This is to match the requested hook signature.
++            weights_for_hook = [model.state_dict() for model in self._models]
++
++            # Call pre-save hooks
++            for hook in self._save_state_pre_hooks.values():
++                hook(models_to_save, weights_for_hook, output_dir)
++
+             save_accelerator_state(self.state, output_dir)
+-            save_checkpoint_in_model(self._models, output_dir, safe_serialization=safe_serialization)
++            save_checkpoint_in_model(models_to_save, output_dir, safe_serialization=safe_serialization)
+             save_checkpoint_in_optimizer(self._optimizers, output_dir)
+             save_checkpoint_in_scheduler(self._schedulers, output_dir)
+             save_checkpoint_in_custom_object(self._custom_objects, output_dir)
+         wait_for_everyone()
+ 
+     def load_state(self, input_dir: str):
+@@ -404,5 +480,10 @@
+         if not input_dir.is_dir():
+             raise ValueError(f"The input directory {input_dir} does not exist or is not a directory.")
+ 
+-        load_checkpoint_in_model(self._models, input_dir)
++        models_to_load = list(self._models)
++        # Call pre-load hooks
++        for hook in self._load_state_pre_hooks.values():
++            hook(models_to_load, input_dir)
++
++        load_checkpoint_in_model(models_to_load, input_dir)
+         load_checkpoint_in_optimizer(self._optimizers, input_dir)
+         load_checkpoint_in_scheduler(self._schedulers, input_dir)
+         load_checkpoint_in_custom_object(self._custom_objects, input_dir)

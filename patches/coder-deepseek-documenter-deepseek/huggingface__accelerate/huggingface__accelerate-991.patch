@@ -1,0 +1,220 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -1,5 +1,6 @@
+ import warnings
+ from contextlib import contextmanager
++from typing import Callable, Dict, List
+ 
+ import torch
+ from torch.optim.lr_scheduler import LRScheduler
+@@ -7,6 +8,7 @@
+ from packaging import version
+ 
+ from accelerate.state import AcceleratorState
++from torch.utils import hooks
+ from accelerate.utils import (
+     DeepSpeedPlugin,
+     DistributedDataParallelKwargs,
+@@ -106,6 +108,11 @@
+         self.project_dir = project_dir
+         self.logging_dir = logging_dir
+ 
++        # Hook management
++        self._save_state_pre_hooks: Dict[int, Callable] = {}
++        self._load_state_pre_hooks: Dict[int, Callable] = {}
++        self._hook_id = 0  # Counter for generating unique hook IDs
++
+         # Mixed precision attributes
+         self.native_amp = False
+         self.mixed_precision = mixed_precision
+@@ -2433,6 +2440,52 @@
+         self._schedulers = []
+         self._custom_objects = []
+ 
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++        
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++                
++        The hook should have the following signature:
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], input_dir: str) -> None`
++        
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook
++        """
++        hook_id = self._hook_id
++        self._save_state_pre_hooks[hook_id] = hook
++        self._hook_id += 1
++        
++        def remove():
++            if hook_id in self._save_state_pre_hooks:
++                del self._save_state_pre_hooks[hook_id]
++        
++        return hooks.RemovableHandle(remove)
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `load_checkpoint` is called in [`Accelerator.load_state`].
++        
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++                
++        The hook should have the following signature:
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++        
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook
++        """
++        hook_id = self._hook_id
++        self._load_state_pre_hooks[hook_id] = hook
++        self._hook_id += 1
++        
++        def remove():
++            if hook_id in self._load_state_pre_hooks:
++                del self._load_state_pre_hooks[hook_id]
++        
++        return hooks.RemovableHandle(remove)
+     def save_state(self, output_dir: str = None, **save_model_func_kwargs):
+         """
+         Saves the current states of the model, optimizer, scaler, RNG generators, and registered objects.
+@@ -2498,6 +2551,20 @@
+                 weights.append(self.get_state_dict(model, unwrap=False))
+                 models.append(model)
+ 
++        # Execute save state pre hooks
++        for hook in self._save_state_pre_hooks.values():
++            hook(models, weights, output_dir)
++        
++        # Remove models that were handled by hooks (models that are no longer in the list)
++        # and their corresponding weights
++        models_to_remove = []
++        for i, model in enumerate(self._models):
++            if model not in models:
++                models_to_remove.append(i)
++        
++        # Remove in reverse order to maintain indices
++        for i in sorted(models_to_remove, reverse=True):
++            if i < len(weights):
++                weights.pop(i)
+         # Save the models
+         for i, model in enumerate(models):
+             if self.state.use_fsdp:
+@@ -2628,6 +2695,19 @@
+         # Get models
+         models = list(self._models)
+ 
++        # Execute load state pre hooks
++        for hook in self._load_state_pre_hooks.values():
++            hook(models, input_dir)
++        
++        # Remove models that were handled by hooks (models that are no longer in the list)
++        models_to_remove = []
++        for i, model in enumerate(self._models):
++            if model not in models:
++                models_to_remove.append(i)
++        
++        # Remove in reverse order to maintain indices
++        for i in sorted(models_to_remove, reverse=True):
++            self._models.pop(i)
+         # Load the models
+         for i, model in enumerate(models):
+             if self.state.use_fsdp:
+diff --git a/tests/test_hooks.py b/tests/test_hooks.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_hooks.py
+@@ -0,0 +1,89 @@
++import os
++import tempfile
++
++import torch
++import torch.nn as nn
++
++from accelerate import Accelerator
++
++
++class TestModel(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.linear = nn.Linear(10, 10)
++
++    def forward(self, x):
++        return self.linear(x)
++
++
++def test_save_state_hook():
++    accelerator = Accelerator()
++    model = TestModel()
++    model = accelerator.prepare(model)
++
++    save_called = False
++
++    def save_hook(models, weights, output_dir):
++        nonlocal save_called
++        save_called = True
++        assert len(models) == 1
++        assert len(weights) == 1
++        assert isinstance(output_dir, str)
++
++    handle = accelerator.register_save_state_pre_hook(save_hook)
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        accelerator.save_state(tmpdir)
++
++    assert save_called
++    handle.remove()
++
++
++def test_load_state_hook():
++    accelerator = Accelerator()
++    model = TestModel()
++    model = accelerator.prepare(model)
++
++    load_called = False
++
++    def load_hook(models, input_dir):
++        nonlocal load_called
++        load_called = True
++        assert len(models) == 1
++        assert isinstance(input_dir, str)
++
++    handle = accelerator.register_load_state_pre_hook(load_hook)
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        # First save state to load from
++        accelerator.save_state(tmpdir)
++        accelerator.load_state(tmpdir)
++
++    assert load_called
++    handle.remove()
++
++
++def test_hook_model_removal():
++    accelerator = Accelerator()
++    model1 = TestModel()
++    model2 = TestModel()
++    model1 = accelerator.prepare(model1)
++    model2 = accelerator.prepare(model2)
++
++    def save_hook(models, weights, output_dir):
++        # Remove first model from saving
++        if len(models) > 0:
++            models.pop(0)
++        if len(weights) > 0:
++            weights.pop(0)
++
++    accelerator.register_save_state_pre_hook(save_hook)
++
++    def load_hook(models, input_dir):
++        # Remove first model from loading
++        if len(models) > 0:
++            models.pop(0)
++
++    accelerator.register_load_state_pre_hook(load_hook)
++
++    # Test that hooks can be registered and don't cause errors

@@ -1,0 +1,418 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -1,4 +1,5 @@
+ import contextlib
++import inspect
+ import io
+ import json
+ import math
+@@ -9,6 +10,7 @@
+ import warnings
+ from collections import defaultdict
+ from datetime import timedelta
++from typing import Callable, List
+ 
+ import torch
+ import torch.nn.functional as F
+@@ -17,6 +19,7 @@
+ from torch.nn.parallel.distributed import DistributedDataParallel
+ 
+ from accelerate.state import AcceleratorState, GradientState, PartialState
++from accelerate.utils import save, load
+ from accelerate.utils.dataclasses import BaseEnum
+ from accelerate.utils.other import extract_model_from_parallel, wait_for_everyone
+ 
+@@ -44,6 +47,8 @@
+         self.gradient_state = GradientState()
+         self._schedulers = []
+         self._optimizers = []
++        self._save_model_state_pre_hook = None
++        self._load_model_state_pre_hook = None
+ 
+         # Mixed precision attributes
+         self.scaler = None
+@@ -176,6 +181,7 @@
+         self._models = []
+         self._dataloaders = []
+         self._custom_objects = []
++        self._save_state_pre_hooks = []
+ 
+         # RNG Types
+         self.rng_types = rng_types
+@@ -184,6 +190,7 @@
+         self.project_dir = project_dir
+         self.logging_dir = logging_dir
+         self.step = 0
++        self._load_state_pre_hooks = []
+ 
+         # Caching values when using `accumulate`
+         self._gradient_accumulation_kwargs = {}
+@@ -244,6 +251,8 @@
+         self._schedulers = []
+         self._optimizers = []
+         self._custom_objects = []
++        self._save_state_pre_hooks = []
++        self._load_state_pre_hooks = []
+ 
+     def _reset_rng_state(self, rng_type: str = "generator"):
+         """
+@@ -2357,6 +2366,8 @@
+         self,
+         output_dir: str,
+         safe_serialization: bool = True,
++        **save_model_func_kwargs,
++        **save_optimizer_func_kwargs,
+     ):
+         """
+         Saves the current states of the model, optimizer, scaler, RNG generators, and registered objects to a folder.
+@@ -2366,6 +2377,10 @@
+                 The output directory to save to.
+             safe_serialization (`bool`, *optional*, defaults to `True`):
+                 Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
++            save_model_func_kwargs (`dict`, *optional*):
++                Additional keyword arguments for the model save function.
++            save_optimizer_func_kwargs (`dict`, *optional*):
++                Additional keyword arguments for the optimizer save function.
+ 
+         <Tip>
+ 
+@@ -2385,6 +2400,7 @@
+         # Model weights
+         weights = []
+         for i, model in enumerate(self._models):
++            # Save the state dict, but do not save directly
+             weights.append(self.get_state_dict(model, unwrap=False))
+ 
+         # Optimizer states
+@@ -2392,6 +2408,7 @@
+         for i, opt in enumerate(self._optimizers):
+             state_dict = self.optimizer_state_dict(opt)
+             optimizer_states.append(state_dict)
++        # Save the state dict, but do not save directly
+ 
+         # Grad Scaler state
+         grad_scaler_state = None
+@@ -2400,6 +2417,17 @@
+ 
+         save_location = save_accelerator_state(
+             output_dir,
++            models=self._models,
++            weights=weights,
++            optimizers=self._optimizers,
++            optimizer_states=optimizer_states,
++            schedulers=self._schedulers,
++            dataloaders=self._dataloaders,
++            custom_objects=self._custom_objects,
++            save_model_func_kwargs=save_model_func_kwargs,
++            save_optimizer_func_kwargs=save_optimizer_func_kwargs,
++            safe_serialization=safe_serialization,
++            save_state_pre_hooks=self._save_state_pre_hooks,
+             model_states=weights,
+             optimizer_states=optimizer_states,
+             scheduler_states=scheduler_states,
+@@ -2407,8 +2435,6 @@
+             custom_objects=self._custom_objects,
+             grad_scaler_state=grad_scaler_state,
+             save_custom_objects_only=False,
+-            safe_serialization=safe_serialization,
+-            **kwargs,
+         )
+         return save_location
+ 
+@@ -2416,6 +2442,7 @@
+         self,
+         input_dir: str,
+         models: List[torch.nn.Module] = None,
++        **load_model_func_kwargs,
+     ):
+         """
+         Loads the states of the model, optimizer, scaler, RNG generators, and registered objects from a folder.
+@@ -2425,6 +2452,8 @@
+                 The input directory to load from.
+             models (`List[torch.nn.Module]`, *optional*):
+                 A list of models to load. If not provided, will use the models in the accelerator state.
++            load_model_func_kwargs (`dict`, *optional*):
++                Additional keyword arguments for the model load function.
+ 
+         <Tip>
+ 
+@@ -2445,6 +2474,7 @@
+             models = self._models
+ 
+         load_accelerator_state(
++            load_state_pre_hooks=self._load_state_pre_hooks,
+             input_dir=input_dir,
+             models=models,
+             optimizers=self._optimizers,
+@@ -2452,6 +2482,7 @@
+             dataloaders=self._dataloaders,
+             custom_objects=self._custom_objects,
+             main_process_only=False,
++            load_model_func_kwargs=load_model_func_kwargs,
+         )
+ 
+     def save_model(
+@@ -2460,6 +2491,7 @@
+         output_dir: str,
+         safe_serialization: bool = True,
+         max_shard_size: str = "10GB",
++        **save_model_func_kwargs,
+     ):
+         """
+         Saves a model to a directory. If the model has been mixed-precision trained, it will be saved in fp16.
+@@ -2474,6 +2506,8 @@
+                 Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+             max_shard_size (`str` or `int`, *optional*, defaults to `"10GB"`):
+                 The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
++            save_model_func_kwargs (`dict`, *optional*):
++                Additional keyword arguments for the model save function.
+ 
+         Example:
+ 
+@@ -2493,6 +2527,7 @@
+             safe_serialization=safe_serialization,
+             max_shard_size=max_shard_size,
+             state_dict=state_dict,
++            **save_model_func_kwargs,
+         )
+ 
+     def load_model(
+@@ -2500,6 +2535,7 @@
+         model: torch.nn.Module,
+         input_dir: str,
+         strict: bool = True,
++        **load_model_func_kwargs,
+     ):
+         """
+         Loads a model from a directory.
+@@ -2511,6 +2547,8 @@
+                 The input directory to load from.
+             strict (`bool`, *optional*, defaults to `True`):
+                 Whether to strictly enforce that the keys in the state dict match the keys of the model.
++            load_model_func_kwargs (`dict`, *optional*):
++                Additional keyword arguments for the model load function.
+ 
+         Example:
+ 
+@@ -2525,6 +2563,7 @@
+             model=model,
+             input_dir=input_dir,
+             strict=strict,
++            **load_model_func_kwargs,
+         )
+ 
+     def free_memory(self):
+@@ -2535,6 +2574,88 @@
+         self._schedulers = []
+         self._optimizers = []
+ 
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> torch.utils.hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, `weights`
++        argument are the state dicts of the `models`, and the `input_dir` argument is the `input_dir` argument passed
++        to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already loaded weights from the weights list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = torch.utils.hooks.RemovableHandle(self._save_state_pre_hooks)
++        self._save_state_pre_hooks.append(hook)
++        return handle
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> torch.utils.hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, and the
++        `input_dir` argument is the `input_dir` argument passed to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the models list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = torch.utils.hooks.RemovableHandle(self._load_state_pre_hooks)
++        self._load_state_pre_hooks.append(hook)
++        return handle
++
++    def _run_save_state_pre_hook(self, models, weights, input_dir):
++        """
++        Runs all registered save state pre hooks.
++        """
++        for hook in self._save_state_pre_hooks:
++            try:
++                hook(models, weights, input_dir)
++            except Exception as e:
++                raise RuntimeError(f"Error in save state pre hook: {e}")
++
++    def _run_load_state_pre_hook(self, models, input_dir):
++        """
++        Runs all registered load state pre hooks.
++        """
++        for hook in self._load_state_pre_hooks:
++            try:
++                hook(models, input_dir)
++            except Exception as e:
++                raise RuntimeError(f"Error in load state pre hook: {e}")
+ 
+ def load_accelerator_state(
+     input_dir: str,
+@@ -2544,6 +2665,8 @@
+     dataloaders: List[torch.utils.data.DataLoader] = None,
+     custom_objects: Dict[str, Any] = None,
+     main_process_only: bool = False,
++    load_state_pre_hooks: List[Callable] = None,
++    load_model_func_kwargs: Dict = None,
+ ):
+     """
+     Loads states of the models, optimizers, scaler, RNG generators, and registered objects.
+@@ -2561,6 +2684,10 @@
+             A list of dataloaders to load.
+         custom_objects (`Dict[str, Any]`, *optional*):
+             A dictionary of custom objects to load.
++        load_state_pre_hooks (`List[Callable]`, *optional*):
++            A list of hooks to run before loading the state.
++        load_model_func_kwargs (`Dict`, *optional*):
++            Additional keyword arguments for the model load function.
+ 
+     Returns:
+         `dict`: A dictionary containing the loaded states.
+@@ -2570,6 +2697,11 @@
+     if models is not None:
+         # Ensure models are a list
+         models = list(models)
++        # Run load state pre hooks
++        if load_state_pre_hooks is not None:
++            for hook in load_state_pre_hooks:
++                hook(models, input_dir)
++
+     if optimizers is not None:
+         # Ensure optimizers are a list
+         optimizers = list(optimizers)
+@@ -2585,6 +2717,7 @@
+         dataloaders=dataloaders,
+         custom_objects=custom_objects,
+         main_process_only=main_process_only,
++        load_model_func_kwargs=load_model_func_kwargs,
+     )
+ 
+ 
+@@ -2597,6 +2730,13 @@
+     custom_objects: Dict[str, Any] = None,
+     grad_scaler_state: Dict[str, Any] = None,
+     save_custom_objects_only: bool = False,
++    models: List[torch.nn.Module] = None,
++    weights: List[Dict[str, torch.Tensor]] = None,
++    optimizers: List[torch.optim.Optimizer] = None,
++    optimizer_states: List[Dict[str, Any]] = None,
++    save_state_pre_hooks: List[Callable] = None,
++    save_model_func_kwargs: Dict = None,
++    save_optimizer_func_kwargs: Dict = None,
+     safe_serialization: bool = True,
+     **kwargs,
+ ):
+@@ -2620,6 +2760,20 @@
+             A dictionary of custom objects to save.
+         grad_scaler_state (`Dict[str, Any]`, *optional*):
+             The state of the gradient scaler.
++        models (`List[torch.nn.Module]`, *optional*):
++            A list of models to save.
++        weights (`List[Dict[str, torch.Tensor]]`, *optional*):
++            A list of model weights to save.
++        optimizers (`List[torch.optim.Optimizer]`, *optional*):
++            A list of optimizers to save.
++        optimizer_states (`List[Dict[str, Any]]`, *optional*):
++            A list of optimizer states to save.
++        save_state_pre_hooks (`List[Callable]`, *optional*):
++            A list of hooks to run before saving the state.
++        save_model_func_kwargs (`Dict`, *optional*):
++            Additional keyword arguments for the model save function.
++        save_optimizer_func_kwargs (`Dict`, *optional*):
++            Additional keyword arguments for the optimizer save function.
+         save_custom_objects_only (`bool`, *optional*, defaults to `False`):
+             Whether to only save custom objects.
+         safe_serialization (`bool`, *optional*, defaults to `True`):
+@@ -2633,6 +2787,17 @@
+     if not save_custom_objects_only:
+         # Model states
+         if model_states is not None:
++            # Run save state pre hooks
++            if save_state_pre_hooks is not None and models is not None and weights is not None:
++                for hook in save_state_pre_hooks:
++                    hook(models, weights, output_dir)
++            # Save model states
++            if models is not None and weights is not None:
++                for i, (model, weight) in enumerate(zip(models, weights)):
++                    if weight is not None:  # Only save if weight is not removed by hook
++                        save_model_func_kwargs = save_model_func_kwargs or {}
++                        save.save_model(model, output_dir, state_dict=weight, safe_serialization=safe_serialization, **save_model_func_kwargs)
++                return output_dir
+             for i, state_dict in enumerate(model_states):
+                 save.save_state_dict(state_dict, output_dir, safe_serialization=safe_serialization)
+         # Optimizer states
+diff --git a/src/accelerate/utils/save.py b/src/accelerate/utils/save.py
+--- a/src/accelerate/utils/save.py
++++ b/src/accelerate/utils/save.py
+@@ -1,4 +1,5 @@
+ import json
++import os
+ import warnings
+ from pathlib import Path
+ 
+@@ -6,6 +7,7 @@
+ import torch.nn as nn
+ 
+ from ..state import PartialState
++from .imports import is_safetensors_available
+ 
+ 
+ def save_state_dict(state_dict, save_location, safe_serialization=True):
+@@ -32,6 +34,7 @@
+     model: nn.Module,
+     save_directory,
+     state_dict=None,
++    safe_serialization=True,
+     max_shard_size="10GB",
+     safe_serialization=True,
+ ):
+@@ -45,6 +48,8 @@
+             The directory to save the model to.
+         state_dict (`Dict[str, torch.Tensor]`, *optional*):
+             The state dict to save. If not provided, will use the model's state dict.
++        safe_serialization (`bool`, *optional*, defaults to `True`):
++            Whether to save the

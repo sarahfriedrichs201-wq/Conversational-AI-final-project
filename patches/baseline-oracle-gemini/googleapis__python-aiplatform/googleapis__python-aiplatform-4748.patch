@@ -1,0 +1,204 @@
+diff --git a/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py b/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py
+--- a/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py
++++ b/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py
+@@ -4,6 +4,8 @@
+ import google.cloud.aiplatform as aiplatform
+ from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import (
+     MatchNeighbor,
++    Namespace,
++    NumericNamespace,
+ )
+ 
+ 
+@@ -48,19 +50,119 @@
+     return matches
+ 
+ 
++def vector_search_find_neighbors_hybrid_queries(
++    project: str,
++    location: str,
++    index_endpoint_name: str,
++    deployed_index_id: str,
++    num_neighbors: int,
++) -> List[List[MatchNeighbor]]:
++    """Query the vector search index using example hybrid queries.
++
++    Args:
++        project (str): Required. Project ID
++        location (str): Required. The region name
++        index_endpoint_name (str): Required. Index endpoint to run the query
++        against.
++        deployed_index_id (str): Required. The ID of the DeployedIndex to run
++        the queries against.
++        num_neighbors (int): Required. The number of neighbors to return.
++
++    Returns:
++        List[List[MatchNeighbor]] - A list of nearest neighbors for each query.
++    """
++    aiplatform.init(project=project, location=location)
++
++    index_endpoint = aiplatform.MatchingEngineIndexEndpoint.list(
++        filter=f'display_name="{index_endpoint_name}"',
++        location=location,
++    )[0]
++
++    # [START aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
++    # Example queries (embeddings). In a real scenario, these would come from
++    # a model that generates hybrid embeddings.
++    queries = [
++        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
++        [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],
++    ]
++
++    # Find neighbors for the given queries
++    matches = index_endpoint.find_neighbors(
++        deployed_index_id=deployed_index_id,
++        queries=queries,
++        num_neighbors=num_neighbors,
++    )
++    # [END aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
++
++    print(f"Found {len(matches)} sets of neighbors.")
++    for i, query_matches in enumerate(matches):
++        print(f"Neighbors for query {i}:")
++        for match in query_matches:
++            print(f"  ID: {match.id}, Distance: {match.distance}")
++    return matches
++
++
++def vector_search_find_neighbors_filtering_crowding(
++    project: str,
++    location: str,
++    index_endpoint_name: str,
++    deployed_index_id: str,
++    queries: List[List[float]],
++    num_neighbors: int,
++    filter: List[Namespace],
++    numeric_filter: List[NumericNamespace],
++    per_crowding_attribute_neighbor_count: int,
++) -> List[List[MatchNeighbor]]:
++    """Query the vector search index with filtering and crowding.
++
++    Args:
++        project (str): Required. Project ID
++        location (str): Required. The region name
++        index_endpoint_name (str): Required. Index endpoint to run the query
++        against.
++        deployed_index_id (str): Required. The ID of the DeployedIndex to run
++        the queries against.
++        queries (List[List[float]]): Required. A list of queries. Each query is
++        a list of floats, representing a single embedding.
++        num_neighbors (int): Required. The number of neighbors to return.
++        filter (List[Namespace]): Required. A list of Namespaces for filtering
++        the matching results. For example,
++        [Namespace("color", ["red"], []), Namespace("shape", [], ["square"])]
++        will match datapoints that satisfy "red color" but not include
++        datapoints with "square shape".
++        numeric_filter (List[NumericNamespace]): Required. A list of
++        NumericNamespaces for filtering the matching results. For example,
++        [NumericNamespace(name="cost", value_int=5, op="GREATER")] will limit
++        the matching results to datapoints with cost greater than 5.
++        per_crowding_attribute_neighbor_count (int): Required. The maximum
++        number of returned matches with the same crowding tag.
++
++    Returns:
++        List[List[MatchNeighbor]] - A list of nearest neighbors for each query.
++    """
++    aiplatform.init(project=project, location=location)
++
++    index_endpoint = aiplatform.MatchingEngineIndexEndpoint.list(
++        filter=f'display_name="{index_endpoint_name}"',
++        location=location,
++    )[0]
++
++    # [START aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
++    matches = index_endpoint.find_neighbors(
++        deployed_index_id=deployed_index_id,
++        queries=queries,
++        num_neighbors=num_neighbors,
++        filter=filter,
++        numeric_filter=numeric_filter,
++        per_crowding_attribute_neighbor_count=per_crowding_attribute_neighbor_count,
++    )
++    # [END aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
++
++    print(f"Found {len(matches)} sets of neighbors.")
++    for i, query_matches in enumerate(matches):
++        print(f"Neighbors for query {i}:")
++        for match in query_matches:
++            print(f"  ID: {match.id}, Distance: {match.distance}")
++    return matches
++
++
+ if __name__ == "__main__":
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--project", type=str, required=True)
+     parser.add_argument("--location", type=str, required=True)
+     parser.add_argument("--index_endpoint_name", type=str, required=True)
+     parser.add_argument("--deployed_index_id", type=str, required=True)
+-    parser.add_argument("--queries", type=lambda s: [list(map(float, item.split(","))) for item in s.split(";")], required=True)
+     parser.add_argument("--num_neighbors", type=int, default=5)
++    parser.add_argument(
++        "--queries",
++        type=lambda s: [list(map(float, item.split(","))) for item in s.split(";")],
++        help="A list of queries for the basic sample, e.g., '0.1,0.2;0.3,0.4'",
++        required=True,
++    )
+ 
+     args = parser.parse_args()
+ 
+-    vector_search_find_neighbors_sample(
++    print("Running vector_search_find_neighbors_sample...")
++    vector_search_find_neighbors_sample(
+         project=args.project,
+         location=args.location,
+         index_endpoint_name=args.index_endpoint_name,
+         deployed_index_id=args.deployed_index_id,
+         queries=args.queries,
+         num_neighbors=args.num_neighbors,
+     )
++
++    # Run hybrid queries sample
++    print("\nRunning vector_search_find_neighbors_hybrid_queries sample...")
++    vector_search_find_neighbors_hybrid_queries(
++        project=args.project,
++        location=args.location,
++        index_endpoint_name=args.index_endpoint_name,
++        deployed_index_id=args.deployed_index_id,
++        num_neighbors=args.num_neighbors,
++    )
++
++    # Run filtering and crowding sample
++    print("\nRunning vector_search_find_neighbors_filtering_crowding sample...")
++    # Example queries for filtering and crowding
++    queries_for_filtering = [
++        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
++        [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],
++    ]
++
++    # Example filters. These assume your index has attributes named "color", "shape", and "cost".
++    # You will need to adjust these based on your actual index configuration.
++    example_filter = [
++        Namespace(name="color", allow_tokens=["red"], deny_tokens=[]),
++        Namespace(name="shape", allow_tokens=[], deny_tokens=["square"]),
++    ]
++
++    example_numeric_filter = [
++        NumericNamespace(name="cost", value_int=5, op="GREATER")
++    ]
++
++    # Example crowding attribute count. This assumes your index is configured with a crowding attribute.
++    # You will need to adjust this based on your actual index configuration.
++    example_per_crowding_attribute_neighbor_count = 2
++
++    vector_search_find_neighbors_filtering_crowding(
++        project=args.project,
++        location=args.location,
++        index_endpoint_name=args.index_endpoint_name,
++        deployed_index_id=args.deployed_index_id,
++        queries=queries_for_filtering,
++        num_neighbors=args.num_neighbors,
++        filter=example_filter,
++        numeric_filter=example_numeric_filter,
++        per_crowding_attribute_neighbor_count=example_per_crowding_attribute_neighbor_count,
++    )

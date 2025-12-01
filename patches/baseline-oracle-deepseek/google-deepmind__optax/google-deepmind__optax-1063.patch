@@ -1,0 +1,127 @@
+diff --git a/optax/tree_utils/__init__.py b/optax/tree_utils/__init__.py
+--- a/optax/tree_utils/__init__.py
++++ b/optax/tree_utils/__init__.py
+@@ -15,6 +15,7 @@
+ """Tree utility functions."""
+ 
+ from optax.tree_utils._random import tree_random_like
++from optax.tree_utils._random import tree_split_key_like
+ from optax.tree_utils._state_utils import tree_get
+ from optax.tree_utils._state_utils import tree_set
+ from optax.tree_utils._state_utils import tree_update
+@@ -22,6 +23,7 @@
+ __all__ = (
+     "tree_get",
+     "tree_random_like",
++    "tree_split_key_like",
+     "tree_set",
+     "tree_update",
+ )
+diff --git a/optax/tree_utils/_random.py b/optax/tree_utils/_random.py
+--- a/optax/tree_utils/_random.py
++++ b/optax/tree_utils/_random.py
+@@ -12,7 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-"""Utilities for generating random trees."""
++"""Utilities for generating and manipulating random trees."""
+ 
+ import jax
+ import jax.numpy as jnp
+@@ -20,7 +20,7 @@
+ from optax.tree_utils._base import tree_map_flat
+ 
+ 
+-def _tree_rng_keys_split(
++def tree_split_key_like(
+     rng_key: chex.PRNGKey, target_tree: chex.ArrayTree
+ ) -> chex.ArrayTree:
+   """Split keys to match structure of target tree.
+@@ -31,6 +31,8 @@
+   Returns:
+     a tree of rng keys.
+   """
++  # This function was previously private as _tree_rng_keys_split.
++  # It is now exposed as a public API.
+   leaves, treedef = jax.tree_util.tree_flatten(target_tree)
+   num_leaves = len(leaves)
+   rng_keys = jax.random.split(rng_key, num_leaves)
+@@ -38,6 +40,10 @@
+   return jax.tree_util.tree_unflatten(treedef, rng_keys)
+ 
+ 
++# Keep the old private name for backward compatibility.
++_tree_rng_keys_split = tree_split_key_like
++
++
+ def tree_random_like(
+     rng_key: chex.PRNGKey,
+     target_tree: chex.ArrayTree,
+diff --git a/optax/tree_utils/_random_test.py b/optax/tree_utils/_random_test.py
+--- a/optax/tree_utils/_random_test.py
++++ b/optax/tree_utils/_random_test.py
+@@ -14,6 +14,7 @@
+ 
+ """Tests for tree_utils._random."""
+ 
++import jax
+ from absl.testing import absltest
+ from absl.testing import parameterized
+ import chex
+@@ -21,6 +22,7 @@
+ import jax.numpy as jnp
+ import numpy as np
+ 
++from optax.tree_utils._random import tree_split_key_like
+ from optax.tree_utils._random import tree_random_like
+ 
+ 
+@@ -56,6 +58,25 @@
+     self.assertTreeAllClose(tree_random_like(key, target), expected)
+ 
+ 
++class TreeSplitKeyLikeTest(chex.TestCase):
++
++  @chex.all_variants
++  def test_tree_split_key_like(self):
++    """Test that tree_split_key_like splits keys correctly."""
++    key = jax.random.PRNGKey(0)
++    target = {
++        'a': jnp.ones((2, 3)),
++        'b': [jnp.ones((5,)), jnp.ones((7,))],
++        'c': 1.0,
++    }
++    result = self.variant(tree_split_key_like)(key, target)
++    # Check structure matches.
++    jax.tree_util.tree_map(lambda x, y: None, result, target)
++    # Check all leaves are PRNGKeys.
++    leaves = jax.tree_util.tree_leaves(result)
++    self.assertTrue(all(leaf.shape == (2,) for leaf in leaves))
++
++
+ if __name__ == '__main__':
+   absltest.main()
+ 
+diff --git a/docs/api/tree_utils.rst b/docs/api/tree_utils.rst
+--- a/docs/api/tree_utils.rst
++++ b/docs/api/tree_utils.rst
+@@ -10,6 +10,7 @@
+ .. currentmodule:: optax.tree_utils
+ 
+ .. autofunction:: tree_get
++.. autofunction:: tree_split_key_like
+ .. autofunction:: tree_set
+ .. autofunction:: tree_update
+ .. autofunction:: tree_random_like
+diff --git a/docs/api/tree_utils.md b/docs/api/tree_utils.md
+--- a/docs/api/tree_utils.md
++++ b/docs/api/tree_utils.md
+@@ -1,6 +1,7 @@
+ # Tree utilities
+ 
+ * `optax.tree_utils.tree_get`
++* `optax.tree_utils.tree_split_key_like`
+ * `optax.tree_utils.tree_set`
+ * `optax.tree_utils.tree_update`
+ * `optax.tree_utils.tree_random_like`

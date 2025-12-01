@@ -1,0 +1,42 @@
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -1,1 +1,38 @@
+ import platform
++
++from conan.tools.files import unix_path
++
++
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    """
++    Converts a Windows path to a Unix-like path for legacy Conan 1.x recipes
++    that perform path conversions in the package_info method.
++
++    This function is intended for compatibility with older recipes and should
++    generally be avoided in new Conan 2.x recipes, where path conversions
++    are typically handled by build system integrations.
++
++    Args:
++        conanfile: The current ConanFile instance.
++        path: The path string to convert.
++        path_flavor: Optional. The target Unix subsystem flavor (e.g., "msys", "cygwin", "wsl").
++                     If None, it will try to read from 'tools.microsoft.subsystems:default_path_flavor'
++                     in conanfile.conf, or default to "msys".
++
++    Returns:
++        The converted Unix-like path if on Windows, otherwise the original path.
++    """
++    if platform.system() != "Windows":
++        return path
++
++    subsystem = path_flavor
++    if subsystem is None:
++        # Try to get default from conanfile.conf
++        # The check_type=str ensures that if the config value exists, it's a string.
++        # If it doesn't exist, it returns None.
++        subsystem = conanfile.conf.get("tools.microsoft.subsystems:default_path_flavor", check_type=str)
++        if subsystem is None:
++            # Fallback to a common default if not specified in conf
++            subsystem = "msys"
++
++    return unix_path(conanfile, path, subsystem=subsystem)

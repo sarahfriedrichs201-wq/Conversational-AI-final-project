@@ -1,0 +1,105 @@
+diff --git a/haystack/dataclasses/byte_stream.py b/haystack/dataclasses/byte_stream.py
+--- a/haystack/dataclasses/byte_stream.py
++++ b/haystack/dataclasses/byte_stream.py
+@@ -1,3 +1,4 @@
++import warnings
+ from dataclasses import dataclass, field
+ from typing import Dict, Any, Optional, List
+ 
+@@ -87,6 +88,21 @@ class ByteStream:
+         """
+         return cls(data=data, meta=meta or {})
+ 
++    def to_string(self, encoding: str = "utf-8") -> str:
++        """
++        Convert the ByteStream to a string, metadata will not be included.
++
++        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
++        :return: The string representation of the ByteStream.
++        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
++        """
++        try:
++            return self.data.decode(encoding)
++        except UnicodeDecodeError as e:
++            raise UnicodeDecodeError(
++                f"Failed to decode ByteStream data using encoding '{encoding}'. Original error: {str(e)}"
++            ) from e
++
+     def __eq__(self, other):
+         if not isinstance(other, ByteStream):
+             return False
+diff --git a/test/dataclasses/test_byte_stream.py b/test/dataclasses/test_byte_stream.py
+--- a/test/dataclasses/test_byte_stream.py
++++ b/test/dataclasses/test_byte_stream.py
+@@ -1,3 +1,4 @@
++import pytest
+ from haystack.dataclasses.byte_stream import ByteStream
+ 
+ 
+@@ -96,3 +97,65 @@ class TestByteStream:
+         assert byte_stream.meta["key1"] == "value1"
+         assert byte_stream.meta["key2"] == "value2"
+         assert byte_stream.meta["key3"] == "value3"
++
++
++class TestByteStreamToString:
++    """Test cases for the ByteStream.to_string method"""
++    
++    def test_to_string_basic_functionality(self):
++        """Test basic string conversion with default encoding"""
++        original_text = "hello, world!"
++        byte_stream = ByteStream.from_string(original_text)
++        result = byte_stream.to_string()
++        assert result == original_text
++    
++    def test_to_string_with_different_encoding(self):
++        """Test conversion with different encodings"""
++        test_cases = [
++            ("utf-8", "Hello, 世界!"),
++            ("latin-1", "Café"),
++            ("ascii", "simple text"),
++        ]
++        
++        for encoding, text in test_cases:
++            byte_stream = ByteStream.from_string(text, encoding=encoding)
++            result = byte_stream.to_string(encoding=encoding)
++            assert result == text
++    
++    def test_to_string_with_custom_encoding_parameter(self):
++        """Test that custom encoding parameter is respected"""
++        text = "special chars: ñáéíóú"
++        byte_stream = ByteStream.from_string(text, encoding="utf-8")
++        result = byte_stream.to_string(encoding="utf-8")
++        assert result == text
++    
++    def test_to_string_unicode_decode_error(self):
++        """Test proper error handling for invalid encoding"""
++        # Create bytes that are not valid UTF-8
++        invalid_utf8_bytes = b'\xff\xfe'
++        byte_stream = ByteStream(data=invalid_utf8_bytes)
++        
++        with pytest.raises(UnicodeDecodeError):
++            byte_stream.to_string(encoding="utf-8")
++    
++    def test_to_string_empty_stream(self):
++        """Test conversion of empty ByteStream"""
++        byte_stream = ByteStream(data=b"")
++        result = byte_stream.to_string()
++        assert result == ""
++    
++    def test_to_string_preserves_metadata_independence(self):
++        """Test that metadata is not included in string conversion"""
++        byte_stream = ByteStream.from_string("test")
++        byte_stream.meta["key"] = "value"
++        
++        result = byte_stream.to_string()
++        assert result == "test"
++        # Verify metadata is preserved but not included in string
++        assert byte_stream.meta["key"] == "value"
++    
++    def test_symmetry_with_from_string(self):
++        """Test that to_string and from_string are symmetric operations"""
++        test_strings = ["simple", "unicode: 🚀", "multiline\ntext", "special chars: !@#$%^&*()"]
++        for text in test_strings:
++            byte_stream = ByteStream.from_string(text)
++            assert byte_stream.to_string() == text

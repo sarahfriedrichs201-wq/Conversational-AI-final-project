@@ -1,0 +1,311 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -1,6 +1,13 @@
+ # Copyright (c) Microsoft Corporation and Fairlearn contributors.
+ # Licensed under the MIT License.
+ 
++from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
++
+ import pandas as pd
+ 
++from fairlearn.metrics._annotated_metric_function import AnnotatedMetricFunction
++
++if TYPE_CHECKING:
++    pass  # The actual AnnotatedMetricFunction is imported above
++
++MetricFunctionDict = Dict[str, AnnotatedMetricFunction]
+ 
+ class DisaggregatedResult:
+     """Object to hold the results of disaggregated metric computations.
+@@ -29,31 +36,78 @@
+         self.by_group = by_group
+ 
+     @classmethod
+-    def create(cls, data, annotated_functions, grouping_names):
+-        overall_results = {}
+-        for metric_name, func in annotated_functions.items():
+-            overall_results[metric_name] = func.metric_function(data)
+-        overall_results = pd.Series(overall_results)
+-
+-        by_group_results = None
+-        if grouping_names:
+-            by_group_results_list = []
+-            for metric_name, func in annotated_functions.items():
+-                by_group_result_series = data.groupby(grouping_names).apply(
+-                    lambda group_df: func.metric_function(group_df)
+-                )
+-                by_group_result_series.name = metric_name
+-                by_group_results_list.append(by_group_result_series)
+-            by_group_results = pd.concat(by_group_results_list, axis=1)
+-
+-        return cls(overall=overall_results, by_group=by_group_results)
++    def create(
++        cls,
++        data: pd.DataFrame,
++        annotated_functions: MetricFunctionDict,
++        grouping_names: Optional[List[str]],
++    ) -> "DisaggregatedResult":
++        """Factory method to create a DisaggregatedResult instance.
++
++        Parameters
++        ----------
++        data : pd.DataFrame
++            The input data on which the metric functions will be applied.
++        annotated_functions : dict[str, AnnotatedMetricFunction]
++            A dictionary where keys are metric names and values are the corresponding annotated metric
++            functions.
++        grouping_names : list[str] | None
++            A list of column names to group by before applying the metric functions. If None,
++            only overall results are computed.
++
++        Returns
++        -------
++        DisaggregatedResult
++            An instance of DisaggregatedResult containing overall and (optionally) by-group results.
++        """
++        overall_results = cls._apply_functions(
++            data=data,
++            annotated_functions=annotated_functions,
++            grouping_names=None,
++        )
++
++        by_group_results = None
++        if grouping_names:
++            by_group_results = cls._apply_functions(
++                data=data,
++                annotated_functions=annotated_functions,
++                grouping_names=grouping_names,
++            )
++
++        return cls(overall=overall_results, by_group=by_group_results)
++
++    @staticmethod
++    def _apply_functions(
++        *,
++        data: pd.DataFrame,
++        annotated_functions: MetricFunctionDict,
++        grouping_names: Optional[List[str]],
++    ) -> Union[pd.Series, pd.DataFrame]:
++        """Apply annotated metric functions to a DataFrame, optionally grouping by specified columns.
++
++        Parameters
++        ----------
++        data : pd.DataFrame
++            The input data on which the metric functions will be applied.
++        annotated_functions : dict[str, AnnotatedMetricFunction]
++            A dictionary where keys are metric names and values are the corresponding annotated metric
++            functions. Each AnnotatedMetricFunction is expected to have a `metric_function` attribute
++            that is a callable taking a pd.DataFrame and returning a scalar or Series.
++        grouping_names : list[str] | None
++            A list of column names to group by before applying the metric functions. If None, the
++            functions are applied to the entire DataFrame.
++
++        Returns
++        -------
++        Series or DataFrame
++            A Series with the results of the metric functions applied if `grouping_names` is None.
++            A DataFrame with the results if `grouping_names` is provided, where the index
++            represents the groups and columns represent the metrics.
++        """
++        if not annotated_functions:
++            if grouping_names:
++                return pd.DataFrame(index=data.groupby(grouping_names).size().index)
++            else:
++                return pd.Series(dtype=object)
++
++        if grouping_names is None:
++            results = {
++                metric_name: func.metric_function(data)
++                for metric_name, func in annotated_functions.items()
++            }
++            return pd.Series(results)
++        else:
++            grouped_results_list = []
++            for metric_name, annotated_func in annotated_functions.items():
++                group_result_series = data.groupby(grouping_names).apply(
++                    lambda group_df: annotated_func.metric_function(group_df)
++                )
++                group_result_series.name = metric_name
++                grouped_results_list.append(group_result_series)
++
++            return pd.concat(grouped_results_list, axis=1)
+diff --git a/fairlearn/metrics/tests/test_disaggregated_result.py b/fairlearn/metrics/tests/test_disaggregated_result.py
+--- a/fairlearn/metrics/tests/test_disaggregated_result.py
++++ b/fairlearn/metrics/tests/test_disaggregated_result.py
+@@ -1,6 +1,8 @@
+ # Copyright (c) Microsoft Corporation and Fairlearn contributors.
+ # Licensed under the MIT License.
+ 
++import pandas as pd
++import pytest
+ from sklearn.metrics import accuracy_score, recall_score
+ 
+ from fairlearn.metrics._disaggregated_result import DisaggregatedResult
+@@ -107,3 +109,127 @@
+         assert result.by_group.index.names == ["A", "B"]
+         assert result.by_group.columns.tolist() == ["accuracy", "recall"]
+         assert result.by_group.shape == (4, 2)
++
++
++# Define a simple mock AnnotatedMetricFunction for testing
++class MockAnnotatedMetricFunction:
++    def __init__(self, name, func):
++        self.name = name
++        self.metric_function = func
++
++    def __repr__(self):
++        return f"MockAnnotatedMetricFunction(name='{self.name}')"
++
++
++# Sample data for tests
++@pytest.fixture
++def sample_data():
++    return pd.DataFrame({
++        'A': [1, 2, 3, 4, 5, 6],
++        'B': [10, 20, 30, 40, 50, 60],
++        'sensitive_feature_1': ['X', 'Y', 'X', 'Y', 'X', 'Y'],
++        'sensitive_feature_2': [0, 1, 1, 0, 0, 1]
++    })
++
++
++# Sample metric functions
++def mean_A(df):
++    return df['A'].mean()
++
++
++def sum_B(df):
++    return df['B'].sum()
++
++
++def count_rows(df):
++    return len(df)
++
++
++@pytest.fixture
++def mock_annotated_functions():
++    return {
++        'mean_A': MockAnnotatedMetricFunction('mean_A', mean_A),
++        'sum_B': MockAnnotatedMetricFunction('sum_B', sum_B),
++        'count_rows': MockAnnotatedMetricFunction('count_rows', count_rows)
++    }
++
++
++class TestDisaggregatedResultRefactor:
++
++    def test_apply_functions_no_grouping(self, sample_data, mock_annotated_functions):
++        results = DisaggregatedResult._apply_functions(
++            data=sample_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=None
++        )
++        expected_results = pd.Series({
++            'mean_A': sample_data['A'].mean(),
++            'sum_B': sample_data['B'].sum(),
++            'count_rows': len(sample_data)
++        })
++        pd.testing.assert_series_equal(results, expected_results)
++
++    def test_apply_functions_single_grouping(self, sample_data, mock_annotated_functions):
++        results = DisaggregatedResult._apply_functions(
++            data=sample_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=['sensitive_feature_1']
++        )
++        expected_results = pd.DataFrame({
++            'mean_A': [sample_data[sample_data['sensitive_feature_1'] == 'X']['A'].mean(),
++                       sample_data[sample_data['sensitive_feature_1'] == 'Y']['A'].mean()],
++            'sum_B': [sample_data[sample_data['sensitive_feature_1'] == 'X']['B'].sum(),
++                      sample_data[sample_data['sensitive_feature_1'] == 'Y']['B'].sum()],
++            'count_rows': [len(sample_data[sample_data['sensitive_feature_1'] == 'X']),
++                           len(sample_data[sample_data['sensitive_feature_1'] == 'Y'])]
++        }, index=pd.Index(['X', 'Y'], name='sensitive_feature_1'))
++        pd.testing.assert_frame_equal(results, expected_results)
++
++    def test_apply_functions_multiple_grouping(self, sample_data, mock_annotated_functions):
++        results = DisaggregatedResult._apply_functions(
++            data=sample_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=['sensitive_feature_1', 'sensitive_feature_2']
++        )
++
++        expected_data = {
++            ('X', 0): {'mean_A': 3.0, 'sum_B': 60.0, 'count_rows': 2},
++            ('X', 1): {'mean_A': 3.0, 'sum_B': 30.0, 'count_rows': 1},
++            ('Y', 0): {'mean_A': 4.0, 'sum_B': 40.0, 'count_rows': 1},
++            ('Y', 1): {'mean_A': 4.0, 'sum_B': 80.0, 'count_rows': 2},
++        }
++        expected_index = pd.MultiIndex.from_tuples([('X', 0), ('X', 1), ('Y', 0), ('Y', 1)],
++                                                   names=['sensitive_feature_1', 'sensitive_feature_2'])
++        expected_results = pd.DataFrame.from_dict(expected_data, orient='index')
++        expected_results.index = expected_index
++        expected_results = expected_results.sort_index()
++        results = results.sort_index()
++
++        pd.testing.assert_frame_equal(results, expected_results)
++
++    def test_create_no_grouping(self, sample_data, mock_annotated_functions):
++        result_obj = DisaggregatedResult.create(
++            data=sample_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=None
++        )
++
++        expected_overall = pd.Series({
++            'mean_A': sample_data['A'].mean(),
++            'sum_B': sample_data['B'].sum(),
++            'count_rows': len(sample_data)
++        })
++        pd.testing.assert_series_equal(result_obj.overall, expected_overall)
++        assert result_obj.by_group is None
++
++    def test_create_with_grouping(self, sample_data, mock_annotated_functions):
++        grouping_cols = ['sensitive_feature_1']
++        result_obj = DisaggregatedResult.create(
++            data=sample_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=grouping_cols
++        )
++
++        expected_overall = DisaggregatedResult._apply_functions(data=sample_data, annotated_functions=mock_annotated_functions, grouping_names=None)
++        expected_by_group = DisaggregatedResult._apply_functions(data=sample_data, annotated_functions=mock_annotated_functions, grouping_names=grouping_cols)
++
++        pd.testing.assert_series_equal(result_obj.overall, expected_overall)
++        pd.testing.assert_frame_equal(result_obj.by_group, expected_by_group)
++
++    def test_apply_functions_empty_data(self, mock_annotated_functions):
++        empty_data = pd.DataFrame(columns=['A', 'B', 'sensitive_feature_1'])
++
++        results_no_group = DisaggregatedResult._apply_functions(
++            data=empty_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=None
++        )
++        expected_no_group = pd.Series({'mean_A': float('nan'), 'sum_B': 0.0, 'count_rows': 0})
++        pd.testing.assert_series_equal(results_no_group, expected_no_group, check_dtype=False)
++
++        results_with_group = DisaggregatedResult._apply_functions(
++            data=empty_data,
++            annotated_functions=mock_annotated_functions,
++            grouping_names=['sensitive_feature_1']
++        )
++        expected_with_group = pd.DataFrame(columns=['mean_A', 'sum_B', 'count_rows'],
++                                           index=pd.Index([], name='sensitive_feature_1'))
++        pd.testing.assert_frame_equal(results_with_group, expected_with_group, check_dtype=False)
++
++    def test_apply_functions_empty_annotated_functions(self, sample_data):
++        results_no_group = DisaggregatedResult._apply_functions(
++            data=sample_data,
++            annotated_functions={},
++            grouping_names=None
++        )
++        pd.testing.assert_series_equal(results_no_group, pd.Series(dtype=object))
++
++        results_with_group = DisaggregatedResult._apply_functions(
++            data=sample_data,
++            annotated_functions={},
++            grouping_names=['sensitive_feature_1']
++        )
++        expected_index = pd.Index(['X', 'Y'], name='sensitive_feature_1')
++        expected_df = pd.DataFrame(index=expected_index)
++        pd.testing.assert_frame_equal(results_with_group, expected_df)

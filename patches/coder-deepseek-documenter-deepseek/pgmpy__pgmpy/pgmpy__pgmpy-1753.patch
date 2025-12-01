@@ -1,0 +1,238 @@
+diff --git a/pgmpy/utils/utils.py b/pgmpy/utils/utils.py
+--- a/pgmpy/utils/utils.py
++++ b/pgmpy/utils/utils.py
+@@ -1,3 +1,4 @@
++import pandas as pd
+ import itertools
+ import math
+ import warnings
+@@ -5,6 +6,7 @@
+ from collections import defaultdict
+ from functools import reduce
+ from itertools import combinations, chain
++from typing import Dict, List, Union, Optional
+ 
+ import numpy as np
+ import pandas as pd
+@@ -12,6 +14,7 @@
+ from scipy.special import factorial
+ 
+ from pgmpy.extern import six
++from pgmpy.extern import tabulate
+ from pgmpy.global_vars import HAS_PANDAS
+ from pgmpy.models import BayesianModel, MarkovModel
+ 
+@@ -1036,3 +1039,96 @@
+         return sampled_df
+ 
+     return sample
++
++
++def discretize(data, cardinality, labels=dict(), method="rounding"):
++    """
++    Discretizes a given continuous dataset.
++
++    Parameters
++    ----------
++    data : pandas.DataFrame
++        The dataset to discretize. All columns must have continuous values.
++    
++    cardinality : dict
++        A dictionary of the form (str: int) representing the number of bins
++        to create for each of the variables.
++    
++    labels : dict (default: {})
++        A dictionary of the form (str: list) representing the label names for
++        each variable in the discretized dataframe.
++    
++    method : str (default: "rounding")
++        If "rounding", equal width bins are created and data is discretized into these bins.
++        If "quantile", creates bins such that each bin has an equal number of datapoints.
++
++    Returns
++    -------
++    pandas.DataFrame
++        A discretized dataframe.
++
++    Examples
++    --------
++    >>> import numpy as np
++    >>> import pandas as pd
++    >>> from pgmpy.utils import discretize
++    >>> rng = np.random.default_rng(42)
++    >>> X = rng.standard_normal(1000)
++    >>> Y = 0.2 * X + rng.standard_normal(1000)
++    >>> Z = 0.4 * X + 0.5 * Y + rng.standard_normal(1000)
++    >>> df = pd.DataFrame({"X": X, "Y": Y, "Z": Z})
++    >>> df_disc = discretize(df, cardinality={'X': 3, 'Y': 3, 'Z': 3},
++    ...                      labels={'X': ['low', 'mid', 'high'],
++    ...                              'Y': ['low', 'mid', 'high'],
++    ...                              'Z': ['low', 'mid', 'high']})
++    >>> df_disc.head()
++         X    Y    Z
++    0   mid  mid  mid
++    1   mid  mid  low
++    2   mid  mid  mid
++    3  high  mid  mid
++    4   low  mid  low
++    """
++    # Input validation
++    if not isinstance(data, pd.DataFrame):
++        raise TypeError("data must be a pandas DataFrame")
++    
++    if not isinstance(cardinality, dict):
++        raise TypeError("cardinality must be a dictionary")
++    
++    if not isinstance(labels, dict):
++        raise TypeError("labels must be a dictionary")
++    
++    if method not in ["rounding", "quantile"]:
++        raise ValueError("method must be either 'rounding' or 'quantile'")
++    
++    # Check if all variables in cardinality exist in data
++    missing_vars = set(cardinality.keys()) - set(data.columns)
++    if missing_vars:
++        raise ValueError(f"Variables {missing_vars} in cardinality not found in data")
++    
++    # Check if all variables in labels exist in data
++    missing_label_vars = set(labels.keys()) - set(data.columns)
++    if missing_label_vars:
++        raise ValueError(f"Variables {missing_label_vars} in labels not found in data")
++    
++    # Create a copy of the data to avoid modifying the original
++    discretized_data = data.copy()
++    
++    for var in cardinality.keys():
++        n_bins = cardinality[var]
++        
++        # Get custom labels if provided, otherwise use default integer labels
++        custom_labels = labels.get(var, None)
++        
++        if method == "rounding":
++            # Equal width bins using pandas.cut
++            discretized_data[var] = pd.cut(
++                data[var], 
++                bins=n_bins, 
++                labels=custom_labels,
++                include_lowest=True
++            )
++        elif method == "quantile":
++            # Equal frequency bins using pandas.qcut
++            discretized_data[var] = pd.qcut(
++                data[var], 
++                q=n_bins, 
++                labels=custom_labels,
++                duplicates='drop'  # Handle cases where quantiles are not unique
++            )
++    
++    return discretized_data
+diff --git a/tests/test_utils/test_utils.py b/tests/test_utils/test_utils.py
+--- a/tests/test_utils/test_utils.py
++++ b/tests/test_utils/test_utils.py
+@@ -1,6 +1,7 @@
+ import itertools
+ import math
+ import unittest
++import pytest
+ 
+ import numpy as np
+ import pandas as pd
+@@ -8,6 +9,7 @@
+ from pgmpy.factors.discrete import TabularCPD
+ from pgmpy.models import BayesianModel
+ from pgmpy.utils import (
++    discretize,
+     get_example_model,
+     sample_discrete,
+     cartesian,
+@@ -19,6 +21,7 @@
+     get_random,
+     _check_1d_array_object,
+     _check_length_equal,
++    _check_instance,
+ )
+ from pgmpy.extern.six.moves import range, zip
+ 
+@@ -405,3 +408,69 @@
+         self.assertRaises(TypeError, _check_length_equal, [1, 2, 3], [1, 2])
+         self.assertRaises(TypeError, _check_length_equal, [1, 2, 3], [1, 2, 3, 4])
+         self.assertRaises(TypeError, _check_length_equal, [1, 2, 3], [1, 2, 3])
++
++
++class TestDiscretize(unittest.TestCase):
++    def test_discretize_rounding_method(self):
++        """Test discretization with rounding method"""
++        rng = np.random.default_rng(42)
++        data = pd.DataFrame({
++            'X': rng.standard_normal(100),
++            'Y': rng.standard_normal(100)
++        })
++        
++        result = discretize(data, cardinality={'X': 3, 'Y': 2}, method="rounding")
++        
++        assert isinstance(result, pd.DataFrame)
++        assert len(result['X'].unique()) <= 3
++        assert len(result['Y'].unique()) <= 2
++    
++    def test_discretize_quantile_method(self):
++        """Test discretization with quantile method"""
++        data = pd.DataFrame({
++            'X': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
++            'Y': [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
++        })
++        
++        result = discretize(data, cardinality={'X': 2, 'Y': 2}, method="quantile")
++        
++        # Should have equal number of points in each bin
++        assert (result['X'].value_counts() == 5).all()
++    
++    def test_discretize_with_labels(self):
++        """Test discretization with custom labels"""
++        data = pd.DataFrame({'X': [1, 2, 3, 4, 5]})
++        
++        result = discretize(
++            data, 
++            cardinality={'X': 3}, 
++            labels={'X': ['low', 'mid', 'high']},
++            method="rounding"
++        )
++        
++        assert set(result['X'].unique()) <= {'low', 'mid', 'high'}
++    
++    def test_input_validation(self):
++        """Test input validation errors"""
++        data = pd.DataFrame({'X': [1, 2, 3]})
++        
++        # Test invalid data type
++        with self.assertRaises(TypeError):
++            discretize("not_a_dataframe", cardinality={'X': 2})
++        
++        # Test invalid cardinality type
++        with self.assertRaises(TypeError):
++            discretize(data, cardinality="not_a_dict")
++        
++        # Test invalid labels type
++        with self.assertRaises(TypeError):
++            discretize(data, cardinality={'X': 2}, labels="not_a_dict")
++        
++        # Test invalid method
++        with self.assertRaises(ValueError):
++            discretize(data, cardinality={'X': 2}, method="invalid_method")
++        
++        # Test missing variable
++        with self.assertRaises(ValueError):
++            discretize(data, cardinality={'Y': 2})
++
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Change Log
+ 
++### Added
++1. Adds a simple discretization method: `pgmpy.utils.discretize`.
++
++
+ ## 0.1.xx (Development)
+ 
+ ### Added

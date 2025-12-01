@@ -1,0 +1,197 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -625,3 +625,33 @@
+         if self.protocol == "hf":
+             return f"hf://{repo_id}/{path_in_repo}"
+         return f"{repo_id}/{path_in_repo}"
++
++    def url(self, path: str) -> str:
++        """
++        Get the HTTP URL of the given path.
++
++        Args:
++            path (`str`):
++                Path to the file on the Hugging Face Hub. Can be an absolute path
++                (e.g., "hf://datasets/org/repo/path/to/file.txt") or a path
++                relative to the filesystem's `repo_id` (e.g., "path/to/file.txt"
++                if the filesystem was initialized with `repo_id="org/repo"`).
++
++        Returns:
++            `str`: The HTTP URL for the file.
++
++        Raises:
++            `ValueError`: If the path corresponds to a directory (as `hf_hub_url`
++                          is designed for files).
++        """
++        repo_id, path_in_repo = self._get_repo_and_path(path)
++
++        if not path_in_repo:
++            raise ValueError(f"Cannot get URL for a directory path: '{path}'. "
++                             "The `url` method is intended for files.")
++
++        return hf_hub_url(
++            repo_id=repo_id,
++            filename=path_in_repo,
++            repo_type=self.repo_type,
++            revision=self.revision,
++            endpoint=self.endpoint,
++        )
++
++
+ class HfFileSystemFile(AbstractBufferedFile):
+     """
+     File handler for Hugging Face Hub files.
+@@ -698,3 +728,12 @@
+         if self.mode == "rb":
+             return self._init_cache_entry()
+         return None
++
++    def url(self) -> str:
++        """
++        Get the HTTP URL of this file.
++
++        Returns:
++            `str`: The HTTP URL for the file.
++        """
++        return self.fs.url(self.path)
++
++
+ class HfFileSystemStreamFile(AbstractBufferedFile):
+     """
+     File handler for Hugging Face Hub files opened in stream mode.
+@@ -741,3 +780,12 @@
+         if self.mode == "rb":
+             return self._init_cache_entry()
+         return None
++
++    def url(self) -> str:
++        """
++        Get the HTTP URL of this file.
++
++        Returns:
++            `str`: The HTTP URL for the file.
++        """
++        return self.fs.url(self.path)
+diff --git a/tests/test_hf_file_system.py b/tests/test_hf_file_system.py
+--- a/tests/test_hf_file_system.py
++++ b/tests/test_hf_file_system.py
+@@ -1,6 +1,6 @@
+ import os
+ import stat
+-from unittest import mock
++from unittest import mock # Keep this line as is
+ 
+ import pytest
+ 
+@@ -10,6 +10,7 @@
+     HfHubHTTPError,
+     LocalEntryNotFoundError,
+     RepositoryNotFoundError,
++    hf_hub_url,
+     is_windows,
+ )
+ from huggingface_hub.utils._errors import RevisionNotFoundError
+@@ -1004,3 +1005,90 @@
+     assert fs.info(f"hf://{repo_id}/.gitattributes")["size"] == 12
+     assert fs.info(f"hf://{repo_id}/.gitattributes")["type"] == "file"
+     assert fs.info(f"hf://{repo_id}/.gitattributes")["name"] == f"hf://{repo_id}/.gitattributes"
++
++
++#
++# Tests for `url` method
++#
++
++TEST_REPO_ID = "hf-internal-testing/tiny-random-private"
++TEST_FILE_PATH = "config.json"
++TEST_DATASET_REPO_ID = "hf-internal-testing/librispeech_asr_dummy"
++TEST_DATASET_FILE_PATH = "dummy_data/share.json"
++TEST_REVISION = "main"
++
++
++def test_hf_file_system_url_basic():
++    fs = HfFileSystem()
++    expected_url = hf_hub_url(
++        repo_id=TEST_REPO_ID,
++        filename=TEST_FILE_PATH,
++        repo_type="model",
++        revision=TEST_REVISION,
++        endpoint=fs.endpoint,
++    )
++    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
++    assert fs.url(f"{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
++
++
++def test_hf_file_system_url_with_repo_id_init():
++    fs = HfFileSystem(repo_id=TEST_REPO_ID)
++    expected_url = hf_hub_url(
++        repo_id=TEST_REPO_ID,
++        filename=TEST_FILE_PATH,
++        repo_type="model",
++        revision=TEST_REVISION,
++        endpoint=fs.endpoint,
++    )
++    assert fs.url(TEST_FILE_PATH) == expected_url
++    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
++
++
++def test_hf_file_system_url_dataset_type():
++    fs = HfFileSystem(repo_type="dataset")
++    expected_url = hf_hub_url(
++        repo_id=TEST_DATASET_REPO_ID,
++        filename=TEST_DATASET_FILE_PATH,
++        repo_type="dataset",
++        revision=TEST_REVISION,
++        endpoint=fs.endpoint,
++    )
++    assert fs.url(f"hf://datasets/{TEST_DATASET_REPO_ID}/{TEST_DATASET_FILE_PATH}") == expected_url
++
++
++def test_hf_file_system_url_specific_revision():
++    test_revision = "main"
++    fs = HfFileSystem(revision=test_revision)
++    expected_url = hf_hub_url(
++        repo_id=TEST_REPO_ID,
++        filename=TEST_FILE_PATH,
++        repo_type="model",
++        revision=test_revision,
++        endpoint=fs.endpoint,
++    )
++    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
++
++
++def test_hf_file_system_url_custom_endpoint():
++    custom_endpoint = "https://custom.huggingface.co"
++    fs = HfFileSystem(endpoint=custom_endpoint)
++    expected_url = hf_hub_url(
++        repo_id=TEST_REPO_ID,
++        filename=TEST_FILE_PATH,
++        repo_type="model",
++        revision=TEST_REVISION,
++        endpoint=custom_endpoint,
++    )
++    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
++
++
++def test_hf_file_system_url_directory_path_raises_error():
++    fs = HfFileSystem()
++    with pytest.raises(ValueError, match="Cannot get URL for a directory path"):
++        fs.url(f"hf://{TEST_REPO_ID}")
++    with pytest.raises(ValueError, match="Cannot get URL for a directory path"):
++        fs.url(f"hf://{TEST_REPO_ID}/src")
++
++
++def test_hf_file_system_file_url():
++    fs = HfFileSystem()
++    file_path = f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}"
++    with fs.open(file_path, "rb") as f:
++        expected_url = fs.url(file_path)
++        assert f.url() == expected_url
++
++
++def test_hf_file_system_stream_file_url():
++    fs = HfFileSystem()
++    file_path = f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}"
++    with fs.open(file_path, "rb") as f:
++        expected_url = fs.url(file_path)
++        assert f.url() == expected_url

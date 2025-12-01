@@ -1,0 +1,59 @@
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -1,6 +1,8 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
+ import inspect
+ import warnings
++import functools
++from typing import Callable
+ 
+ 
+ def deprecated_api_warning(name_dict, cls_name=None):
+@@ -56,3 +58,46 @@ def deprecated_api_warning(name_dict, cls_name=None):
+         warnings.simplefilter('always', DeprecationWarning)
+         warnings.warn(msg, category=DeprecationWarning, stacklevel=stacklevel)
+         warnings.simplefilter('default', DeprecationWarning)
++
++
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A decorator which will add a deprecation warning to the
++            function.
++    """
++
++    def decorator(function):
++        """Inner decorator for deprecated function."""
++
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            """Wrapper that emits deprecation warning."""
++            warnings.simplefilter('always', DeprecationWarning)
++            warnings.warn(
++                f'Function `{function.__module__}.{function.__name__}` is '
++                f'deprecated since version {since} and will be removed in '
++                f'version {removed_in}. Please {instructions}.',
++                category=DeprecationWarning,
++                stacklevel=2)
++            warnings.simplefilter('default', DeprecationWarning)
++            return function(*args, **kwargs)
++
++        # Add deprecation note to docstring
++        docstring = function.__doc__ or ''
++        wrapper.__doc__ = (
++            f'.. deprecated:: {since}\n'
++            f'    Function `{function.__module__}.{function.__name__}` will '
++            f'be removed in version {removed_in}. Please {instructions}.\n\n'
++            f'{docstring}')
++        return wrapper
++    return decorator

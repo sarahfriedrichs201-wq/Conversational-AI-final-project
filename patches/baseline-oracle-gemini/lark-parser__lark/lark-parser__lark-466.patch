@@ -1,0 +1,98 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -10,6 +10,16 @@
+         for subtree in tree.iter_subtrees():
+             self._visit_tree(subtree)
+         return self._visit_tree(tree)
++
++    def visit_topdown(self, tree):
++        # Use a stack for iterative pre-order traversal
++        stack = [tree]
++        while stack:
++            current_tree = stack.pop()
++            self._visit_tree(current_tree)
++            # Push children in reverse order to maintain left-to-right processing
++            for child in reversed(current_tree.children):
++                if isinstance(child, Tree):
++                    stack.append(child)
+ 
+     def _visit_tree(self, tree):
+         f = getattr(self, tree.data, self.__default__)
+@@ -27,6 +37,12 @@
+             if isinstance(child, Tree):
+                 self.visit(child)
+         return self._visit_tree(tree)
++
++    def visit_topdown(self, tree):
++        self._visit_tree(tree)
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
+ 
+     def _visit_tree(self, tree):
+         f = getattr(self, tree.data, self.__default__)
+diff --git a/tests/test_trees.py b/tests/test_trees.py
+--- a/tests/test_trees.py
++++ b/tests/test_trees.py
+@@ -2,6 +2,7 @@
+ import sys
+ 
+ from lark.tree import Tree, Token
++from lark.visitors import Visitor, Visitor_Recursive
+ 
+ 
+ class TestTree(unittest.TestCase):
+@@ -31,3 +32,50 @@
+         self.assertEqual(t.pretty(), 'start\n  a\n  b\n')
+         self.assertEqual(t.children, [Tree('a', []), Tree('b', [])])
+ 
++
++class TestVisitors(unittest.TestCase):
++    def setUp(self):
++        self.tree = Tree("a", [
++            Tree("b", [
++                Tree("c", []),
++                Tree("d", [])
++            ]),
++            Tree("e", [
++                Tree("f", []),
++                Tree("g", [])
++            ])
++        ])
++
++    def test_visitor_topdown(self):
++        visited_order = []
++        class MyVisitor(Visitor):
++            def __default__(self, tree):
++                visited_order.append(tree.data)
++
++        MyVisitor().visit_topdown(self.tree)
++        self.assertEqual(visited_order, ["a", "b", "c", "d", "e", "f", "g"])
++
++    def test_visitor_recursive_topdown(self):
++        visited_order = []
++        class MyRecursiveVisitor(Visitor_Recursive):
++            def __default__(self, tree):
++                visited_order.append(tree.data)
++
++        MyRecursiveVisitor().visit_topdown(self.tree)
++        self.assertEqual(visited_order, ["a", "b", "c", "d", "e", "f", "g"])
++
++    def test_visitor_bottomup(self):
++        visited_order = []
++        class MyVisitor(Visitor):
++            def __default__(self, tree):
++                visited_order.append(tree.data)
++
++        MyVisitor().visit(self.tree)
++        self.assertEqual(visited_order, ["c", "d", "b", "f", "g", "e", "a"])
++
++    def test_visitor_recursive_bottomup(self):
++        visited_order = []
++        class MyRecursiveVisitor(Visitor_Recursive):
++            def __default__(self, tree):
++                visited_order.append(tree.data)
++
++        MyRecursiveVisitor().visit(self.tree)
++        self.assertEqual(visited_order, ["c", "d", "b", "f", "g", "e", "a"])

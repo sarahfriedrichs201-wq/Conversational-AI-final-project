@@ -1,0 +1,114 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -1,4 +1,5 @@
+ import inspect
++from collections import deque
+ 
+ from lark.exceptions import VisitError
+ from lark.utils import get_regexp_width, logger
+@@ -88,6 +89,17 @@
+         """
+         return self._call_userfunc(tree)
+ 
++    def visit_topdown(self, tree):
++        """Visit the tree from top to bottom.
++
++        Parameters:
++            tree: An instance of Tree.
++        """
++        for subtree in tree.iter_subtrees_topdown():
++            f = getattr(self, subtree.data, self.__default__)
++            f(subtree)
++        return tree
++
+ 
+ class Visitor_Recursive(Visitor):
+     """Bottom-up visitor, recursive.
+@@ -103,6 +115,17 @@
+         """
+         return self._call_userfunc(tree)
+ 
++    def visit_topdown(self, tree):
++        """Visit the tree from top to bottom, recursively.
++
++        Parameters:
++            tree: An instance of Tree.
++        """
++        f = getattr(self, tree.data, self.__default__)
++        f(tree)
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
++        return tree
+ 
+ class Interpreter:
+     """Interpreter walks the tree starting at the root.
+diff --git a/tests/test_trees.py b/tests/test_trees.py
+--- a/tests/test_trees.py
++++ b/tests/test_trees.py
+@@ -1,5 +1,6 @@
+ from lark import Tree
+ from lark.visitors import Visitor, Visitor_Recursive
++from lark.visitors import Interpreter
+ 
+ 
+ def test_visitor():
+@@ -31,6 +32,56 @@
+     assert v.visit(tree) == ['c', 'd', 'b', 'f', 'g', 'e', 'a']
+ 
+ 
++def test_visitor_topdown():
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", []),
++            Tree("d", [])
++        ]),
++        Tree("e", [
++            Tree("f", []),
++            Tree("g", [])
++        ])
++    ])
++
++    class TestVisitor(Visitor):
++        def __init__(self):
++            self.result = []
++
++        def __default__(self, tree):
++            self.result.append(tree.data)
++
++    v = TestVisitor()
++    v.visit_topdown(tree)
++    assert v.result == ['a', 'b', 'c', 'd', 'e', 'f', 'g']
++
++
++def test_visitor_recursive_topdown():
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", []),
++            Tree("d", [])
++        ]),
++        Tree("e", [
++            Tree("f", []),
++            Tree("g", [])
++        ])
++    ])
++
++    class TestVisitorRecursive(Visitor_Recursive):
++        def __init__(self):
++            self.result = []
++
++        def __default__(self, tree):
++            self.result.append(tree.data)
++
++    v = TestVisitorRecursive()
++    v.visit_topdown(tree)
++    assert v.result == ['a', 'b', 'c', 'd', 'e', 'f', 'g']
++
++    v.result = []
++    v.visit(tree)
++    assert v.result == ['c', 'd', 'b', 'f', 'g', 'e', 'a']
++
+ def test_interpreter():
+     tree = Tree("a", [
+         Tree("b", [

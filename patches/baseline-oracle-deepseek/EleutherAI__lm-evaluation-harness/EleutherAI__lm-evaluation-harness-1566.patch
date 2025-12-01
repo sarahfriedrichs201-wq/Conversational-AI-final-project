@@ -1,0 +1,137 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,4 +1,5 @@
+ import argparse
++import inspect
+ import json
+ import logging
+ import os
+@@ -8,6 +9,25 @@
+ from lm_eval import evaluator, utils
+ 
+ 
++def check_argument_types(parser: argparse.ArgumentParser):
++    """
++    Check to make sure all CLI args are typed, raises error if not
++    """
++    for action in parser._actions:
++        if action.dest != "help" and action.type is None:
++            raise TypeError(f"Argument '{action.dest}' is missing type annotation")
++
++
++def setup_parser() -> argparse.ArgumentParser:
++    """
++    Set up the argument parser for CLI evaluation
++    """
++    parser = argparse.ArgumentParser(
++        formatter_class=argparse.RawTextHelpFormatter,
++        description="Language Model Evaluation Harness",
++    )
++    return parser
++
+ def parse_eval_args() -> argparse.Namespace:
+     """
+     Parse and validate command line arguments for the evaluation harness.
+@@ -15,9 +35,7 @@ def parse_eval_args() -> argparse.Namespace:
+     Returns:
+         argparse.Namespace: Parsed command line arguments.
+     """
+-    parser = argparse.ArgumentParser(
+-        formatter_class=argparse.RawTextHelpFormatter,
+-        description="Language Model Evaluation Harness",
+-    )
++    parser = setup_parser()
+ 
+     # Model arguments
+     parser.add_argument(
+@@ -25,6 +43,7 @@ def parse_eval_args() -> argparse.Namespace:
+         type=str,
+         help="Name of model to use. For HF models, this can be the model name or path.",
+     )
++    check_argument_types(parser)
+     return parser.parse_args()
+ 
+ 
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -0,0 +1,42 @@
++import argparse
++import pytest
++from lm_eval.__main__ import setup_parser, check_argument_types
++
++
++class TestCLIArgumentParsing:
++    """Test cases for CLI argument parsing functionality."""
++
++    def test_setup_parser_returns_argument_parser(self):
++        """Test that setup_parser returns an ArgumentParser instance."""
++        parser = setup_parser()
++        assert isinstance(parser, argparse.ArgumentParser)
++
++    def test_parser_has_expected_arguments(self):
++        """Test that the parser has the expected arguments configured."""
++        parser = setup_parser()
++        
++        # Add model argument to test
++        parser.add_argument(
++            "--model",
++            type=str,
++            help="Name of model to use. For HF models, this can be the model name or path.",
++        )
++        
++        # Test that model argument is present and has correct properties
++        assert hasattr(parser, '_actions')
++        model_action = None
++        for action in parser._actions:
++            if action.dest == 'model':
++                model_action = action
++                break
++        
++        assert model_action is not None
++        assert model_action.type == str
++        assert "model" in model_action.help.lower()
++
++    def test_check_argument_types_with_typed_args(self):
++        """Test that check_argument_types passes when all args have types."""
++        parser = setup_parser()
++        parser.add_argument("--model", type=str, help="Model name")
++        
++        # Should not raise any exception
++        check_argument_types(parser)
+diff --git a/lm_eval/evaluator.py b/lm_eval/evaluator.py
+--- a/lm_eval/evaluator.py
++++ b/lm_eval/evaluator.py
+@@ -1,4 +1,5 @@
+ import collections
++import inspect
+ import itertools
+ import logging
+ import math
+@@ -1039,6 +1040,7 @@ def cli_evaluate(
+     log_samples: bool = True,
+     **kwargs,
+ ) -> None:
++    check_argument_types_internally(model_args, tasks, num_fewshot, **kwargs)
+     """Evaluate a model from command line arguments.
+ 
+     :param model_args: str
+@@ -1098,3 +1100,17 @@ def cli_evaluate(
+         print(json.dumps(results, indent=2))
+     else:
+         print(results)
++
++
++def check_argument_types_internally(model_args: str, tasks: list, num_fewshot: int, **kwargs):
++    """
++    Internal type checking for CLI evaluate function arguments.
++    Raises TypeError if any required argument has incorrect type.
++    """
++    if not isinstance(model_args, str):
++        raise TypeError(f"model_args must be str, got {type(model_args)}")
++    if not isinstance(tasks, list):
++        raise TypeError(f"tasks must be list, got {type(tasks)}")
++    if not isinstance(num_fewshot, int):
++        raise TypeError(f"num_fewshot must be int, got {type(num_fewshot)}")
++    # Additional type checks can be added here as needed

@@ -1,0 +1,408 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -1,4 +1,4 @@
+-# Copyright 2013 by Rackspace Hosting, Inc.
++# Copyright 2013-2017 by Rackspace Hosting, Inc.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+ # you may not use this file except in compliance with the License.
+@@ -14,6 +14,7 @@
+ 
+ import functools
+ import inspect
++import sys
+ 
+ import six
+ 
+@@ -21,6 +22,7 @@
+ from falcon import responders
+ from falcon import routing
+ from falcon import status_codes
++from falcon.util import compat
+ from falcon.util import misc
+ from falcon.util import time
+ from falcon.util import uri
+@@ -28,6 +30,7 @@
+ 
+ DEFAULT_MEDIA_TYPE = 'application/json; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): Python normally defaults to 1000, but some WSGI servers
+ # use a different value. Therefore, we set it explicitly to avoid
+ # any unexpected behavior.
+@@ -35,6 +38,7 @@
+ 
+ _RESPONSE_STATUSES = set(status_codes._CODES.keys())
+ 
++
+ # NOTE(kgriffs): According to RFC 7159, most JSON parsers assume
+ # UTF-8, so that is what we use. RFC 7159 also indicates that
+ # the charset parameter should not be necessary, but some
+@@ -42,6 +46,7 @@
+ # to include it anyway.
+ _MEDIA_JSON = 'application/json; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): According to RFC 7306, when the charset is
+ # omitted, preference is given to the encoding specified in the
+ # document itself (e.g., XML declaration). If the document does
+@@ -50,6 +55,7 @@
+ # to include it anyway.
+ _MEDIA_XML = 'application/xml; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -58,6 +64,7 @@
+ # to include it anyway.
+ _MEDIA_HTML = 'text/html; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -66,6 +73,7 @@
+ # to include it anyway.
+ _MEDIA_JS = 'application/javascript; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -74,6 +82,7 @@
+ # to include it anyway.
+ _MEDIA_TEXT = 'text/plain; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -82,6 +91,7 @@
+ # to include it anyway.
+ _MEDIA_CSV = 'text/csv; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -90,6 +100,7 @@
+ # to include it anyway.
+ _MEDIA_CSS = 'text/css; charset=UTF-8'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -98,6 +109,7 @@
+ # to include it anyway.
+ _MEDIA_PNG = 'image/png'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -106,6 +118,7 @@
+ # to include it anyway.
+ _MEDIA_GIF = 'image/gif'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -114,6 +127,7 @@
+ # to include it anyway.
+ _MEDIA_JPEG = 'image/jpeg'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -122,6 +136,7 @@
+ # to include it anyway.
+ _MEDIA_BMP = 'image/bmp'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -130,6 +145,7 @@
+ # to include it anyway.
+ _MEDIA_WEBM = 'video/webm'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -138,6 +154,7 @@
+ # to include it anyway.
+ _MEDIA_MP4 = 'video/mp4'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -146,6 +163,7 @@
+ # to include it anyway.
+ _MEDIA_MPEG = 'video/mpeg'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -154,6 +172,7 @@
+ # to include it anyway.
+ _MEDIA_OGG = 'video/ogg'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -162,6 +181,7 @@
+ # to include it anyway.
+ _MEDIA_WEBP = 'image/webp'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -170,6 +190,7 @@
+ # to include it anyway.
+ _MEDIA_SVG = 'image/svg+xml'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -178,6 +199,7 @@
+ # to include it anyway.
+ _MEDIA_ICO = 'image/x-icon'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -186,6 +208,7 @@
+ # to include it anyway.
+ _MEDIA_WOFF = 'application/font-woff'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -194,6 +217,7 @@
+ # to include it anyway.
+ _MEDIA_WOFF2 = 'application/font-woff2'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -202,6 +226,7 @@
+ # to include it anyway.
+ _MEDIA_TTF = 'application/font-ttf'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -210,6 +235,7 @@
+ # to include it anyway.
+ _MEDIA_EOT = 'application/vnd.ms-fontobject'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -218,6 +244,7 @@
+ # to include it anyway.
+ _MEDIA_OTF = 'font/opentype'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -226,6 +253,7 @@
+ # to include it anyway.
+ _MEDIA_APP_CAB = 'application/vnd.ms-cab-compressed'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -234,6 +262,7 @@
+ # to include it anyway.
+ _MEDIA_APP_MSI = 'application/x-msdownload'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -242,6 +271,7 @@
+ # to include it anyway.
+ _MEDIA_APP_OCTET = 'application/octet-stream'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -250,6 +280,7 @@
+ # to include it anyway.
+ _MEDIA_APP_PDF = 'application/pdf'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -258,6 +289,7 @@
+ # to include it anyway.
+ _MEDIA_APP_RTF = 'application/rtf'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -266,6 +298,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ZIP = 'application/zip'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -274,6 +307,7 @@
+ # to include it anyway.
+ _MEDIA_APP_GZIP = 'application/gzip'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -282,6 +316,7 @@
+ # to include it anyway.
+ _MEDIA_APP_TAR = 'application/x-tar'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -290,6 +325,7 @@
+ # to include it anyway.
+ _MEDIA_APP_XHTML = 'application/xhtml+xml'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -298,6 +334,7 @@
+ # to include it anyway.
+ _MEDIA_APP_XML = 'application/xml'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -306,6 +343,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ATOM = 'application/atom+xml'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -314,6 +352,7 @@
+ # to include it anyway.
+ _MEDIA_APP_RSS = 'application/rss+xml'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -322,6 +361,7 @@
+ # to include it anyway.
+ _MEDIA_APP_JSON = 'application/json'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -330,6 +370,7 @@
+ # to include it anyway.
+ _MEDIA_APP_YAML = 'application/yaml'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -338,6 +379,7 @@
+ # to include it anyway.
+ _MEDIA_APP_MSWORD = 'application/msword'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -346,6 +388,7 @@
+ # to include it anyway.
+ _MEDIA_APP_EXCEL = 'application/vnd.ms-excel'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -354,6 +397,7 @@
+ # to include it anyway.
+ _MEDIA_APP_PPT = 'application/vnd.ms-powerpoint'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -362,6 +406,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ODT = 'application/vnd.oasis.opendocument.text'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -370,6 +415,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ODS = 'application/vnd.oasis.opendocument.spreadsheet'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -378,6 +424,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ODP = 'application/vnd.oasis.opendocument.presentation'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -386,6 +433,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ODG = 'application/vnd.oasis.opendocument.graphics'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -394,6 +442,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ODC = 'application/vnd.oasis.opendocument.chart'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to
+ # guess the encoding. Since the app may be sending arbitrary
+@@ -402,6 +451,7 @@
+ # to include it anyway.
+ _MEDIA_APP_ODF = 'application/vnd.oasis.opendocument.formula'
+ 
++
+ # NOTE(kgriffs): RFC 2046 says the default for text/* is us-ascii,
+ # but recommends that when omitted, the recipient should try to

@@ -1,0 +1,166 @@
+diff --git a/graphene/types/inputobjecttype.py b/graphene/types/inputobjecttype.py
+--- a/graphene/types/inputobjecttype.py
++++ b/graphene/types/inputobjecttype.py
+@@ -1,11 +1,36 @@
+ from collections import OrderedDict
+ from inspect import isclass
+-
++from typing import Any
++
+ import graphene.types.base
+ from graphene.types.field import Field
+ from graphene.types.unmountedtype import UnmountedType
+ from graphene.utils.subclass_with_meta import SubclassWithMeta_Meta
+ from graphene.utils.str_converters import to_snake_case
++from graphene.types.scalars import Undefined
++
++# Global variable to store the default value for non-specified InputObjectType fields.
++# Initialized to None for backward compatibility.
++_input_object_type_default_value: Any = None
++
++
++def set_input_object_type_default_value(default_value: Any) -> None:
++    """
++    Sets the default value returned for non-specified fields in InputObjectType instances.
++
++    This function allows users to change the sentinel value that will be returned
++    when an optional InputObjectType field is accessed but was not provided in the
++    incoming GraphQL input. By default, this value is `None`, which can be ambiguous
++    if `None` is also a valid explicit input.
++
++    A common use case is to set this to `graphene.types.scalars.Undefined` to
++    differentiate between a field explicitly set to `None` and a field that was
++    not provided at all.
++
++    This function should be called early in the application's lifecycle,
++    before any InputObjectType definitions are processed.
++    """
++    global _input_object_type_default_value
++    _input_object_type_default_value = default_value
+ 
+ 
+ class InputObjectTypeMeta(SubclassWithMeta_Meta):
+@@ -75,9 +100,20 @@
+         super().__init__(*args, **kwargs)
+         self._values = kwargs
+ 
+-    def __getattr__(self, name):
++    def __getattr__(self, name: str) -> Any:
+         if name in self._values:
+             return self._values[name]
+-        return super().__getattr__(name)
++
++        # If it's a defined field but not provided in the input, return the global default
++        if name in self._meta.fields:
++            return _input_object_type_default_value
++
++        raise AttributeError(
++            f"'{self.__class__.__name__}' object has no attribute '{name}'"
++        )
++
++    def __getitem__(self, name: str) -> Any:
++        if name in self._values:
++            return self._values[name]
++        if name in self._meta.fields:
++            return _input_object_type_default_value
++        raise KeyError(f"'{self.__class__.__name__}' object has no key '{name}'")
+diff --git a/graphene/tests/test_inputobjecttype.py b/graphene/tests/test_inputobjecttype.py
+--- a/graphene/tests/test_inputobjecttype.py
++++ b/graphene/tests/test_inputobjecttype.py
+@@ -1,6 +1,9 @@
+ import pytest
+ 
+ import graphene
++from graphene.types.scalars import Undefined
++from graphene.types.inputobjecttype import (
++    set_input_object_type_default_value, _input_object_type_default_value)
+ 
+ 
+ class MyInput(graphene.InputObjectType):
+@@ -108,3 +111,76 @@
+         with pytest.raises(Exception) as excinfo:
+             MyInput(field_a=1)
+         assert "Argument 'field_a' has invalid value" in str(excinfo.value)
++
++
++# Store original default to restore after tests
++_original_input_object_type_default_value = _input_object_type_default_value
++
++
++@pytest.fixture(autouse=True)
++def reset_input_object_type_default_value_fixture():
++    """Fixture to reset the global default value after each test."""
++    global _input_object_type_default_value
++    _input_object_type_default_value = _original_input_object_type_default_value
++    yield
++    _input_object_type_default_value = _original_input_object_type_default_value
++
++
++def test_input_object_type_default_value_is_none_by_default():
++    class MyInputWithOptional(graphene.InputObjectType):
++        field_a = graphene.String()
++        field_b = graphene.Int(required=False)
++
++    input_instance = MyInputWithOptional(field_a="hello")
++    assert input_instance.field_a == "hello"
++    assert input_instance.field_b is None  # Should be None by default
++
++
++def test_input_object_type_returns_custom_sentinel_for_non_specified_fields():
++    set_input_object_type_default_value(Undefined)
++
++    class MyInputWithOptional(graphene.InputObjectType):
++        field_a = graphene.String()
++        field_b = graphene.Int(required=False)
++        field_c = graphene.Boolean(required=False)
++
++    input_instance = MyInputWithOptional(field_a="world")
++    assert input_instance.field_a == "world"
++    assert input_instance.field_b is Undefined
++    assert input_instance.field_c is Undefined
++
++
++def test_input_object_type_respects_explicit_none_with_custom_sentinel():
++    set_input_object_type_default_value(Undefined)
++
++    class MyInputWithOptional(graphene.InputObjectType):
++        field_a = graphene.String()
++        field_b = graphene.Int(required=False)
++
++    input_instance = MyInputWithOptional(field_a="test", field_b=None)
++    assert input_instance.field_a == "test"
++    assert input_instance.field_b is None  # Should still be None, not Undefined
++
++
++def test_input_object_type_raises_attribute_error_for_non_existent_field():
++    class MyInputWithOptional(graphene.InputObjectType):
++        field_a = graphene.String()
++
++    input_instance = MyInputWithOptional(field_a="test")
++    with pytest.raises(AttributeError, match="object has no attribute 'non_existent_field'"):
++        _ = input_instance.non_existent_field
++
++
++def test_set_input_object_type_default_value_can_be_reset():
++    set_input_object_type_default_value(Undefined)
++    class MyInputA(graphene.InputObjectType):
++        field_a = graphene.String(required=False)
++    assert MyInputA().field_a is Undefined
++
++    set_input_object_type_default_value(None)  # Reset to default
++    class MyInputB(graphene.InputObjectType):
++        field_b = graphene.String(required=False)
++    assert MyInputB().field_b is None
++
++
++def test_set_input_object_type_default_value_affects_all_input_object_types():
++    set_input_object_type_default_value("CUSTOM_SENTINEL")
++
++    class InputOne(graphene.InputObjectType):
++        val = graphene.String(required=False)
++
++    class InputTwo(graphene.InputObjectType):
++        another_val = graphene.Int(required=False)
++
++    assert InputOne().val == "CUSTOM_SENTINEL"
++    assert InputTwo().another_val == "CUSTOM_SENTINEL"

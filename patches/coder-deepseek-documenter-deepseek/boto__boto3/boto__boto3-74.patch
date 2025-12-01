@@ -1,0 +1,254 @@
+diff --git a/boto3/exceptions.py b/boto3/exceptions.py
+--- a/boto3/exceptions.py
++++ b/boto3/exceptions.py
+@@ -1,4 +1,12 @@
+ class ResourceLoadException(Exception):
+     pass
+ 
+ class S3TransferFailedError(Exception):
+     pass
++
++class ReferenceLoadError(Exception):
++    """Base exception for reference loading errors."""
++    pass
++
++class JMESPathError(ReferenceLoadError):
++    """Exception raised when JMESPath query fails."""
++    pass
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -1,5 +1,12 @@
+ import logging
+ 
++try:
++    import jmespath
++except ImportError:
++    # Handle case where jmespath is not available
++    jmespath = None
++
++
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -7,6 +14,68 @@
+     pass
+ 
+ 
++class Reference:
++    def __init__(self, name, resource_path, parent, session=None):
++        self.name = name
++        self.resource_path = resource_path
++        self.parent = parent
++        self.session = session
++        self._value = None
++        
++    def __get__(self, instance, owner):
++        if instance is None:
++            return self
++            
++        if self._value is None:
++            # Check if auto-loading is enabled
++            if (self.session is None or 
++                (hasattr(self.session, '_auto_load_references') and 
++                 self.session._auto_load_references)):
++                self._value = self._load_from_parent_data(instance)
++            
++        return self._value
++        
++    def _load_from_parent_data(self, instance):
++        """
++        Attempt to load reference data from parent's meta.data using JMESPath.
++        If data is not available and parent is loadable, trigger load operation.
++        """
++        parent = self.parent
++        
++        # Check if parent has loaded data in meta.data
++        if hasattr(parent, 'meta') and hasattr(parent.meta, 'data'):
++            parent_data = parent.meta.data
++            if parent_data:
++                # Apply JMESPath query if resource_path is defined
++                if self.resource_path and jmespath is not None:
++                    try:
++                        result = jmespath.search(self.resource_path, parent_data)
++                        if result is not None:
++                            return result
++                    except Exception:
++                        # If JMESPath query fails, continue to try other methods
++                        pass
++        
++        # If data not available, check if parent is loadable
++        if hasattr(parent, 'load'):
++            try:
++                parent.load()
++                # Retry after load
++                if hasattr(parent, 'meta') and hasattr(parent.meta, 'data'):
++                    parent_data = parent.meta.data
++                    if parent_data and self.resource_path and jmespath is not None:
++                        try:
++                            result = jmespath.search(self.resource_path, parent_data)
++                            if result is not None:
++                                return result
++                        except Exception:
++                            # If JMESPath query fails, return None
++                            pass
++            except Exception:
++                # If load fails, return None to maintain original behavior
++                pass
++                
++        return None
++
+ class ServiceResource(object):
+     """A base class for resource instances."""
+ 
+@@ -16,6 +85,7 @@
+ 
+ class ResourceFactory(object):
+     """A factory to create new resource classes and instances."""
++    
+     def __init__(self, emitter):
+         self._emitter = emitter
+ 
+@@ -24,6 +94,14 @@
+         # This is where we would create the resource class
+         pass
+ 
++    def create_reference(self, name, resource_path, parent, session=None):
++        """Create a reference that can auto-load from parent data."""
++        return Reference(name, resource_path, parent, session)
++        
++    def load_reference_data(self, reference, instance):
++        """Public method to manually trigger reference data loading."""
++        return reference._load_from_parent_data(instance)
++
+ 
+ def create_resource_factory(emitter):
+     return ResourceFactory(emitter)
+diff --git a/boto3/session.py b/boto3/session.py
+--- a/boto3/session.py
++++ b/boto3/session.py
+@@ -39,6 +39,7 @@
+         self._resources = ResourceFactory()
+         self._profile = profile
+         self._session = None
++        self._auto_load_references = True
+ 
+     @property
+     def profile(self):
+@@ -48,6 +49,14 @@
+     def profile(self, value):
+         self._profile = value
+ 
++    def disable_auto_reference_loading(self):
++        """Disable automatic reference loading for this session."""
++        self._auto_load_references = False
++        
++    def enable_auto_reference_loading(self):
++        """Enable automatic reference loading for this session."""
++        self._auto_load_references = True
++
+     def client(self, service_name, region_name=None, api_version=None,
+                use_ssl=True, verify=None, endpoint_url=None,
+                aws_access_key_id=None, aws_secret_access_key=None,
+diff --git a/tests/unit/test_reference_loading.py b/tests/unit/test_reference_loading.py
+new file mode 100644
+--- /dev/null
++++ b/tests/unit/test_reference_loading.py
+@@ -0,0 +1,97 @@
++import unittest
++from unittest.mock import Mock
++import boto3
++from boto3.resources.factory import ResourceFactory
++from boto3.exceptions import JMESPathError
++
++
++class MockMeta:
++    def __init__(self, data=None):
++        self.data = data
++
++
++class MockParent:
++    def __init__(self, data=None):
++        self.meta = MockMeta(data)
++
++
++class MockLoadableParent:
++    def __init__(self, data=None):
++        self.meta = MockMeta(data)
++        self.load_called = False
++
++
++class TestReferenceLoading(unittest.TestCase):
++    def setUp(self):
++        self.factory = ResourceFactory(Mock())
++        self.session = boto3.Session(region_name='us-east-1')
++        
++    def test_reference_loads_from_parent_data(self):
++        # Create mock parent with meta.data
++        parent = MockParent({
++            'Association': {
++                'PublicIp': '127.0.0.1'
++            }
++        })
++        
++        # Create reference with JMESPath query
++        reference = self.factory.create_reference(
++            'public_ip', 
++            'Association.PublicIp', 
++            parent
++        )
++        
++        # Verify reference loads data correctly
++        self.assertEqual(reference.__get__(Mock(), None), '127.0.0.1')
++        
++    def test_reference_triggers_parent_load(self):
++        # Create mock parent that needs loading
++        parent = MockLoadableParent()
++        parent.load_called = False
++        
++        def mock_load():
++            parent.load_called = True
++            parent.meta.data = {'Ip': '192.168.1.1'}
++            
++        parent.load = mock_load
++        
++        # Create reference
++        reference = self.factory.create_reference('ip', 'Ip', parent)
++        
++        # Access should trigger load
++        result = reference.__get__(Mock(), None)
++        self.assertTrue(parent.load_called)
++        self.assertEqual(result, '192.168.1.1')
++        
++    def test_jmespath_error_handling(self):
++        # Test invalid JMESPath query
++        parent = MockParent({'Data': 'value'})
++        
++        reference = self.factory.create_reference(
++            'invalid', 
++            'Invalid[Path',  # Invalid JMESPath
++            parent
++        )
++        
++        # Should handle JMESPath errors gracefully
++        result = reference.__get__(Mock(), None)
++        self.assertIsNone(result)
++        
++    def test_reference_without_jmespath(self):
++        # Test reference without JMESPath query
++        parent = MockParent({'Data': 'value'})
++        
++        reference = self.factory.create_reference('data', None, parent)
++        
++        result = reference.__get__(Mock(), None)
++        self.assertIsNone(result)
++        
++    def test_reference_with_empty_parent_data(self):
++        # Test reference with parent that has empty data
++        parent = MockParent({})
++        
++        reference = self.factory.create_reference('data', 'Some.Path', parent)
++        
++        result = reference.__get__(Mock(), None)
++        self.assertIsNone(result)
++

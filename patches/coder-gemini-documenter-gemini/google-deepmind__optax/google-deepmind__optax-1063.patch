@@ -1,0 +1,103 @@
+diff --git a/docs/api/tree_utils.rst b/docs/api/tree_utils.rst
+--- a/docs/api/tree_utils.rst
++++ b/docs/api/tree_utils.rst
+@@ -6,3 +6,5 @@
+    :members:
+    :undoc-members:
+    :show-inheritance:
++
++.. autofunction:: optax.tree_utils.tree_random_split
+diff --git a/optax/tree_utils/__init__.py b/optax/tree_utils/__init__.py
+--- a/optax/tree_utils/__init__.py
++++ b/optax/tree_utils/__init__.py
+@@ -16,6 +16,7 @@
+ # ==============================================================================
+ """Utilities for manipulating JAX pytrees."""
+ 
++from optax.tree_utils._random import tree_random_split
+ from optax.tree_utils.tree_utils import (
+     _absolute_product,
+     _multiply_by_scalar,
+diff --git a/optax/tree_utils/_random.py b/optax/tree_utils/_random.py
+--- a/optax/tree_utils/_random.py
++++ b/optax/tree_utils/_random.py
+@@ -16,7 +16,7 @@
+ import jax.tree_util as jtu
+ import chex
+ 
+-def _tree_rng_keys_split(rng_key: chex.PRNGKey, target_tree: chex.ArrayTree) -> chex.ArrayTree:
++def tree_random_split(rng_key: chex.PRNGKey, target_tree: chex.ArrayTree) -> chex.ArrayTree:
+   """Splits a single PRNGKey into a tree of keys matching `target_tree`'s structure.
+ 
+   Args:
+diff --git a/optax/tree_utils/_random_test.py b/optax/tree_utils/_random_test.py
+--- /dev/null
++++ b/optax/tree_utils/_random_test.py
+@@ -0,0 +1,71 @@
++# Copyright 2019 DeepMind Technologies Limited. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# ==============================================================================
++"""Tests for optax.tree_utils._random."""
++
++from absl.testing import absltest
++from absl.testing import parameterized
++
++import jax
++import jax.numpy as jnp
++import jax.tree_util as jtu
++import chex
++
++# Import the public function
++from optax.tree_utils import tree_random_split
++
++
++class TreeRandomSplitTest(chex.TestCase):
++
++  @parameterized.parameters(
++      (jnp.array(1.),),
++      ({'a': jnp.array(1.), 'b': (jnp.array(2.), jnp.array(3.))},),
++      ((),),  # Empty tuple
++      ({},),  # Empty dict
++      (None,), # None as a leaf
++  )
++  def test_tree_random_split(self, target_tree):
++    rng_key = jax.random.PRNGKey(0)
++    split_keys_tree = tree_random_split(rng_key, target_tree)
++
++    # Assert that the structure matches
++    chex.assert_trees_equal(jtu.tree_structure(target_tree), jtu.tree_structure(split_keys_tree))
++
++    # Assert that all leaves are PRNGKeys
++    jtu.tree_map(lambda k: self.assertIsInstance(k, chex.PRNGKey), split_keys_tree)
++
++    # Assert that keys are distinct (for non-empty trees)
++    if jtu.tree_structure(target_tree).num_leaves > 1:
++      leaves = jtu.tree_leaves(split_keys_tree)
++      # Convert keys to integers for comparison
++      int_leaves = [k[0] for k in leaves]
++      self.assertLen(set(int_leaves), len(int_leaves)) # All keys should be unique
++
++    # Test that splitting the same key with the same tree yields different subkeys
++    # but the same structure
++    rng_key_2 = jax.random.PRNGKey(1)
++    split_keys_tree_2 = tree_random_split(rng_key_2, target_tree)
++    chex.assert_trees_equal(jtu.tree_structure(target_tree), jtu.tree_structure(split_keys_tree_2))
++    if jtu.tree_structure(target_tree).num_leaves > 0:
++      # The actual key values should be different if the initial key is different
++      with self.assertRaises(AssertionError): # Expect assertion error if keys are identical
++        chex.assert_trees_equal(split_keys_tree, split_keys_tree_2)
++
++
++if __name__ == '__main__':
++  absltest.main()

@@ -1,0 +1,164 @@
+diff --git a/timm/utils/model.py b/timm/utils/model.py
+new file mode 100644
+--- /dev/null
++++ b/timm/utils/model.py
+@@ -0,0 +1,149 @@
++import torch.nn as nn
++from timm.models.layers import FrozenBatchNorm2d
++
++
++def freeze_batch_norm_2d(module):
++    """ Converts all BatchNorm2d and SyncBatchNorm layers of provided module into FrozenBatchNorm2d. If module is
++    itself an instance of either BatchNorm2d or SyncBatchNorm, it is converted into FrozenBatchNorm2d and
++    returned. Otherwise, the module is walked recursively and submodules are converted in place.
++    Args:
++        module (torch.nn.Module): Any PyTorch module.
++    Returns:
++        torch.nn.Module: Resulting module
++    Inspired by https://github.com/pytorch/pytorch/blob/a5895f85be0f10212791145bfedc0261d364f103/torch/nn/modules/batchnorm.py#L762
++    """
++    convert_fn = FrozenBatchNorm2d.convert_frozen_batchnorm
++    if isinstance(module, (nn.BatchNorm2d, nn.SyncBatchNorm)):
++        return convert_fn(module)
++    for name, child in module.named_children():
++        module.add_module(name, freeze_batch_norm_2d(child))
++    return module
++
++
++def unfreeze_batch_norm_2d(module):
++    """ Converts all FrozenBatchNorm2d layers of provided module into BatchNorm2d. If module is itself and instance
++    of FrozenBatchNorm2d, it is converted into BatchNorm2d and returned. Otherwise, the module is walked
++    recursively and submodules are converted in place.
++    Args:
++        module (torch.nn.Module): Any PyTorch module.
++    Returns:
++        torch.nn.Module: Resulting module
++    Inspired by https://github.com/pytorch/pytorch/blob/a5895f85be0f10212791145bfedc0261d364f103/torch/nn/modules/batchnorm.py#L762
++    """
++    if isinstance(module, FrozenBatchNorm2d):
++        # Recreate BatchNorm2d with original parameters
++        return nn.BatchNorm2d(
++            module.num_features,
++            module.eps,
++            module.momentum,
++            module.affine,
++            module.track_running_stats
++        )
++    for name, child in module.named_children():
++        module.add_module(name, unfreeze_batch_norm_2d(child))
++    return module
++
++
++def _add_submodule(module, name, submodule):
++    """Helper to replace a submodule in place."""
++    setattr(module, name, submodule)
++
++
++def _freeze_unfreeze(root_module, submodules=[], include_bn_running_stats=True, mode='freeze'):
++    """ Freeze or unfreeze parameters of the specified modules and those of all their hierarchical descendants. This is
++    done in place.
++    Args:
++        root_module (nn.Module, optional): Root module relative to which the `submodules` are referenced.
++        submodules (list[str]): List of modules for which the parameters will be (un)frozen. They are to be provided as
++            named modules relative to the root module (accessible via `root_module.named_modules()`). An empty list
++            means that the whole root module will be (un)frozen. Defaults to []
++        include_bn_running_stats (bool): Whether to also (un)freeze the running statistics of batch norm 2d layers.
++            Defaults to `True`.
++        mode (bool): Whether to freeze ("freeze") or unfreeze ("unfreeze"). Defaults to `"freeze"`.
++    """
++    if mode not in ('freeze', 'unfreeze'):
++        raise ValueError(f"Mode must be 'freeze' or 'unfreeze', but got '{mode}'")
++
++    # Determine which modules are targets for (un)freezing parameters and BN conversion
++    # This set will contain the names of modules explicitly specified by the user.
++    # Descendants of these modules will also be affected by the `is_target_ancestor` check.
++    target_module_names = set(submodules)
++
++    # Iterate through all modules to apply changes
++    for name, module in root_module.named_modules():
++        # The root module itself (name='') is handled implicitly by its children.
++        # If submodules is empty, all modules are considered targets.
++        # If submodules is not empty, only specified modules and their descendants are targets.
++        
++        is_target_ancestor = False
++        if not target_module_names: # If submodules list is empty, apply to all modules
++            is_target_ancestor = True
++        else:
++            for target_name in target_module_names:
++                if name == target_name or name.startswith(target_name + '.'):
++                    is_target_ancestor = True
++                    break
++
++        if is_target_ancestor:
++            # (Un)freeze parameters
++            for param in module.parameters(recurse=False):  # Only direct parameters of this module
++                param.requires_grad = (mode == 'unfreeze')
++
++            # Handle BatchNorm2d running stats conversion
++            if include_bn_running_stats:
++                # Only convert if the module is a BN layer
++                if isinstance(module, (nn.BatchNorm2d, nn.SyncBatchNorm, FrozenBatchNorm2d)):
++                    # We need to replace the module in its parent.
++                    # The root module itself cannot be replaced this way.
++                    # The problem description implies root_module is a container.
++                    parent_name_parts = name.rsplit('.', 1)
++                    if len(parent_name_parts) > 1: # Module has a parent (e.g., 'layer1.bn1')
++                        parent_path = parent_name_parts[0]
++                        module_local_name = parent_name_parts[1]
++                        parent = root_module
++                        for sub_name in parent_path.split('.'):
++                            parent = getattr(parent, sub_name)
++                        
++                        if mode == 'freeze':
++                            _add_submodule(parent, module_local_name, freeze_batch_norm_2d(module))
++                        else: # unfreeze
++                            _add_submodule(parent, module_local_name, unfreeze_batch_norm_2d(module))
++                    elif name: # Module is a direct child of root_module (e.g., 'bn1')
++                        if mode == 'freeze':
++                            _add_submodule(root_module, name, freeze_batch_norm_2d(module))
++                        else: # unfreeze
++                            _add_submodule(root_module, name, unfreeze_batch_norm_2d(module))
++
++
++def freeze(root_module, submodules=[], include_bn_running_stats=True):
++    """ Freeze parameters of the specified modules and those of all their hierarchical descendants. This is done in place.
++    Args:
++        root_module (nn.Module): Root module relative to which `submodules` are referenced.
++        submodules (list[str]): List of modules for which the parameters will be frozen. They are to be provided as
++            named modules relative to the root module (accessible via `root_module.named_modules()`). An empty list
++            means that the whole root module will be frozen. Defaults to `[]`.
++        include_bn_running_stats (bool): Whether to also freeze the running statistics of `BatchNorm2d` and
++            `SyncBatchNorm` layers. These will be converted to `FrozenBatchNorm2d` in place. Hint: During fine tuning,
++            it's good practice to freeze batch norm stats. And note that these are different to the affine parameters
++            which are just normal PyTorch parameters. Defaults to `True`.
++    Hint: If you want to freeze batch norm ONLY, use `timm.utils.model.freeze_batch_norm_2d`.
++    Examples::
++        >>> model = timm.create_model('resnet18')
++        >>> # Freeze up to and including layer2
++        >>> submodules = [n for n, _ in model.named_children()]
++        >>> print(submodules)
++        ['conv1', 'bn1', 'act1', 'maxpool', 'layer1', 'layer2', 'layer3', 'layer4', 'global_pool', 'fc']
++        >>> freeze(model, submodules[:submodules.index('layer2') + 1])
++        >>> # Check for yourself that it works as expected
++        >>> print(model.layer2[0].conv1.weight.requires_grad)
++        False
++        >>> print(model.layer3[0].conv1.weight.requires_grad)
++        True
++        >>> # Unfreeze
++        >>> unfreeze(model)
++    """
++    _freeze_unfreeze(root_module, submodules, include_bn_running_stats, mode='freeze')
++
++
++def unfreeze(root_module, submodules=[], include_bn_running_stats=True):
++    """ Unfreeze parameters of the specified modules and those of all their hierarchical descendants. This is done in place.
++    Args:
++        root_module (nn.Module): Root module relative to which `submodules` are referenced.
++        submodules (list[str]): List of submodules for which the parameters will be (un)frozen. They are to be provided
++            as named modules relative to the root module (accessible via `root_module.named_modules()`). An empty
++            list means that the whole root module will be unfrozen. Defaults to `[]`.
++        include_bn_running_stats (bool): Whether to also unfreeze the running statistics of `FrozenBatchNorm2d` layers.
++            These will be converted to `BatchNorm2d` in place. Defaults to `True`.
++    See example in docstring for `freeze`.
++    """
++    _freeze_unfreeze(root_module, submodules, include_bn_running_stats, mode='unfreeze')

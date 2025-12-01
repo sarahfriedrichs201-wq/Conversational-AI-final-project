@@ -1,0 +1,32 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -1,6 +1,7 @@
+ """
+ This module implements the Tree data structure.
+ """
++from typing import Iterator
+ 
+ from .utils import Serialize, pretty_repr, get_pretty_top_level_members
+ 
+@@ -107,3 +108,18 @@
+ 
+     def __repr__(self):
+         return pretty_repr(self)
++
++    def find_token(self, token_type: str) -> Iterator['Token']:
++        """
++        Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++
++        Example:
++            >>> term_tokens = tree.find_token('TERM')
++        """
++        from .lexer import Token # Import Token here to ensure it's available at runtime
++        for child in self.children:
++            if isinstance(child, Token):
++                if child.type == token_type:
++                    yield child
++            elif isinstance(child, Tree):
++                yield from child.find_token(token_type)

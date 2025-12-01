@@ -1,0 +1,461 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,8 +1,10 @@
+ import argparse
++import sys
+ 
+ 
+-def parse_eval_args():
+-    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
++def setup_parser() -> argparse.ArgumentParser:
++    """Creates and configures the argument parser for CLI evaluation."""
++    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+     parser.add_argument(
+         "--model",
+         type=str,
+@@ -10,7 +12,6 @@
+         help="Name of model to use. Example: `hf` for HuggingFace models, `gpt2` for explicit model specification",
+     )
+     parser.add_argument(
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         "--model_args",
+         type=str,
+         default="",
+@@ -18,7 +19,6 @@
+     )
+     parser.add_argument(
+         "--tasks",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         type=str,
+         default=None,
+         help="Tasks to evaluate. Will run all tasks if None",
+@@ -26,7 +26,6 @@
+     parser.add_argument(
+         "--num_fewshot",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Number of examples in few-shot context",
+     )
+@@ -34,7 +33,6 @@
+     parser.add_argument(
+         "--output_path",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Save results to json file at this path.",
+     )
+@@ -42,7 +40,6 @@
+     parser.add_argument(
+         "--limit",
+         type=float,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Limit the number of examples per task. "
+         "If <1, limit is a percentage of the total number of examples.",
+@@ -50,7 +47,6 @@
+     parser.add_argument(
+         "--use_cache",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Path to sqlite db file for caching. Will do nothing if the file doesn't exist. "
+         "If the file already exists, will use the existing cache. "
+@@ -60,7 +56,6 @@
+     parser.add_argument(
+         "--check_integrity",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to run the relevant part of the test suite for the tasks.",
+     )
+     parser.add_argument(
+@@ -72,7 +67,6 @@
+     parser.add_argument(
+         "--verbosity",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default="INFO",
+         help="Log error when tasks are not registered.",
+     )
+@@ -80,7 +74,6 @@
+     parser.add_argument(
+         "--wandb_args",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default="",
+         help="Comma separated string of passed to wandb.init()."
+         "Example: `project=lm-eval,job_type=eval",
+@@ -88,7 +81,6 @@
+     parser.add_argument(
+         "--show_config",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to show the config before running the evaluation.",
+     )
+     parser.add_argument(
+@@ -100,7 +92,6 @@
+     parser.add_argument(
+         "--include_path",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Additional path to include if registering tasks from a local directory.",
+     )
+@@ -108,7 +99,6 @@
+     parser.add_argument(
+         "--gen_kwargs",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help=(
+             "String arguments for model generation. "
+@@ -118,7 +108,6 @@
+     parser.add_argument(
+         "--log_samples",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to log samples to the output path.",
+     )
+     parser.add_argument(
+@@ -130,7 +119,6 @@
+     parser.add_argument(
+         "--decontamination_ngrams_path",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Path to the ngrams file for decontamination.",
+     )
+@@ -138,7 +126,6 @@
+     parser.add_argument(
+         "--write_out",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Write out the model outputs to the output path.",
+     )
+     parser.add_argument(
+@@ -150,7 +137,6 @@
+     parser.add_argument(
+         "--predict_only",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Only run inference, do not compute metrics.",
+     )
+     parser.add_argument(
+@@ -162,7 +148,6 @@
+     parser.add_argument(
+         "--log_images",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to log images when running multimodal tasks.",
+     )
+     parser.add_argument(
+@@ -174,7 +159,6 @@
+     parser.add_argument(
+         "--trust_remote_code",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to trust remote code when loading models.",
+     )
+     parser.add_argument(
+@@ -186,7 +170,6 @@
+     parser.add_argument(
+         "--seed",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=[0],
+         nargs="*",
+         help="Random seed for few-shot sampling and generation. "
+@@ -196,7 +179,6 @@
+     parser.add_argument(
+         "--batch_size",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Batch size for evaluation. Use 'auto' for automatic batch size detection.",
+     )
+@@ -204,7 +186,6 @@
+     parser.add_argument(
+         "--max_batch_size",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Maximum batch size to use for evaluation. Only used when batch_size is 'auto'.",
+     )
+@@ -212,7 +193,6 @@
+     parser.add_argument(
+         "--device",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Device to use for evaluation. Example: 'cuda:0', 'cpu'.",
+     )
+@@ -220,7 +200,6 @@
+     parser.add_argument(
+         "--use_vllm",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to use vLLM for inference.",
+     )
+     parser.add_argument(
+@@ -232,7 +211,6 @@
+     parser.add_argument(
+         "--multilingual",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Whether to use multilingual tokenizer.",
+     )
+     parser.add_argument(
+@@ -244,7 +222,6 @@
+     parser.add_argument(
+         "--fewshot_override",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Override the fewshot examples for a task. "
+         "Example: `task1:path1.json,task2:path2.json`",
+@@ -252,7 +229,6 @@
+     parser.add_argument(
+         "--no_tokenizer_check",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Skip tokenizer check for faster loading.",
+     )
+     parser.add_argument(
+@@ -264,7 +240,6 @@
+     parser.add_argument(
+         "--accelerate",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Use accelerate for distributed inference.",
+     )
+     parser.add_argument(
+@@ -276,7 +251,6 @@
+     parser.add_argument(
+         "--main_process_port",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=0,
+         help="Port for the main process in distributed inference.",
+     )
+@@ -284,7 +258,6 @@
+     parser.add_argument(
+         "--save_details",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Save detailed results to the output path.",
+     )
+     parser.add_argument(
+@@ -296,7 +269,6 @@
+     parser.add_argument(
+         "--save_details_path",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Path to save detailed results.",
+     )
+@@ -304,7 +276,6 @@
+     parser.add_argument(
+         "--include_example_id",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Include example IDs in the output.",
+     )
+     parser.add_argument(
+@@ -316,7 +287,6 @@
+     parser.add_argument(
+         "--external_cache_dir",
+         type=str,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=None,
+         help="Path to external cache directory.",
+     )
+@@ -324,7 +294,6 @@
+     parser.add_argument(
+         "--external_cache_upload",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Upload cache to external cache directory.",
+     )
+     parser.add_argument(
+@@ -336,7 +305,6 @@
+     parser.add_argument(
+         "--external_cache_download",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Download cache from external cache directory.",
+     )
+     parser.add_argument(
+@@ -348,7 +316,6 @@
+     parser.add_argument(
+         "--external_cache_timeout",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=60,
+         help="Timeout for external cache operations.",
+     )
+@@ -356,7 +323,6 @@
+     parser.add_argument(
+         "--external_cache_retry_delay",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=5,
+         help="Retry delay for external cache operations.",
+     )
+@@ -364,7 +330,6 @@
+     parser.add_argument(
+         "--external_cache_retries",
+         type=int,
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         default=3,
+         help="Number of retries for external cache operations.",
+     )
+@@ -372,7 +337,6 @@
+     parser.add_argument(
+         "--external_cache_no_upload",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not upload to external cache.",
+     )
+     parser.add_argument(
+@@ -384,7 +348,6 @@
+     parser.add_argument(
+         "--external_cache_no_download",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not download from external cache.",
+     )
+     parser.add_argument(
+@@ -396,7 +359,6 @@
+     parser.add_argument(
+         "--external_cache_force_download",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Force download from external cache.",
+     )
+     parser.add_argument(
+@@ -408,7 +370,6 @@
+     parser.add_argument(
+         "--external_cache_force_upload",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Force upload to external cache.",
+     )
+     parser.add_argument(
+@@ -420,7 +381,6 @@
+     parser.add_argument(
+         "--external_cache_no_check",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not check external cache.",
+     )
+     parser.add_argument(
+@@ -432,7 +392,6 @@
+     parser.add_argument(
+         "--external_cache_no_cleanup",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not cleanup external cache.",
+     )
+     parser.add_argument(
+@@ -444,7 +403,6 @@
+     parser.add_argument(
+         "--external_cache_no_compress",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not compress external cache.",
+     )
+     parser.add_argument(
+@@ -456,7 +414,6 @@
+     parser.add_argument(
+         "--external_cache_no_decompress",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not decompress external cache.",
+     )
+     parser.add_argument(
+@@ -468,7 +425,6 @@
+     parser.add_argument(
+         "--external_cache_no_encrypt",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not encrypt external cache.",
+     )
+     parser.add_argument(
+@@ -480,7 +436,6 @@
+     parser.add_argument(
+         "--external_cache_no_decrypt",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not decrypt external cache.",
+     )
+     parser.add_argument(
+@@ -492,7 +447,6 @@
+     parser.add_argument(
+         "--external_cache_no_verify",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not verify external cache.",
+     )
+     parser.add_argument(
+@@ -504,7 +458,6 @@
+     parser.add_argument(
+         "--external_cache_no_sign",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not sign external cache.",
+     )
+     parser.add_argument(
+@@ -516,7 +469,6 @@
+     parser.add_argument(
+         "--external_cache_no_validate",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not validate external cache.",
+     )
+     parser.add_argument(
+@@ -528,7 +480,6 @@
+     parser.add_argument(
+         "--external_cache_no_backup",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not backup external cache.",
+     )
+     parser.add_argument(
+@@ -540,7 +491,6 @@
+     parser.add_argument(
+         "--external_cache_no_restore",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not restore external cache.",
+     )
+     parser.add_argument(
+@@ -552,7 +502,6 @@
+     parser.add_argument(
+         "--external_cache_no_sync",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not sync external cache.",
+     )
+     parser.add_argument(
+@@ -564,7 +513,6 @@
+     parser.add_argument(
+         "--external_cache_no_lock",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not lock external cache.",
+     )
+     parser.add_argument(
+@@ -576,7 +524,6 @@
+     parser.add_argument(
+         "--external_cache_no_wait",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py?
+         help="Do not wait for external cache.",
+     )
+     parser.add_argument(
+@@ -588,7 +535,6 @@
+     parser.add_argument(
+         "--external_cache_no_notify",
+         action="store_true",
+-        # TODO: do we want to not require this and instead have it be optional like in main.py

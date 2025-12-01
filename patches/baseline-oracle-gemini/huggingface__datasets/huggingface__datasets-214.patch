@@ -1,0 +1,102 @@
+diff --git a/src/nlp/arrow_dataset.py b/src/nlp/arrow_dataset.py
+index 4554201..092523d 100644
+--- a/src/nlp/arrow_dataset.py
++++ b/src/nlp/arrow_dataset.py
+@@ -27,6 +27,7 @@ from .features import Features, generate_from_arrow_schema
+ from .fingerprint import generate_fingerprint
+ from .info import DatasetInfo
+ from .splits import NamedSplit
++from .utils.logging import get_logger
+ from .utils.py_utils import (
+     batch_list_dict,
+     check_arrow_version,
+@@ -37,6 +38,8 @@ from .utils.py_utils import (
+     map_nested,
+     size_str,
+ )
++
++logger = get_logger(__name__)
+ 
+ 
+ class Dataset(object):
+@@ -1025,3 +1028,73 @@ class Dataset(object):
+         """
+         return self.map(function=function, batched=True, batch_size=batch_size, **kwargs)
+ 
++    def filter(
++        self,
++        function: Callable,
++        with_indices: bool = False,
++        batch_size: Optional[int] = 1000,
++        remove_columns: Optional[List[str]] = None,
++        keep_in_memory: bool = False,
++        load_from_cache_file: bool = True,
++        cache_file_name: Optional[str] = None,
++        writer_batch_size: Optional[int] = 1000,
++        disable_nullable: bool = True,
++        **kwargs,
++    ) -> "Dataset":
++        """
++        Apply a filter function to all the elements in the table in batches
++        and update the table so that the dataset only includes examples according to the filter function.
++
++        Args:
++            `function` (`callable`): with one of the following signature:
++                - `function(example: Dict) -> bool` if `with_indices=False`
++                - `function(example: Dict, indices: int) -> bool` if `with_indices=True`
++            `with_indices` (`bool`, default: `False`): Provide example indices to `function`. Note that in this case the signature of `function` should be `def function(example, idx): ...`.
++            `batch_size` (`Optional[int]`, default: `1000`): Number of examples per batch provided to `function` if `batched=True`
++                `batch_size <= 0` or `batch_size == None`: Provide the full dataset as a single batch to `function`
++            `remove_columns` (`Optional[List[str]]`, default: `None`): Remove a selection of columns while doing the mapping.
++                Columns will be removed before updating the examples with the output of `function`, i.e. if `function` is adding
++                columns with names in `remove_columns`, these columns will be kept.
++            `keep_in_memory` (`bool`, default: `False`): Keep the dataset in memory instead of writing it to a cache file.
++            `load_from_cache_file` (`bool`, default: `True`): If a cache file storing the current computation from `function`
++                can be identified, use it instead of recomputing.
++            `cache_file_name` (`Optional[str]`, default: `None`): Provide the name of a cache file to use to store the
++                results of the computation instead of the automatically generated cache file name.
++            `writer_batch_size` (`int`, default: `1000`): Number of rows per write operation for the cache file writer.
++                Higher value gives smaller cache files, lower value consume less temporary memory while running `.map()`.
++            `disable_nullable` (`bool`, default: `True`): Allow null values in the table.
++        """
++        # The filter function will be applied in batches.
++        # We need to define a map_function that returns a boolean column '__filter__'
++        # indicating whether to keep the example.
++        # Then we select rows where '__filter__' is true and remove the column.
++
++        def _filter_map_function(batch, indices):
++            # batch is a dict of lists/arrays
++            # indices is a list of integers
++            results = []
++            for i, example_idx in enumerate(indices):
++                example = {key: batch[key][i] for key in batch}
++                if with_indices:
++                    results.append(function(example, example_idx))
++                else:
++                    results.append(function(example))
++            return {"__filter__": results}
++
++        # Call map with the internal _filter_map_function
++        # The internal map call should always have `batched=True` and `with_indices=True`
++        # to ensure `_filter_map_function` gets `batch` and `indices`.
++        ds_with_filter_col = self.map(
++            _filter_map_function,
++            with_indices=True,  # Internal _filter_map_function always needs indices
++            batched=True,       # Internal _filter_map_function always expects batches
++            batch_size=batch_size,
++            remove_columns=remove_columns,
++            keep_in_memory=keep_in_memory,
++            load_from_cache_file=load_from_cache_file,
++            cache_file_name=cache_file_name,
++            writer_batch_size=writer_batch_size,
++            disable_nullable=disable_nullable,
++            **kwargs,
++        )
++
++        # Now, select rows where '__filter__' is True and remove the '__filter__' column
++        filter_array = ds_with_filter_col._data.column("__filter__").to_numpy()
++        filtered_table = ds_with_filter_col._data.filter(filter_array)
++        final_table = filtered_table.drop_columns(["__filter__"])
++
++        # Create a new Dataset object from the filtered table
++        return Dataset(arrow_table=final_table, info=self.info, split=self.split)

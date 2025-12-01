@@ -1,0 +1,81 @@
+diff --git a/boto3/resources/base.py b/boto3/resources/base.py
+--- a/boto3/resources/base.py
++++ b/boto3/resources/base.py
+@@ -1,5 +1,6 @@
+ import logging
+
++import jmespath
+ from botocore.exceptions import ClientError
+
+ from boto3.exceptions import ResourceNotExistsError
+@@ -107,6 +108,18 @@
+     @property
+     def _data(self):
+         if self.meta.data is None:
++            resource_path = self.meta.resource_model.resource_path
++            parent_resource = self.meta.parent
++
++            if resource_path is not None and parent_resource is not None:
++                # Ensure parent data is loaded. This will call parent_resource.load() if needed.
++                parent_data = parent_resource._data
++                extracted_data = jmespath.search(resource_path, parent_data)
++
++                if extracted_data is not None:
++                    self.meta.data = extracted_data
++                    return self.meta.data
++
+             self.load()
+         return self.meta.data
+
+diff --git a/tests/unit/resources/test_ec2.py b/tests/unit/resources/test_ec2.py
+--- a/tests/unit/resources/test_ec2.py
++++ b/tests/unit/resources/test_ec2.py
+@@ -1,6 +1,7 @@
+ from tests import unittest
+ from mock import Mock
+
++import boto3
+ from boto3.resources.base import ResourceLoadException
+ from boto3.resources.model import ResourceModel
+ from boto3.resources.factory import ResourceFactory
+@@ -12,3 +13,38 @@
+         self.factory = ResourceFactory(
+             self.service_model, self.client
+         )
++
++
++class TestEC2NetworkInterface(unittest.TestCase):
++    def setUp(self):
++        self.client = Mock()
++        self.ec2 = boto3.resource('ec2', client=self.client)
++
++    def test_association_loads_from_parent_data(self):
++        # Mock the describe_network_interfaces response
++        self.client.describe_network_interfaces.return_value = {
++            'NetworkInterfaces': [
++                {
++                    'NetworkInterfaceId': 'eni-12345678',
++                    'Association': {
++                        'PublicIp': '127.0.0.1',
++                        'PublicDnsName': 'ec2-127-0-0-1.compute-1.amazonaws.com',
++                        'IpOwnerId': '123456789012'
++                    },
++                    'Status': 'in-use',
++                    'SubnetId': 'subnet-12345678',
++                    'VpcId': 'vpc-12345678',
++                    'AvailabilityZone': 'us-east-1a',
++                    'Description': 'Test description',
++                    'OwnerId': '123456789012',
++                    'RequesterManaged': False,
++                    'SourceDestCheck': True,
++                    'Groups': [],
++                    'PrivateIpAddresses': [],
++                }
++            ]
++        }
++
++        ni = self.ec2.NetworkInterface('eni-12345678')
++        self.assertEqual(ni.association.public_ip, '127.0.0.1')
++        self.client.describe_network_interfaces.assert_called_once_with(
++            NetworkInterfaceIds=['eni-12345678']
++        )

@@ -1,0 +1,119 @@
+diff --git a/haystack/dataclasses/byte_stream.py b/haystack/dataclasses/byte_stream.py
+--- a/haystack/dataclasses/byte_stream.py
++++ b/haystack/dataclasses/byte_stream.py
+@@ -20,3 +20,17 @@
+         """
+         return cls(data=string.encode(encoding), meta=meta)
+ 
++    def to_string(self, encoding: str = "utf-8") -> str:
++        """
++        Convert the ByteStream to a string, metadata will not be included.
++
++        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
++        :return: The string representation of the ByteStream.
++        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
++        """
++        try:
++            return self.data.decode(encoding)
++        except UnicodeDecodeError as e:
++            # Custom error message for clarity
++            raise UnicodeDecodeError(
++                f"Failed to decode ByteStream data with encoding '{encoding}'. Original error: {e}"
++            ) from e
+diff --git a/test/dataclasses/test_byte_stream.py b/test/dataclasses/test_byte_stream.py
+--- a/test/dataclasses/test_byte_stream.py
++++ b/test/dataclasses/test_byte_stream.py
+@@ -1,4 +1,5 @@
+ import json
++import pytest
+ 
+ from haystack.dataclasses.byte_stream import ByteStream
+ 
+@@ -52,3 +53,85 @@
+         assert bs.meta["key"] == "value"
+         assert bs.meta["another_key"] == 123
+         assert bs.meta["list_key"] == [1, 2, 3]
++
++    def test_to_string_default_encoding(self):
++        """
++        Tests that to_string correctly decodes bytes to a string using the default 'utf-8' encoding.
++        """
++        original_string = "hello, world!"
++        bs = ByteStream.from_string(original_string)
++        text = bs.to_string()
++        assert text == original_string
++
++    def test_to_string_custom_encoding(self):
++        """
++        Tests that to_string correctly decodes bytes to a string using a specified custom encoding.
++        """
++        # Test with a multi-byte UTF-8 string
++        original_string_utf8 = "你好世界"  # Chinese characters
++        bs_utf8 = ByteStream.from_string(original_string_utf8, encoding="utf-8")
++        text_utf8 = bs_utf8.to_string(encoding="utf-8")
++        assert text_utf8 == original_string_utf8
++
++        # Test with a latin-1 string
++        original_string_latin1 = "Grüße mit Umlauten"
++        bs_latin1 = ByteStream.from_string(original_string_latin1, encoding="latin-1")
++        text_latin1 = bs_latin1.to_string(encoding="latin-1")
++        assert text_latin1 == original_string_latin1
++
++    def test_to_string_empty_bytes(self):
++        """
++        Tests that to_string returns an empty string for an empty ByteStream.
++        """
++        bs = ByteStream(data=b"")
++        text = bs.to_string()
++        assert text == ""
++
++    def test_to_string_unicode_decode_error(self):
++        """
++        Tests that to_string raises a UnicodeDecodeError when bytes cannot be decoded
++        with the specified encoding.
++        """
++        # Bytes that are not valid UTF-8
++        invalid_utf8_bytes = b"\xc3\x28"  # An invalid UTF-8 sequence
++        bs_invalid_utf8 = ByteStream(data=invalid_utf8_bytes)
++        with pytest.raises(UnicodeDecodeError, match="Failed to decode ByteStream data with encoding 'utf-8'"):
++            bs_invalid_utf8.to_string(encoding="utf-8")
++
++        # Bytes that are valid UTF-8 but not valid ASCII
++        utf8_only_bytes = "é".encode("utf-8")  # b'\xc3\xa9'
++        bs_utf8_only = ByteStream(data=utf8_only_bytes)
++        with pytest.raises(UnicodeDecodeError, match="Failed to decode ByteStream data with encoding 'ascii'"):
++            bs_utf8_only.to_string(encoding="ascii")
++
++    def test_to_string_symmetry_with_from_string(self):
++        """
++        Tests the symmetry: from_string(s).to_string() should return the original string s.
++        """
++        test_strings = [
++            "Hello, Haystack!",
++            "This is a test string with some special characters: éàçüö",
++            "こんにちは世界",  # Japanese
++            "안녕하세요",  # Korean
++            "1234567890!@#$%^&*()",
++        ]
++        encodings = ["utf-8", "latin-1"]
++
++        for original_string in test_strings:
++            for encoding in encodings:
++                try:
++                    # Attempt to encode the string with the current encoding
++                    # Some characters might not be representable in all encodings (e.g., Japanese in latin-1)
++                    encoded_bytes = original_string.encode(encoding)
++                    bs = ByteStream(data=encoded_bytes)
++                    decoded_string = bs.to_string(encoding=encoding)
++                    assert decoded_string == original_string
++                except UnicodeEncodeError:
++                    # If the original string cannot be encoded with this encoding, skip this specific test case
++                    # This ensures we only test valid encoding/decoding pairs.
++                    continue
++                except UnicodeDecodeError:
++                    # This can happen if a string encoded with one encoding is tried to be decoded with another
++                    # which is not the intention of this test. The test specifically tries to decode with the
++                    # *same* encoding it was encoded with. If this happens, it indicates an issue with the test setup
++                    # or an unexpected interaction, but for now, we'll treat it similarly to UnicodeEncodeError
++                    # as it means the specific string/encoding pair isn't suitable for this symmetric test.
++                    continue

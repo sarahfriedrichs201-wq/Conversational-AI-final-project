@@ -1,0 +1,434 @@
+diff --git a/src/nlp/arrow_dataset.py b/src/nlp/arrow_dataset.py
+--- a/src/nlp/arrow_dataset.py
++++ b/src/nlp/arrow_dataset.py
+@@ -1,4 +1,5 @@
+ import copy
++import itertools
+ import os
+ import pickle
+ import warnings
+@@ -6,6 +7,7 @@
+ from collections import defaultdict
+ from dataclasses import dataclass, field
+ from functools import partial
++from typing import Callable, Dict, List, Optional, Union
+ 
+ import numpy as np
+ import pyarrow as pa
+@@ -14,7 +16,7 @@
+ from nlp.arrow_reader import ArrowReader
+ from nlp.arrow_writer import ArrowWriter, OptimizedTypedSequence
+ from nlp.features import Features, Value
+-from nlp.info import DatasetInfo
++from nlp.info import DatasetInfo, DatasetInfosDict
+ from nlp.naming import camelcase_to_snakecase
+ from nlp.utils import logging
+ from nlp.utils.py_utils import dumps, no_op_if_value_is_null, size_str
+@@ -22,6 +24,7 @@
+ 
+ logger = logging.get_logger(__name__)
+ 
++IndexedRow = Dict[str, Union[int, Dict]]
+ 
+ class DatasetInfoMixin:
+     """Base class with methods for storing and retrieving dataset info."""
+@@ -140,6 +143,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -155,6 +159,7 @@
+         Args:
+             function (:obj:`callable`): with one of the following signature:
+                 - `function(example: Dict) -> Union[Dict, None]` if `batched=False` and `with_indices=False`
++                - `function(example: Dict, indices: int) -> Union[Dict, None]` if `batched=False` and `with_indices=True`
+                 - `function(batch: Dict[List]) -> Union[Dict, None]` if `batched=True` and `with_indices=False`
+                 - `function(batch: Dict[List], indices: List[int]) -> Union[Dict, None]` if `batched=True` and `with_indices=True`
+             with_indices (:obj:`bool`, defaults to `False`): Provide example indices to `function`. Note that in this case the signature of `function` should be `def function(example, idx): ...`.
+@@ -162,6 +167,8 @@
+                 `batch_size <= 0` or `batch_size == None`: Provide the full dataset as a single batch to `function`
+             batched (:obj:`bool`, defaults to `False`): Provide batches of examples to `function`
+             batch_size (:obj:`Optional[int]`, defaults to `1000`): Number of examples per batch provided to `function` if `batched=True`
++            input_columns (:obj:`Optional[Union[str, List[str]]]`, defaults to `None`): The columns to be passed into `function` as
++                positional arguments. If `None`, a dict mapping to all formatted columns is passed as one argument.
+             remove_columns (:obj:`Optional[List[str]]`, defaults to `None`): Remove a selection of columns while doing the mapping.
+                 Columns will be removed before updating the examples with the output of `function`, i.e. if `function` is adding
+                 columns with names in `remove_columns`, these columns will be kept.
+@@ -184,6 +191,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -202,6 +210,7 @@
+     def _map_single(
+         self,
+         function: Optional[Callable],
++        input_columns: Optional[Union[str, List[str]]],
+         with_indices: bool,
+         batched: bool,
+         batch_size: Optional[int],
+@@ -216,6 +225,7 @@
+         # If we don't do caching, then don't create cache files
+         if not load_from_cache_file:
+             keep_in_memory = True
++        # Prepare the function
+         function = self._prepare_function(
+             function=function,
+             with_indices=with_indices,
+@@ -223,6 +233,7 @@
+             batch_size=batch_size,
+             remove_columns=remove_columns,
+             keep_in_memory=keep_in_memory,
++            input_columns=input_columns,
+         )
+         # Check if we've already cached this computation (indexed by function and dataset content)
+         if self.cache_files:
+@@ -260,6 +271,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -274,6 +286,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -292,6 +305,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -306,6 +320,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -324,6 +339,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -338,6 +354,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -356,6 +373,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -370,6 +388,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -388,6 +407,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -402,6 +422,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -420,6 +441,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -434,6 +456,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -452,6 +475,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -466,6 +490,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -484,6 +509,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -498,6 +524,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -516,6 +543,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -530,6 +558,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -548,6 +577,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -562,6 +592,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -580,6 +611,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -594,6 +626,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -612,6 +645,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -626,6 +660,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -644,6 +679,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -658,6 +694,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -676,6 +713,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -690,6 +728,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -708,6 +747,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -722,6 +762,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -740,6 +781,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -754,6 +796,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -772,6 +815,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -786,6 +830,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -804,6 +849,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -818,6 +864,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -836,6 +883,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -850,6 +898,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -868,6 +917,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -882,6 +932,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -900,6 +951,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -914,6 +966,7 @@
+         """
+         self._map_single(
+             function=function,
++            input_columns=input_columns,
+             with_indices=with_indices,
+             batched=batched,
+             batch_size=batch_size,
+@@ -932,6 +985,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+        

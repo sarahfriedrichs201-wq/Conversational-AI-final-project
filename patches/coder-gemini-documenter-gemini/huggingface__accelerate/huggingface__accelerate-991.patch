@@ -1,0 +1,279 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -1,6 +1,7 @@
+ import json
+ import os
+ from contextlib import contextmanager
++from collections import OrderedDict
+ from pathlib import Path
+ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+ 
+@@ -10,6 +11,7 @@
+ import torch
+ import torch.nn as nn
+ from torch.optim import Optimizer
++from torch.utils import hooks
+ 
+ from .checkpointing import load_accelerator_state, save_accelerator_state
+ from .data_loader import AcceleratorDataLoader
+@@ -194,6 +196,9 @@
+         self._optimizers = []
+         self._schedulers = []
+         self._dataloaders = []
++        self._save_state_pre_hooks: OrderedDict[int, Callable] = OrderedDict()
++        self._load_state_pre_hooks: OrderedDict[int, Callable] = OrderedDict()
++        self._hook_counter: int = 0
+ 
+         # Internal tracker for the number of `prepare` calls
+         self._num_prepared_models = 0
+@@ -230,6 +235,12 @@
+         self._dataloaders = []
+         self._num_prepared_models = 0
+ 
++    def _register_state_hook(self, hook_dict: OrderedDict[int, Callable], hook: Callable) -> hooks.RemovableHandle:
++        """Helper to register a hook and return a RemovableHandle."""
++        self._hook_counter += 1
++        handle = hooks.RemovableHandle(hook_dict, self._hook_counter)
++        hook_dict[self._hook_counter] = hook
++        return handle
++
+     def __repr__(self):
+         return (
+             f"Accelerator:\n"
+@@ -1160,13 +1171,16 @@
+         self,
+         model: nn.Module,
+         output_dir: Union[str, Path],
+-        index: int,
++        index: int,
++        state_dict: Optional[Dict[str, torch.Tensor]] = None,
+     ):
+         output_dir = Path(output_dir)
+         if self.state.use_fsdp:
+             # FSDP specific saving
+             self.state.fsdp_plugin.save_model(self, model, output_dir, index)
+         else:
+-            torch.save(self.unwrap_model(model).state_dict(), os.path.join(output_dir, f"model_{index}.bin"))
++            if state_dict is None:
++                state_dict = self.unwrap_model(model).state_dict()
++            torch.save(state_dict, os.path.join(output_dir, f"model_{index}.bin"))
+ 
+     def _save_optimizer_state(self, optimizer: Optimizer, output_dir: Union[str, Path], index: int):
+         output_dir = Path(output_dir)
+@@ -1200,10 +1214,28 @@
+     def save_checkpoint(
+         self,
+         output_dir: str,
++        models: Optional[List[nn.Module]] = None,
++        weights: Optional[List[Dict[str, torch.Tensor]]] = None,
+         **kwargs
+     ):
+         """
+         Saves the current state of the Accelerator to an `output_dir`. This method is called by `save_state`.
++
++        Args:
++            output_dir (`str`):
++                The directory to save the state to.
++            models (`List[torch.nn.Module]`, *optional*):
++                A list of models to save. If provided, these models will be saved instead of `self._models`.
++                This is primarily used by pre-save hooks to modify the list of models to be saved.
++            weights (`List[Dict[str, torch.Tensor]]`, *optional`):
++                A list of state dictionaries corresponding to the `models` list. If provided, these weights will be
++                saved instead of generating them from the `models`. This is primarily used by pre-save hooks.
++            kwargs (`Dict[str, Any]`, *optional`):
++                Additional keyword arguments.
++        """
++        output_dir = Path(output_dir)
++        os.makedirs(output_dir, exist_ok=True)
++
++        # Determine which models and weights to process
++        models_to_process = models if models is not None else self._models
++        weights_to_process = weights if weights is not None else [model.state_dict() for model in self._models]
++
++        if len(models_to_process) != len(weights_to_process):
++            raise ValueError(
++                "The number of models and weights to process must be the same. "
++                "This indicates an issue with a pre-save hook."
++            )
++
++        if self.is_main_process:
++            # Save models
++            for i, model in enumerate(models_to_process):
++                current_weights = weights_to_process[i]
++                self._save_model_state(model, output_dir, index=i, state_dict=current_weights)
++
++            # Save optimizers
++            for i, optimizer in enumerate(self._optimizers):
++                self._save_optimizer_state(optimizer, output_dir, index=i)
++
++            # Save schedulers
++            for i, scheduler in enumerate(self._schedulers):
++                self._save_scheduler_state(scheduler, output_dir, index=i)
++
++            # Save RNG states
++            self._save_rng_state(output_dir)
++
++    @overload
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        ...
++
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str) -> None`
++
++        The `models` argument is a mutable list of the models as saved in the accelerator state under
++        `accelerator._models`. The `weights` argument is a mutable list of the state dicts of the `models`,
++        and the `output_dir` argument is the `output_dir` argument passed to [`Accelerator.save_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already saved models and their corresponding weights from the
++        `models` and `weights` lists, respectively, to prevent them from being processed by the default saving
++        mechanism.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        return self._register_state_hook(self._save_state_pre_hooks, hook)
++
++    @overload
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        ...
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument is a mutable list of the models as saved in the accelerator state under
++        `accelerator._models`, and the `input_dir` argument is the `input_dir` argument passed to
++        [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the `models` list to prevent them
++        from being processed by the default loading mechanism.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        return self._register_state_hook(self._load_state_pre_hooks, hook)
++
++    @overload
+     def save_state(self, output_dir: str, **kwargs):
+         ...
+ 
+@@ -1211,15 +1243,25 @@
+             kwargs (`Dict[str, Any]`, *optional*):
+                 Additional keyword arguments passed to the `save_checkpoint` method.
+         """
+-        output_dir = Path(output_dir)
+-        os.makedirs(output_dir, exist_ok=True)
+-
+-        # Save the accelerator state
+-        self.save_checkpoint(output_dir, **kwargs)
++        output_dir = Path(output_dir)
++        os.makedirs(output_dir, exist_ok=True)
++
++        # Prepare mutable lists for hooks and default saving
++        models_to_save = list(self._models)
++        # Ensure weights are gathered in the same order as models
++        weights_to_save = [model.state_dict() for model in self._models]
++
++        # Call pre-save hooks
++        for hook in self._save_state_pre_hooks.values():
++            hook(models_to_save, weights_to_save, output_dir)
++
++        # Pass the potentially modified lists to save_checkpoint
++        self.save_checkpoint(output_dir, models=models_to_save, weights=weights_to_save, **kwargs)
+ 
+         if self.is_main_process:
+             state = {"distributed_type": self.distributed_type.value}
+-            # ... (existing code to populate state dict) ...
++            state["_accelerator_state"] = save_accelerator_state(self.state)
++            state["_rng_state"] = self.get_rng_state()
+             with open(os.path.join(output_dir, "accelerator_state.json"), "w") as f:
+                 json.dump(state, f)
+ 
+@@ -1436,19 +1478,35 @@
+     def load_checkpoint(
+         self,
+         input_dir: str,
++        models: Optional[List[nn.Module]] = None,
+         **kwargs
+     ):
+         """
+         Loads the full accelerator state from an `input_dir`. This method is called by `load_state`.
+ 
+         Args:
+             input_dir (`str`):
+                 The directory to load the state from.
++            models (`List[torch.nn.Module]`, *optional*):
++                A list of models to load weights into. If provided, weights will be loaded into these models
++                instead of `self._models`. This is primarily used by pre-load hooks to modify the list of models
++                to be loaded.
+             kwargs (`Dict[str, Any]`, *optional`):
+                 Additional keyword arguments.
+         """
+         input_dir = Path(input_dir)
+         if not input_dir.is_dir():
+             raise ValueError(f"The input directory {input_dir} does not exist or is not a directory.")
+ 
++        # Determine which models to process
++        models_to_process = models if models is not None else self._models
++
+         if self.is_main_process:
+-            for i, model in enumerate(self._models):
++            # Load models
++            for i, model in enumerate(models_to_process):
+                 self._load_model_state(model, input_dir, index=i)
+ 
+             for i, optimizer in enumerate(self._optimizers):
+@@ -1462,9 +1520,17 @@
+         if not input_dir.is_dir():
+             raise ValueError(f"The input directory {input_dir} does not exist or is not a directory.")
+ 
+-        # Load the accelerator state
+-        self.load_checkpoint(input_dir, **kwargs)
++        # Prepare mutable list for hooks and default loading
++        models_to_load = list(self._models)
++
++        # Call pre-load hooks
++        for hook in self._load_state_pre_hooks.values():
++            hook(models_to_load, input_dir)
++
++        # Pass the potentially modified list to load_checkpoint
++        self.load_checkpoint(input_dir, models=models_to_load, **kwargs)
+ 
+         if self.is_main_process:
+             with open(os.path.join(input_dir, "accelerator_state.json"), "r") as f:
+                 state = json.load(f)
+-            # ... (existing code to load state dict) ...
++            load_accelerator_state(os.path.join(input_dir, "accelerator_state.json"), self.state)
++            self.set_rng_state(state["_rng_state"])

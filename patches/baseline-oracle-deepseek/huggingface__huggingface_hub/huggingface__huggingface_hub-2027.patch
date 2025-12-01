@@ -1,0 +1,81 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -1,6 +1,7 @@
+ import os
+ import posixpath
+ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
++from urllib.parse import quote
+ 
+ import fsspec
+ from fsspec.spec import AbstractFileSystem
+@@ -9,6 +10,7 @@ from fsspec.utils import stringify_path
+ 
+ from ..constants import ENDPOINT, REPO_TYPES
+ from ..utils import get_token, logging
++from .._common import HfFolder
+ 
+ 
+ if TYPE_CHECKING:
+@@ -17,6 +19,7 @@ if TYPE_CHECKING:
+ logger = logging.get_logger(__name__)
+ 
+ REPO_TYPE = "model"
++HF_URL_TEMPLATE = "https://huggingface.co/{repo_id}/resolve/{revision}/{filename}"
+ 
+ 
+ class HfFileSystem(AbstractFileSystem):
+@@ -324,6 +327,25 @@ class HfFileSystem(AbstractFileSystem):
+             return self._ls_from_cache(path)
+         return self._ls_tree(path, recursive=recursive, revision=revision)
+ 
++    def url(self, path: str) -> str:
++        """Get the HTTP URL of the given path.
++
++        Args:
++            path (str): Path to the file in the Hugging Face Hub.
++
++        Returns:
++            str: The HTTP URL to download the file.
++        """
++        path = self._strip_protocol(path)
++        parts = path.split("/")
++        if len(parts) < 2:
++            raise ValueError(f"Invalid path: {path}")
++        
++        repo_id = parts[0]
++        revision = parts[1] if len(parts) > 1 and "@" in parts[1] else "main"
++        filename = "/".join(parts[2:]) if len(parts) > 2 else ""
++        
++        return HF_URL_TEMPLATE.format(repo_id=repo_id, revision=revision, filename=quote(filename))
+ 
+ class HfFileSystemFile(io.IOBase):
+     """File representation for HfFileSystem."""
+@@ -354,6 +376,13 @@ class HfFileSystemFile(io.IOBase):
+         self._pos = 0
+         self._buffer = b""
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file.
++
++        Returns:
++            str: The HTTP URL to download the file.
++        """
++        return self.fs.url(self.path)
+ 
+ class HfFileSystemStreamFile(io.IOBase):
+     """Streaming file representation for HfFileSystem."""
+@@ -387,6 +416,13 @@ class HfFileSystemStreamFile(io.IOBase):
+         self._pos = 0
+         self._buffer = b""
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file.
++
++        Returns:
++            str: The HTTP URL to download the file.
++        """
++        return self.fs.url(self.path)
+ 
+ def safe_revision(revision: str) -> str:
+     """Convert a revision to a filesystem-safe string.

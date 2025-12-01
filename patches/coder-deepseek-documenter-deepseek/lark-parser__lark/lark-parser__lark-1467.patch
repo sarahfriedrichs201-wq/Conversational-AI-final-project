@@ -1,0 +1,38 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -1,5 +1,5 @@
+ import copy
+-from typing import List, Any, Union, Iterator as _Iterator
++from typing import List, Any, Union, Iterator as _Iterator, Iterator
+ 
+ from .visitors import _DiscardType
+ from .lexer import Token
+@@ -118,6 +118,27 @@ class Tree(Serialize):
+         for child in self.children:
+             yield from child.iter_subtrees()
+ 
++    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
++        """
++        Returns all tokens whose type equals the given token_type.
++        
++        This is a recursive function that will find tokens in all the subtrees.
++        
++        Example:
++            >>> term_tokens = tree.find_token('TERM')
++        
++        Args:
++            token_type: The type of token to search for
++            
++        Yields:
++            Tokens matching the specified token_type
++        """
++        for child in self.children:
++            if isinstance(child, Tree):
++                yield from child.find_token(token_type)
++            else:
++                if hasattr(child, 'type') and child.type == token_type:
++                    yield child
+ 
+ class ParseTree(Tree):
+     """A tree that represents the grammatical structure of the text.

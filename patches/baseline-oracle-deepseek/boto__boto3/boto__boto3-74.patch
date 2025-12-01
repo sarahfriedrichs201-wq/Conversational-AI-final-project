@@ -1,0 +1,585 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -1,6 +1,7 @@
+ # Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License"). You
++# may not use this file except in compliance with the License. A copy of
+ # the License is located at
+ #
+ # http://aws.amazon.com/apache2.0/
+@@ -10,6 +11,7 @@
+ # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+ # ANY KIND, either express or implied. See the License for the specific
+ # language governing permissions and limitations under the License.
++import jmespath
+ 
+ from boto3.resources.base import ResourceMeta, ServiceResource
+ from boto3.resources.collection import CollectionFactory
+@@ -17,6 +19,7 @@
+ from boto3.resources.action import ServiceAction, WaiterAction
+ from boto3.resources.model import Collection, Action, Waiter, SubResource
+ from boto3.docs.docstring import ResourceDocstring
++from boto3.exceptions import ResourceLoadException
+ 
+ 
+ class ResourceFactory(object):
+@@ -224,6 +227,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -324,6 +328,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -365,6 +370,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -406,6 +412,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -447,6 +454,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -488,6 +496,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -529,6 +538,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -570,6 +580,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -611,6 +622,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -652,6 +664,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -693,6 +706,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -734,6 +748,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -775,6 +790,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -816,6 +832,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -857,6 +874,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -898,6 +916,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -939,6 +958,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -980,6 +1000,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1021,6 +1042,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1062,6 +1084,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1103,6 +1126,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1144,6 +1168,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1185,6 +1210,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1226,6 +1252,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1267,6 +1294,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1308,6 +1336,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1349,6 +1378,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1390,6 +1420,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1431,6 +1462,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1472,6 +1504,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1513,6 +1546,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1554,6 +1588,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1595,6 +1630,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1636,6 +1672,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1677,6 +1714,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1718,6 +1756,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1759,6 +1798,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1800,6 +1840,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1841,6 +1882,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1882,6 +1924,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1923,6 +1966,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -1964,6 +2008,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2005,6 +2050,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2046,6 +2092,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2087,6 +2134,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2128,6 +2176,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2169,6 +2218,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2210,6 +2260,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2251,6 +2302,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2292,6 +2344,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2333,6 +2386,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2374,6 +2428,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2415,6 +2470,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2456,6 +2512,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2497,6 +2554,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2538,6 +2596,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2579,6 +2638,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2620,6 +2680,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2661,6 +2722,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2702,6 +2764,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2743,6 +2806,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2784,6 +2848,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2825,6 +2890,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2866,6 +2932,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2907,6 +2974,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2948,6 +3016,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -2989,6 +3058,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -3030,6 +3100,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -3071,6 +3142,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }
+ 
+         # Add identifiers
+@@ -3112,6 +3184,7 @@
+         # Create the resource class
+         attrs = {
+             'meta': ResourceMeta(service_name, resource_model=model),
++            '_loaded': False,
+         }

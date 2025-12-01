@@ -1,0 +1,157 @@
+diff --git a/docs/en/notes/changelog.md b/docs/en/notes/changelog.md
+--- a/docs/en/notes/changelog.md
++++ b/docs/en/notes/changelog.md
+@@ -1,3 +1,8 @@
+ # Changelog
+ 
++### vX.Y.Z (YYYY-MM-DD)
++**Enhancements**
++- Add `deprecated_function` decorator to `mmengine.utils.misc` for marking deprecated functions.
++
+ ### v0.9.0 (2023-10-26)
+ **Enhancements**
+ - Some recent enhancement.
+diff --git a/docs/zh_CN/notes/changelog.md b/docs/zh_CN/notes/changelog.md
+--- a/docs/zh_CN/notes/changelog.md
++++ b/docs/zh_CN/notes/changelog.md
+@@ -1,3 +1,8 @@
+ # Changelog
+ 
++### vX.Y.Z (YYYY-MM-DD)
++**Enhancements**
++- Add `deprecated_function` decorator to `mmengine.utils.misc` for marking deprecated functions.
++
+ ### v0.9.0 (2023-10-26)
+ **Enhancements**
+ - Some recent enhancement.
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -1,6 +1,9 @@
+ import os
+ import sys
+ from collections import abc
++import functools
++import warnings
++from typing import Any, Callable
+ 
+ from mmengine.utils.dl_utils import is_seq_of
+ 
+@@ -100,3 +103,44 @@
+     return some_other_utility_function()
+ 
+ 
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring.
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A new function, which will be deprecated soon.
++    """
++    def decorator(function: Callable) -> Callable:
++        # Construct the deprecation message for the docstring
++        deprecation_message = (
++            f'Deprecated since version {since} and will be removed in version '
++            f'{removed_in}. {instructions}'
++        )
++
++        # Modify the function\'s docstring
++        original_doc = function.__doc__ if function.__doc__ else ''
++        # Prepend the deprecation message to the docstring
++        function.__doc__ = f'{deprecation_message}\n\n{original_doc}'.strip()
++
++        @functools.wraps(function)
++        def wrapper(*args: Any, **kwargs: Any) -> Any:
++            # Construct the warning message
++            warning_message = (
++                f'{function.__name__} is deprecated since version {since} and '
++                f'will be removed in version {removed_in}. {instructions}'
++            )
++            # Issue a DeprecationWarning, pointing to the caller of the deprecated function
++            warnings.warn(warning_message, DeprecationWarning, stacklevel=2)
++            # Call the original function
++            return function(*args, **kwargs)
++        return wrapper
++    return decorator
++
++
+diff --git a/tests/test_utils/test_misc.py b/tests/test_utils/test_misc.py
+--- a/tests/test_utils/test_misc.py
++++ b/tests/test_utils/test_misc.py
+@@ -1,6 +1,9 @@
+ import os.path as osp
++import pytest
++import warnings
+ 
+ from mmengine.utils.misc import is_list_of, is_seq_of
++from mmengine.utils.misc import deprecated_function
+ 
+ 
+ class TestMisc:
+@@ -100,3 +103,66 @@
+         assert is_seq_of(obj, int) is False
+ 
+ 
++def test_deprecated_function_warning():
++    """Test if deprecated_function issues a DeprecationWarning."""
++
++    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
++    def old_func(a, b):
++        return a + b
++
++    with pytest.warns(DeprecationWarning) as record:
++        result = old_func(1, 2)
++        assert result == 3
++        assert len(record) == 1
++        assert issubclass(record[0].category, DeprecationWarning)
++        assert 'old_func is deprecated since version 0.1.0 and will be removed in version 0.2.0. Use new_func instead.' in str(record[0].message)
++
++
++def test_deprecated_function_docstring_with_original_doc():
++    """Test docstring modification for a function with an existing docstring."""
++
++    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
++    def func_with_doc():
++        """This is the original docstring."""
++        pass
++
++    expected_doc = (
++        'Deprecated since version 0.1.0 and will be removed in version 0.2.0. '
++        'Use new_func instead.\n\nThis is the original docstring.'
++    )
++    assert func_with_doc.__doc__ == expected_doc
++
++
++def test_deprecated_function_docstring_without_original_doc():
++    """Test docstring modification for a function without an existing docstring."""
++
++    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
++    def func_without_doc():
++        pass
++
++    expected_doc = (
++        'Deprecated since version 0.1.0 and will be removed in version 0.2.0. '
++        'Use new_func instead.'
++    )
++    assert func_without_doc.__doc__ == expected_doc
++
++
++def test_deprecated_function_preserves_original_logic():
++    """Test if the decorated function still executes its original logic."""
++
++    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
++    def calculate_sum(x, y):
++        return x + y
++
++    with pytest.warns(DeprecationWarning):
++        assert calculate_sum(5, 7) == 12
++        assert calculate_sum(x=10, y=20) == 30
++
+```

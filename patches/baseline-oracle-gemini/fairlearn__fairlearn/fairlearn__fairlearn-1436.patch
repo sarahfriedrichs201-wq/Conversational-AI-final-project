@@ -1,0 +1,223 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -1,6 +1,7 @@
+ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
+ import pandas as pd
+ 
++
+ class AnnotatedMetricFunction(NamedTuple):
+     metric_function: Callable[..., Any]
+     is_greater_better: Optional[bool]
+@@ -11,6 +12,40 @@
+         self.overall = overall
+         self.by_group = by_group
+ 
++
++def _apply_functions(
++    *,
++    data: pd.DataFrame,
++    annotated_functions: Dict[str, AnnotatedMetricFunction],
++    grouping_names: Optional[List[str]],
++) -> Union[pd.Series, pd.DataFrame]:
++    """Apply annotated metric functions to a DataFrame, optionally grouping by specified columns.
++
++    Parameters
++    ----------
++    data : pd.DataFrame
++        The input data on which the metric functions will be applied.
++    annotated_functions : dict[str, AnnotatedMetricFunction]
++        A dictionary where keys are metric names and values are the corresponding annotated metric
++        functions.
++    grouping_names : list[str] | None
++        A list of column names to group by before applying the metric functions. If None, the
++        functions are applied to the entire DataFrame.
++
++    Returns
++    -------
++    Series or DataFrame
++        A Series or DataFrame with the results of the metric functions applied. If grouping_names is provided,
++        the results are grouped accordingly.
++    """
++    metric_funcs_to_apply = {
++        name: ann_func.metric_function for name, ann_func in annotated_functions.items()
++    }
++
++    if grouping_names:
++        return data.groupby(grouping_names).apply(lambda x: pd.Series({name: func(x) for name, func in metric_funcs_to_apply.items()}))
++    else:
++        return pd.Series({name: func(data) for name, func in metric_funcs_to_apply.items()})
++
+     @classmethod
+     def create(
+         cls,
+@@ -18,24 +53,16 @@
+         annotated_functions: Dict[str, AnnotatedMetricFunction],
+         grouping_names: Optional[List[str]] = None,
+     ) -> "DisaggregatedResult":
+-        overall_results = {}
+-        for name, ann_func in annotated_functions.items():
+-            overall_results[name] = ann_func.metric_function(data)
+-        overall_series = pd.Series(overall_results)
+-
+-        by_group_df = pd.DataFrame()
++        overall_series = _apply_functions(
++            data=data, annotated_functions=annotated_functions, grouping_names=None
++        )
++
+         if grouping_names:
+-            grouped_data = data.groupby(grouping_names)
+-            group_results = []
+-            for group_name, group_df in grouped_data:
+-                row_data = {"group_name": group_name}
+-                for name, ann_func in annotated_functions.items():
+-                    row_data[name] = ann_func.metric_function(group_df)
+-                group_results.append(row_data)
+-            by_group_df = pd.DataFrame(group_results).set_index("group_name")
+-            by_group_df.index.name = None
++            by_group_df = _apply_functions(
++                data=data, annotated_functions=annotated_functions, grouping_names=grouping_names
++            )
+         else:
+-            pass
+-
++            # If no grouping names, by_group should be an empty DataFrame with metric columns
++            # to maintain consistent structure.
++            by_group_df = pd.DataFrame(columns=list(annotated_functions.keys()))
+         return cls(overall_series, by_group_df)
+diff --git a/fairlearn/metrics/tests/test_disaggregated_result.py b/fairlearn/metrics/tests/test_disaggregated_result.py
+new file mode 100644
+--- /dev/null
++++ b/fairlearn/metrics/tests/test_disaggregated_result.py
+@@ -0,0 +1,128 @@
++import pandas as pd
++import pytest
++from fairlearn.metrics._disaggregated_result import (
++    _apply_functions,
++    DisaggregatedResult,
++    AnnotatedMetricFunction,
++)
++
++# Dummy metric functions for testing
++def _dummy_metric_sum(df: pd.DataFrame) -> float:
++    return df["value"].sum()
++
++
++def _dummy_metric_mean(df: pd.DataFrame) -> float:
++    return df["value"].mean()
++
++
++def _dummy_metric_count(df: pd.DataFrame) -> int:
++    return len(df)
++
++
++class TestApplyFunctions:
++    data = pd.DataFrame({"group": ["A", "A", "B", "B", "A", "B"], "value": [1, 2, 3, 4, 5, 6]})
++    annotated_functions = {
++        "sum_val": AnnotatedMetricFunction(
++            metric_function=_dummy_metric_sum, is_greater_better=True, is_comparing_to_single_value=False
++        ),
++        "mean_val": AnnotatedMetricFunction(
++            metric_function=_dummy_metric_mean, is_greater_better=True, is_comparing_to_single_value=False
++        ),
++        "count_val": AnnotatedMetricFunction(
++            metric_function=_dummy_metric_count, is_greater_better=False, is_comparing_to_single_value=False
++        ),
++    }
++
++    def test_apply_functions_no_grouping(self):
++        result = _apply_functions(data=self.data, annotated_functions=self.annotated_functions, grouping_names=None)
++        assert isinstance(result, pd.Series)
++        assert result["sum_val"] == 21  # 1+2+3+4+5+6
++        assert result["mean_val"] == 3.5  # 21/6
++        assert result["count_val"] == 6
++
++    def test_apply_functions_with_grouping(self):
++        result = _apply_functions(data=self.data, annotated_functions=self.annotated_functions, grouping_names=["group"])
++        assert isinstance(result, pd.DataFrame)
++        # Group A: value = [1, 2, 5] -> sum=8, mean=8/3, count=3
++        # Group B: value = [3, 4, 6] -> sum=13, mean=13/3, count=3
++        pd.testing.assert_series_equal(
++            result.loc["A"], pd.Series({"sum_val": 8.0, "mean_val": 8 / 3, "count_val": 3}, name="A")
++        )
++        pd.testing.assert_series_equal(
++            result.loc["B"], pd.Series({"sum_val": 13.0, "mean_val": 13 / 3, "count_val": 3}, name="B")
++        )
++
++    def test_apply_functions_single_metric(self):
++        single_metric = {
++            "sum_val": AnnotatedMetricFunction(
++                metric_function=_dummy_metric_sum, is_greater_better=True, is_comparing_to_single_value=False
++            )
++        }
++        result_no_group = _apply_functions(data=self.data, annotated_functions=single_metric, grouping_names=None)
++        assert isinstance(result_no_group, pd.Series)
++        assert result_no_group["sum_val"] == 21
++
++        result_with_group = _apply_functions(
++            data=self.data, annotated_functions=single_metric, grouping_names=["group"]
++        )
++        assert isinstance(result_with_group, pd.DataFrame)
++        pd.testing.assert_series_equal(result_with_group.loc["A"], pd.Series({"sum_val": 8.0}, name="A"))
++
++
++class TestDisaggregatedResultCreate:
++    data = pd.DataFrame({"group": ["A", "A", "B", "B", "A", "B"], "value": [1, 2, 3, 4, 5, 6]})
++    annotated_functions = {
++        "sum_val": AnnotatedMetricFunction(
++            metric_function=_dummy_metric_sum, is_greater_better=True, is_comparing_to_single_value=False
++        ),
++        "mean_val": AnnotatedMetricFunction(
++            metric_function=_dummy_metric_mean, is_greater_better=True, is_comparing_to_single_value=False
++        ),
++    }
++
++    def test_create_no_grouping_names(self):
++        result = DisaggregatedResult.create(
++            data=self.data, annotated_functions=self.annotated_functions, grouping_names=None
++        )
++        assert isinstance(result, DisaggregatedResult)
++        assert isinstance(result.overall, pd.Series)
++        assert result.overall["sum_val"] == 21
++        assert result.overall["mean_val"] == 3.5
++
++        assert isinstance(result.by_group, pd.DataFrame)
++        assert result.by_group.empty
++        assert list(result.by_group.columns) == list(self.annotated_functions.keys())
++
++    def test_create_with_grouping_names(self):
++        result = DisaggregatedResult.create(
++            data=self.data, annotated_functions=self.annotated_functions, grouping_names=["group"]
++        )
++        assert isinstance(result, DisaggregatedResult)
++        assert isinstance(result.overall, pd.Series)
++        assert result.overall["sum_val"] == 21
++        assert result.overall["mean_val"] == 3.5
++
++        assert isinstance(result.by_group, pd.DataFrame)
++        # Group A: sum=8, mean=8/3
++        # Group B: sum=13, mean=13/3
++        pd.testing.assert_series_equal(
++            result.by_group.loc["A"], pd.Series({"sum_val": 8.0, "mean_val": 8 / 3}, name="A")
++        )
++        pd.testing.assert_series_equal(
++            result.by_group.loc["B"], pd.Series({"sum_val": 13.0, "mean_val": 13 / 3}, name="B")
++        )
++
++    def test_create_with_multi_index_grouping(self):
++        data_multi = pd.DataFrame(
++            {"group1": ["A", "A", "B", "B", "A", "B"], "group2": ["X", "Y", "X", "Y", "X", "Y"], "value": [1, 2, 3, 4, 5, 6]}
++        )
++        result = DisaggregatedResult.create(
++            data=data_multi, annotated_functions=self.annotated_functions, grouping_names=["group1", "group2"]
++        )
++        assert isinstance(result, DisaggregatedResult)
++        assert isinstance(result.by_group, pd.DataFrame)
++        # A, X: value = [1, 5] -> sum=6, mean=3
++        # A, Y: value = [2] -> sum=2, mean=2
++        # B, X: value = [3] -> sum=3, mean=3
++        # B, Y: value = [4, 6] -> sum=10, mean=5
++        pd.testing.assert_series_equal(result.by_group.loc[("A", "X")], pd.Series({"sum_val": 6.0, "mean_val": 3.0}, name=("A", "X")))
++        pd.testing.assert_series_equal(result.by_group.loc[("A", "Y")], pd.Series({"sum_val": 2.0, "mean_val": 2.0}, name=("A", "Y")))
++        pd.testing.assert_series_equal(result.by_group.loc[("B", "X")], pd.Series({"sum_val": 3.0, "mean_val": 3.0}, name=("B", "X")))
++        pd.testing.assert_series_equal(result.by_group.loc[("B", "Y")], pd.Series({"sum_val": 10.0, "mean_val": 5.0}, name=("B", "Y")))

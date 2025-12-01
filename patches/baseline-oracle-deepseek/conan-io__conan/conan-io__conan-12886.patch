@@ -1,0 +1,37 @@
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -1,3 +1,4 @@
++import os
+ from conans.errors import ConanException
+ 
+ 
+@@ -5,6 +6,28 @@
+     pass
+ 
+ 
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    """
++    Compatibility function for Conan 1.x behavior in package_info() method.
++    In Conan 2, path conversions should not be performed in package_info.
++    This function is provided for legacy compatibility only.
++
++    :param conanfile: The current conanfile instance
++    :param path: The path to convert
++    :param path_flavor: Optional flavor parameter (for compatibility with Conan 1.x)
++    :return: The converted path or the original path if no conversion is needed
++    """
++    # In Conan 2, we should not perform path conversions in package_info
++    # This function exists only for compatibility with recipes that used
++    # this pattern in Conan 1.x
++    if hasattr(conanfile, 'settings_build') and conanfile.settings_build.get_safe('os') == "Windows":
++        from conan.tools.microsoft import unix_path
++        if path_flavor:
++            return unix_path(conanfile, path, path_flavor)
++        return unix_path(conanfile, path)
++    return path
++
++
+ def deduce_subsystem(conanfile, subsystem):
+     """
+     Helper to deduce the subsystem (msys2, msys, cygwin, etc) from the settings

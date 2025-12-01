@@ -1,0 +1,83 @@
+diff --git a/graphene/types/inputobjecttype.py b/graphene/types/inputobjecttype.py
+--- a/graphene/types/inputobjecttype.py
++++ b/graphene/types/inputobjecttype.py
+@@ -1,3 +1,7 @@
++"""
++InputObjectType implementation for Graphene.
++"""
++
+ from .objecttype import ObjectType
+ from .objecttype import ObjectTypeOptions
+ from .unmountedtype import UnmountedType
+@@ -5,6 +9,17 @@ from .utils import get_field_as
+ from .utils import yank_fields_from_attrs
+ 
+ 
++# Module-level configuration
++_INPUT_OBJECT_TYPE_DEFAULT_VALUE = None
++
++
++def set_input_object_type_default_value(default_value):
++    """Change the sentinel value returned by non-specified fields in an InputObjectType."""
++    global _INPUT_OBJECT_TYPE_DEFAULT_VALUE
++    _INPUT_OBJECT_TYPE_DEFAULT_VALUE = default_value
++
++
++
+ class InputObjectTypeOptions(ObjectTypeOptions):
+     pass
+ 
+@@ -19,7 +34,7 @@ class InputObjectType(ObjectType):
+         for field_name in self._meta.fields:
+             if field_name in kwargs:
+                 setattr(self, field_name, kwargs[field_name])
+-            else:
+-                setattr(self, field_name, None)
++            else:
++                setattr(self, field_name, _INPUT_OBJECT_TYPE_DEFAULT_VALUE)
+ 
+     @classmethod
+diff --git a/tests/types/test_inputobjecttype.py b/tests/types/test_inputobjecttype.py
+--- a/tests/types/test_inputobjecttype.py
++++ b/tests/types/test_inputobjecttype.py
+@@ -1,6 +1,7 @@
+ import pytest
+ 
+ from graphene import InputObjectType, String
++from graphene.types.inputobjecttype import set_input_object_type_default_value
+ 
+ 
+ def test_inputobjecttype_can_be_initialized_with_kwargs():
+@@ -15,3 +16,32 @@ def test_inputobjecttype_can_be_initialized_with_kwargs():
+     assert input_instance.field1 == "some_value"
+     assert input_instance.field2 is None
+     assert input_instance.field3 == "other_value"
++
++
++def test_set_input_object_type_default_value():
++    """Test that set_input_object_type_default_value changes the default value."""
++    
++    # Test default behavior (None)
++    class TestInput(InputObjectType):
++        optional_field = String()
++    
++    input_instance = TestInput()
++    assert input_instance.optional_field is None
++    
++    # Test custom sentinel value
++    sentinel = object()
++    set_input_object_type_default_value(sentinel)
++    
++    class TestInput2(InputObjectType):
++        optional_field = String()
++    
++    input_instance2 = TestInput2()
++    assert input_instance2.optional_field is sentinel
++    
++    # Test explicit None vs unset
++    input_instance_explicit_none = TestInput2(optional_field=None)
++    assert input_instance_explicit_none.optional_field is None
++    
++    # Reset to default for other tests
++    set_input_object_type_default_value(None)
++

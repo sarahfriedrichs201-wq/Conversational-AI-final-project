@@ -1,0 +1,67 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -1,6 +1,6 @@
+ import copy
+ from typing import List, Iterator, Union, overload, TYPE_CHECKING
+-from collections.abc import Iterable
++from collections.abc import Iterable
+ 
+ if TYPE_CHECKING:
+     from .lexer import Token
+@@ -116,6 +116,18 @@
+         for child in self.children:
+             yield from child.iter_subtrees()
+ 
++    def find_token(self, token_type: str) -> Iterator['Token']:
++        """Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++        """
++        for child in self.children:
++            if isinstance(child, Tree):
++                yield from child.find_token(token_type)
++            else:
++                if child.type == token_type:
++                    yield child
++
+     def __eq__(self, other):
+         if not isinstance(other, Tree):
+             return False
+diff --git a/tests/test_tree.py b/tests/test_tree.py
+--- a/tests/test_tree.py
++++ b/tests/test_tree.py
+@@ -1,6 +1,7 @@
+ import pytest
+ 
+ from lark import Tree, Token
++from lark.tree import Tree as TreeClass
+ 
+ 
+ def test_tree_creation():
+@@ -56,3 +57,25 @@
+     assert t.children == [Token('A', 'a'), Token('B', 'b'), Token('C', 'c')]
+     t.children[1] = Token('X', 'x')
+     assert t.children == [Token('A', 'a'), Token('X', 'x'), Token('C', 'c')]
++
++
++def test_find_token():
++    # Create a tree with nested tokens
++    tree = Tree('root', [
++        Token('TERM', 'x'),
++        Tree('subtree', [
++            Token('TERM', 'y'),
++            Token('OTHER', 'z'),
++            Tree('deep', [
++                Token('TERM', 'w')
++            ])
++        ]),
++        Token('OTHER', 'a')
++    ])
++
++    # Test finding all TERM tokens
++    term_tokens = list(tree.find_token('TERM'))
++    assert len(term_tokens) == 3
++    assert term_tokens[0] == Token('TERM', 'x')
++    assert term_tokens[1] == Token('TERM', 'y')
++    assert term_tokens[2] == Token('TERM', 'w')

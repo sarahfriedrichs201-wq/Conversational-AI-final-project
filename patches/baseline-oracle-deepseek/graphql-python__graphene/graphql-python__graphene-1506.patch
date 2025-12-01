@@ -1,0 +1,26 @@
+diff --git a/graphene/types/inputobjecttype.py b/graphene/types/inputobjecttype.py
+--- a/graphene/types/inputobjecttype.py
++++ b/graphene/types/inputobjecttype.py
+@@ -1,6 +1,13 @@
+ from .base import BaseOptions, BaseType
+ from .unmountedtype import UnmountedType
+ 
++# Global default value for non-specified fields in InputObjectType
++_input_object_type_default_value = None
++
++def set_input_object_type_default_value(default_value):
++    global _input_object_type_default_value
++    _input_object_type_default_value = default_value
++
+ 
+ class InputObjectTypeOptions(BaseOptions):
+     pass
+@@ -21,7 +28,7 @@
+         if name in self._initial:
+             return self._initial[name]
+         if name in self._fields:
+-            return None
++            return _input_object_type_default_value
+         raise AttributeError(
+             'Cannot access field "%s" before type has been initialized.' % name
+         )

@@ -1,0 +1,267 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -1,5 +1,6 @@
+ import logging
+ 
++from falcon import errors
+ from falcon.routing import CompiledRouter, DefaultRouter
+ 
+ LOGGER = logging.getLogger(__name__)
+@@ -22,7 +23,7 @@ class App(object):
+         self._router = router or DefaultRouter()
+         self._request_middleware = []
+         self._response_middleware = []
+-        self._error_handlers = []
++        self._error_handlers = {}
+ 
+     def add_error_handler(self, exception, handler=None):
+         """
+@@ -30,15 +31,17 @@ class App(object):
+ 
+         Args:
+             exception: Exception type to handle
+-            handler: Function to call when exception is raised
++            handler: Function to call when exception is raised
+ 
++        Note: Registration order no longer matters for inheritance hierarchy.
++        Only the most specific handler for a given exception type will be used.
+         """
+         if handler is None:
+             # Support decorator syntax
+             return lambda handler: self.add_error_handler(exception, handler)
+ 
+-        # Add to the beginning of the list for LIFO processing
+-        self._error_handlers.insert(0, (exception, handler))
++        # Store in dict with exception type as key
++        self._error_handlers[exception] = handler
+ 
+     def add_route(self, uri_template, resource, **kwargs):
+         """
+@@ -108,6 +111,28 @@ class App(object):
+         """
+         self._response_middleware.append(process_response)
+ 
++    def _find_error_handler(self, ex):
++        """
++        Find the most specific error handler for the given exception.
++
++        This method uses the exception's MRO (Method Resolution Order) to
++        find the closest matching error handler in the inheritance hierarchy.
++
++        Args:
++            ex: The exception instance that was raised
++
++        Returns:
++            The most specific error handler function, or None if no handler found
++        """
++        ex_type = type(ex)
++
++        # Traverse MRO to find the most specific handler
++        for base_type in ex_type.__mro__:
++            handler = self._error_handlers.get(base_type)
++            if handler is not None:
++                return handler
++
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """
+         Handle an exception raised while processing a request.
+@@ -115,15 +140,14 @@ class App(object):
+         # NOTE(kgriffs): This code runs in response to an exception in
+         # addition to the case when an error is raised from a handler.
+         # If possible, we would like to distinguish between these cases.
+-        for handler in self._error_handlers:
+-            if isinstance(ex, handler[0]):
+-                try:
+-                    handler[1](ex, req, resp, params)
+-                    return
+-                except Exception as handler_ex:
+-                    LOGGER.error('Error handler raised %s', handler_ex, exc_info=True)
+-                    # Fall through to default error handling
+-                    break
++        handler = self._find_error_handler(ex)
++
++        if handler is not None:
++            try:
++                handler(ex, req, resp, params)
++                return
++            except Exception as handler_ex:
++                LOGGER.error('Error handler raised %s', handler_ex, exc_info=True)
+ 
+         self._compose_error_response(req, resp, ex)
+ 
+diff --git a/tests/test_app.py b/tests/test_app.py
+--- a/tests/test_app.py
++++ b/tests/test_app.py
+@@ -1,5 +1,6 @@
+ import pytest
+ 
++import falcon
+ from falcon import App, testing
+ 
+ 
+@@ -7,6 +8,7 @@ class SimpleTestResource:
+     def on_get(self, req, resp):
+         resp.body = 'Hello, World!'
+ 
++
+ def test_simple():
+     app = App()
+     app.add_route('/', SimpleTestResource())
+@@ -16,3 +18,85 @@ def test_simple():
+ 
+     assert result.status_code == 200
+     assert result.text == 'Hello, World!'
++
++
++def test_error_handler_specificity():
++    """Test that the most specific error handler is selected."""
++    app = App()
++
++    call_log = []
++
++    @app.add_error_handler(Exception)
++    def handle_general(ex, req, resp, params):
++        call_log.append('general')
++
++    @app.add_error_handler(falcon.HTTPError)
++    def handle_http_error(ex, req, resp, params):
++        call_log.append('http_error')
++
++    @app.add_error_handler(falcon.HTTPForbidden)
++    def handle_forbidden(ex, req, resp, params):
++        call_log.append('forbidden')
++
++    # Test that HTTPForbidden uses the most specific handler
++    try:
++        app._handle_exception(None, None, falcon.HTTPForbidden(), {})
++    except Exception:
++        pass
++
++    assert call_log == ['forbidden']
++
++    # Test that other HTTPError uses the intermediate handler
++    call_log.clear()
++    try:
++        app._handle_exception(None, None, falcon.HTTPBadRequest(), {})
++    except Exception:
++        pass
++
++    assert call_log == ['http_error']
++
++    # Test that non-HTTP exceptions use the general handler
++    call_log.clear()
++    try:
++        app._handle_exception(None, None, ValueError(), {})
++    except Exception:
++        pass
++
++    assert call_log == ['general']
++
++
++def test_error_handler_registration_order():
++    """Test that registration order only matters for same exception type."""
++    app = App()
++
++    call_log = []
++
++    @app.add_error_handler(falcon.HTTPError)
++    def handler1(ex, req, resp, params):
++        call_log.append('first')
++
++    @app.add_error_handler(falcon.HTTPError)
++    def handler2(ex, req, resp, params):
++        call_log.append('second')
++
++    # The most recently registered handler for the exact same type should be used
++    try:
++        app._handle_exception(None, None, falcon.HTTPError(), {})
++    except Exception:
++        pass
++
++    assert call_log == ['second']
++
++
++def test_error_handler_no_handler():
++    """Test that exceptions without handlers use default handling."""
++    app = App()
++
++    # No handlers registered, should use default error handling
++    try:
++        app._handle_exception(
++            testing.create_req(), 
++            testing.create_resp(), 
++            ValueError('test'), {}
++        )
++    except Exception:
++        pytest.fail('Default error handling should not raise')
+diff --git a/docs/_newsfragments/1514.feature.rst b/docs/_newsfragments/1514.feature.rst
+new file mode 100644
+--- /dev/null
++++ b/docs/_newsfragments/1514.feature.rst
+@@ -0,0 +1,5 @@
++Error handlers are now selected based on exception inheritance hierarchy
++rather than registration order. When an exception is raised, Falcon will
++look for the most specific handler available by traversing the exception's
++MRO (Method Resolution Order).
++
++This is a breaking change: registration order no longer matters for the
++inheritance hierarchy, only when multiple handlers are registered for the
++exact same exception type.
+diff --git a/docs/user/quickstart.rst b/docs/user/quickstart.rst
+--- a/docs/user/quickstart.rst
++++ b/docs/user/quickstart.rst
+@@ -1,3 +1,4 @@
++
+ Quickstart
+ ==========
+ 
+@@ -100,3 +101,46 @@ Finally, if you want to build a more com
+     $ pip install -e .
+ 
+ You can then run your app with ``gunicorn`` or your favorite WSGI server.
++
++Error Handling
++==============
++
++Falcon now uses the most specific error handler available based on the
++exception's inheritance hierarchy, rather than the registration order.
++
++Example:
++--------
++
++.. code-block:: python
++
++    app = falcon.App()
++
++    # Register handler for general Exception
++    @app.add_error_handler(Exception)
++    def handle_general_exception(ex, req, resp, params):
++        # This will NOT handle HTTPError or its subclasses
++        # if more specific handlers are available
++        pass
++
++    # Register handler for HTTPError
++    @app.add_error_handler(falcon.HTTPError)
++    def handle_http_error(ex, req, resp, params):
++        # This will handle HTTPError and its subclasses
++        # unless an even more specific handler is registered
++        pass
++
++    # Register handler for HTTPForbidden (subclass of HTTPError)
++    @app.add_error_handler(falcon.HTTPForbidden)
++    def handle_forbidden(ex, req, resp, params):
++        # This is the most specific handler for HTTPForbidden exceptions
++        pass
++
++In this example:
++- HTTPForbidden exceptions will use ``handle_forbidden``
++- Other HTTPError subclasses will use ``handle_http_error``
++- All other exceptions will use ``handle_general_exception``
++
++Breaking Change:
++----------------
++Registration order no longer matters for the inheritance hierarchy.
++Only when multiple handlers are registered for the exact same exception type will the most recently registered handler be used.

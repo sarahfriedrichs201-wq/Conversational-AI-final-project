@@ -1,0 +1,14 @@
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -100,1 +100,8 @@
+     return path
++
++
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    """
++    This function is a compatibility layer for Conan 1.x recipes that used
++    `unix_path` in `package_info`. In Conan 2, path conversions should not
++    be performed in the `package_info` method.
++    """
++    return unix_path(conanfile, path, path_flavor)

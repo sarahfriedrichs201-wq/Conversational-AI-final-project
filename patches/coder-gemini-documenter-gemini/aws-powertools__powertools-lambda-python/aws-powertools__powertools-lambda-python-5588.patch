@@ -1,0 +1,423 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ from functools import wraps
+ from inspect import Parameter, signature
++from typing import Any, Callable, Dict, List, Optional, Type, Union
+ 
+ from aws_lambda_powertools.utilities.data_classes.appsync_resolver_event import (
+     AppSyncResolverEvent,
+@@ -10,12 +11,14 @@
+ from aws_lambda_powertools.utilities.typing import LambdaContext
+ 
+ 
+-class AppSyncResolver:
++class AppSyncResolver:  # noqa: E501
+     """
+     AppSyncResolver
+     ---
+     AppSyncResolver helps to process AppSync events, parse the event,
+     and route the request to the correct resolver function.
++
++    It also provides an exception handling mechanism for synchronous resolvers.
+ 
+     Parameters
+     ----------
+@@ -23,9 +26,11 @@
+         debug: Optional[bool]
+             If True, the resolver will return the full exception stack trace
+             to the client. Defaults to False.
+     """
+ 
++    _exception_handlers: Dict[Type[Exception], Callable[..., Any]]
++
+     def __init__(self, debug: Optional[bool] = None):
+         self.debug = debug
+         self.current_event: Optional[AppSyncResolverEvent] = None
+         self.current_context: Optional[LambdaContext] = None
+@@ -33,6 +38,7 @@
+         self._loop = asyncio.get_event_loop()
+         self._resolver_handlers: Dict[str, Callable[..., Any]] = {}
+         self._resolver_passthrough_handlers: Dict[str, Callable[..., Any]] = {}
++        self._exception_handlers = {}
+ 
+     def resolver(self, field_name: str) -> Callable:
+         """
+@@ -113,6 +119,65 @@
+             return func
+ 
+         return decorator
++
++    def exception_handler(self, exc_class: Union[Type[Exception], List[Type[Exception]]]) -> Callable:
++        """
++        Decorator to register a function as an exception handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class : Union[Type[Exception], List[Type[Exception]]]
++            A single exception type or a list of exception types to handle.
++
++        Returns
++        -------
++        Callable
++            A decorator function that registers the exception handler.
++        """
++
++        def register_exception_handler(func: Callable[..., Any]) -> Callable[..., Any]:
++            if not isinstance(exc_class, list):
++                exception_types = [exc_class]
++            else:
++                exception_types = exc_class
++
++            for ex_type in exception_types:
++                if not issubclass(ex_type, Exception):
++                    raise TypeError(f"'{ex_type.__name__}' is not an exception class.")
++                self._exception_handlers[ex_type] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: Type[Exception]) -> Optional[Callable[..., Any]]:
++        """
++        Looks up the registered exception handler for the given exception type or its base classes.
++
++        It prioritizes the most specific handler (closest in the MRO).
++
++        Parameters
++        ----------
++        exp_type : Type[Exception]
++            The exception type to look up the handler for.
++
++        Returns
++        -------
++        Optional[Callable[..., Any]]
++            The registered exception handler function if found, otherwise None.
++        """
++        # Iterate through the Method Resolution Order (MRO) of the exception type
++        for cls in exp_type.__mro__:
++            if cls in self._exception_handlers:
++                return self._exception_handlers[cls]
++        return None
+ 
+     def resolve(self, event: Dict[str, Any], context: LambdaContext) -> Any:
+         """
+@@ -159,7 +224,19 @@
+             # If the resolver_function is an async function, we directly await it.
+             # If an exception occurs here, it will propagate as usual.
+             return self._loop.run_until_complete(resolver_function(**args))
+         else:
+-            return resolver_function(**args)
++            try:
++                # Synchronous resolver execution path
++                return resolver_function(**args)
++            except Exception as e:
++                handler = self._lookup_exception_handler(type(e))
++                if handler:
++                    # If a handler is found, call it with the exception instance
++                    # The handler's return value will be the response.
++                    return handler(e)
++                else:
++                    # If no handler is found, re-raise the exception
++                    raise e
+ 
+     def _get_resolver_args(self, resolver_function: Callable) -> Dict[str, Any]:
+         args = {}
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,80 +0,80 @@
++from typing import Any, Dict
++
+ from aws_lambda_powertools.event_handler import AppSyncResolver
+ from aws_lambda_powertools.utilities.typing import LambdaContext
+ 
+ app = AppSyncResolver()
+ 
++
+ @app.exception_handler(ValueError)
+ def handle_value_error(ex: ValueError):
+     """
+     Handles ValueError exceptions raised by AppSync resolvers.
+     Returns a custom error message.
+     """
+     # In a real application, you might log the exception,
+     # transform it into a GraphQL error, or return a specific structure.
+     print(f"Caught ValueError: {ex}")
+     return {
+         "message": "A value error occurred during processing.",
+         "errorType": "ValueError",
+-        "details": str(ex)
++        "details": str(ex),
+     }
+ 
++
+ @app.exception_handler(Exception)
+ def handle_general_exception(ex: Exception):
+     """
+     Handles any other unhandled exceptions.
+     This acts as a fallback handler.
+     """
+     print(f"Caught general Exception: {ex}")
+     return {
+         "message": "An unexpected error occurred.",
+         "errorType": type(ex).__name__,
+-        "details": str(ex)
++        "details": str(ex),
+     }
+ 
++
+ @app.resolver(field_name="createSomething")
+ def create_something(id: str, name: str):
+     """
+     A sample AppSync resolver that raises a ValueError.
+     """
+     if not id:
+         raise ValueError("ID cannot be empty.")
+     if name == "fail":
+-        raise TypeError("Name cannot be 'fail' (simulated TypeError).") # This will be caught by handle_general_exception
++        raise TypeError("Name cannot be 'fail' (simulated TypeError).")  # This will be caught by handle_general_exception
+     return {"id": id, "name": name, "status": "created"}
+ 
++
+ @app.resolver(field_name="getSomething")
+ def get_something(id: str):
+     """
+     A sample AppSync resolver that works normally.
+     """
+     return {"id": id, "name": f"Item {id}", "status": "retrieved"}
+ 
++
+ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+     """
+     Main Lambda handler function.
+     """
+     return app.resolve(event, context)
+ 
++
+ # Example usage (for local testing/understanding)
+ if __name__ == "__main__":
+     # Simulate an AppSync event that triggers createSomething and raises ValueError
+-    event_value_error = {
+-        "arguments": {"id": "", "name": "test"},
+-        "info": {"fieldName": "createSomething"}
+-    }
++    event_value_error = {"arguments": {"id": "", "name": "test"}, "info": {"fieldName": "createSomething"}}
+     print("--- Testing ValueError ---")
+     response_value_error = lambda_handler(event_value_error, {} as LambdaContext)
+     print(response_value_error)
+     # Expected output: {"message": "A value error occurred during processing.", "errorType": "ValueError", "details": "ID cannot be empty."}
+ 
+     # Simulate an AppSync event that triggers createSomething and raises TypeError (caught by general handler)
+-    event_type_error = {
+-        "arguments": {"id": "123", "name": "fail"},
+-        "info": {"fieldName": "createSomething"}
+-    }
++    event_type_error = {"arguments": {"id": "123", "name": "fail"}, "info": {"fieldName": "createSomething"}}
+     print("\n--- Testing TypeError (general handler) ---")
+     response_type_error = lambda_handler(event_type_error, {} as LambdaContext)
+     print(response_type_error)
+     # Expected output: {"message": "An unexpected error occurred.", "errorType": "TypeError", "details": "Name cannot be 'fail' (simulated TypeError)."}
+ 
+     # Simulate a successful AppSync event
+-    event_success = {
+-        "arguments": {"id": "456"},
+-        "info": {"fieldName": "getSomething"}
+-    }
++    event_success = {"arguments": {"id": "456"}, "info": {"fieldName": "getSomething"}}
+     print("\n--- Testing Success ---")
+     response_success = lambda_handler(event_success, {} as LambdaContext)
+     print(response_success)
+     # Expected output: {"id": "456", "name": "Item 456", "status": "retrieved"}
+diff --git a/tests/unit/event_handler/test_appsync.py b/tests/unit/event_handler/test_appsync.py
+--- a/tests/unit/event_handler/test_appsync.py
++++ b/tests/unit/event_handler/test_appsync.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ from unittest.mock import MagicMock, patch
+ 
++import pytest
+ from botocore.exceptions import ClientError
+ 
+ from aws_lambda_powertools.event_handler import AppSyncResolver
+@@ -10,6 +11,10 @@
+ from tests.functional.utils import get_context_for_function
+ 
+ CONTEXT = get_context_for_function("test_appsync_resolver")
++
++
++class CustomError(Exception):
++    pass
+ 
+ 
+ def test_appsync_resolver_init():
+@@ -165,3 +170,113 @@
+     assert result == {"id": "1", "name": "test"}
+     mock_resolver.assert_called_once_with(id="1", name="test")
+     mock_passthrough_resolver.assert_not_called()
++
++
++def test_exception_handler_registers_single_exception():
++    app = AppSyncResolver()
++    mock_handler = MagicMock()
++
++    @app.exception_handler(ValueError)
++    def handler(ex: ValueError):
++        mock_handler(ex)
++        return {"error": "value"}
++
++    assert ValueError in app._exception_handlers
++    assert app._exception_handlers[ValueError] == handler
++
++
++def test_exception_handler_registers_multiple_exceptions():
++    app = AppSyncResolver()
++    mock_handler = MagicMock()
++
++    @app.exception_handler([ValueError, TypeError])
++    def handler(ex: Exception):
++        mock_handler(ex)
++        return {"error": "multiple"}
++
++    assert ValueError in app._exception_handlers
++    assert TypeError in app._exception_handlers
++    assert app._exception_handlers[ValueError] == handler
++    assert app._exception_handlers[TypeError] == handler
++
++
++def test_exception_handler_raises_type_error_for_non_exception_class():
++    app = AppSyncResolver()
++    with pytest.raises(TypeError, match="'int' is not an exception class."):
++
++        @app.exception_handler(int)
++        def handler(ex):
++            pass
++
++
++def test_lookup_exception_handler_finds_direct_match():
++    app = AppSyncResolver()
++    mock_handler = MagicMock()
++    app._exception_handlers[ValueError] = mock_handler
++    assert app._lookup_exception_handler(ValueError) == mock_handler
++
++
++def test_lookup_exception_handler_finds_inherited_match():
++    app = AppSyncResolver()
++    mock_handler = MagicMock()
++    app._exception_handlers[Exception] = mock_handler  # Register for base Exception
++    assert app._lookup_exception_handler(ValueError) == mock_handler  # Should find handler for ValueError's base
++
++
++def test_lookup_exception_handler_finds_most_specific_match():
++    app = AppSyncResolver()
++    general_handler = MagicMock(name="general_handler")
++    value_error_handler = MagicMock(name="value_error_handler")
++    app._exception_handlers[Exception] = general_handler
++    app._exception_handlers[ValueError] = value_error_handler
++    assert app._lookup_exception_handler(ValueError) == value_error_handler  # Most specific
++    assert app._lookup_exception_handler(TypeError) == general_handler  # Falls back to general
++
++
++def test_lookup_exception_handler_returns_none_if_no_match():
++    app = AppSyncResolver()
++    assert app._lookup_exception_handler(ValueError) is None
++
++
++def test_resolve_calls_exception_handler_on_exception():
++    app = AppSyncResolver()
++    mock_context = MagicMock(spec=LambdaContext)
++    mock_handler_return = {"message": "handled error"}
++
++    @app.exception_handler(ValueError)
++    def handler(ex: ValueError):
++        return mock_handler_return
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise ValueError("Something went wrong")
++
++    event = {"arguments": {}, "info": {"fieldName": "testField"}}
++    result = app.resolve(event, mock_context)
++    assert result == mock_handler_return
++
++
++def test_resolve_re_raises_exception_if_no_handler():
++    app = AppSyncResolver()
++    mock_context = MagicMock(spec=LambdaContext)
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise CustomError("Unhandled error")
++
++    event = {"arguments": {}, "info": {"fieldName": "testField"}}
++    with pytest.raises(CustomError, match="Unhandled error"):
++        app.resolve(event, mock_context)
++
++
++def test_resolve_async_resolver_exception_not_handled(mocker):
++    app = AppSyncResolver()
++    mock_context = MagicMock(spec=LambdaContext)
++    mocker.patch.object(app._loop, "run_until_complete", side_effect=ValueError("Async error"))
++
++    mock_handler_func = MagicMock(return_value={"message": "handled error"})
++
++    @app.exception_handler(ValueError)
++    def handler(ex: ValueError):
++        return mock_handler_func(ex)
++
++    @app.resolver(field_name="asyncField")
++    async def async_resolver():
++        pass
++
++    event = {"arguments": {}, "info": {"fieldName": "asyncField"}}
++    with pytest.raises(ValueError, match="Async error"):
++        app.resolve(event, mock_context)
++
++    mock_handler_func.assert_not_called()
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,6 +1,9 @@
+ # Unreleased
+ 
+ ## Features
++
++*   **event_handler:** Add exception handling mechanism for AppSyncResolver ([#2184](https://github.com/aws-powertools/powertools-lambda-python/issues/2184))
++
+ *   **metrics:** Add support for `aws.lambda.runtime.duration` metric ([#2179](https://github.com/aws-powertools/powertools-lambda-python/issues/2179))
+ 
+ ## Bug Fixes
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -107,6 +107,30 @@
+ 
+ *   **[Event handler: AppSync](https://docs.powertools.aws.dev/lambda/python/latest/core/event_handler/appsync/)** - AWS AppSync event handler for Lambda Direct Resolver and Amplify GraphQL Transformer function
+     *   **Resolver**: Automatically parses AppSync event and routes to the correct resolver function.
++    *   **Exception Handling**: Register custom handlers for exceptions raised within your AppSync resolvers using `@app.exception_handler`.
++        ```python
++        from aws_lambda_powertools.event_handler import AppSyncResolver
++
++        app = AppSyncResolver()
++
++        @app.exception_handler(ValueError)
++        def handle_value_error(ex: ValueError):
++            # Custom logic to format the error response
++            return {"message": "error", "details": str(ex), "errorType": "ValueError"}
++
++        @app.resolver(field_name="createSomething")
++        def create_something(id: str):
++            if not id:
++                raise ValueError("ID cannot be empty")
++            return {"id": id, "status": "created"}
++
++        def lambda_handler(event, context):
++            return app.resolve(event, context)
++        ```
++        **Note**: This exception handling mechanism is not supported when using single async resolvers.
++
+ *   **[Event handler: API Gateway](https://docs.powertools.aws.dev/lambda/python/latest/core/event_handler/api_gateway/)** - AWS API Gateway REST and HTTP API event handler for Lambda Proxy integration
+     *   **Router**: Automatically parses API Gateway event and routes to the correct function.
+     *   **Exception Handling**: Register custom handlers for exceptions raised within your API Gateway routes.

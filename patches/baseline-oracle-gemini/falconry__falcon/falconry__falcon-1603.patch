@@ -1,0 +1,89 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -1,6 +1,20 @@
+ 1.1.0
+ =====
+ 
++1.2.0
++=====
++
++Breaking Changes
++----------------
++
++- When registering multiple error handlers for the same exception type,
++  the most recently registered handler will now override any previously
++  registered handlers for that exact type. Previously, the most recently
++  registered handler would override any previously registered handlers
++  for that type *or any of its subclasses*.
++
++New & Improved
++--------------
++
+ Breaking Changes
+ ----------------
+ 
+@@ -48,3 +62,7 @@
+ - A flag is now passed to the `process_request` middleware method to
+   signal whether or not an exceptio
++
++- Error handlers are now selected based on the most specific handler
++  available for a given exception type, rather than the order in which
++  they were registered.
+diff --git a/docs/_newsfragments/1514.breaking b/docs/_newsfragments/1514.breaking
+new file mode 100644
+--- /dev/null
++++ b/docs/_newsfragments/1514.breaking
+@@ -0,0 +1,4 @@
++When registering multiple error handlers for the same exception type, the most
++recently registered handler will now override any previously registered
++handlers for that exact type. Previously, the most recently registered handler
++would override any previously registered handlers for that type *or any of its subclasses*.
+diff --git a/docs/_newsfragments/1514.feature b/docs/_newsfragments/1514.feature
+new file mode 100644
+--- /dev/null
++++ b/docs/_newsfragments/1514.feature
+@@ -0,0 +1,2 @@
++Error handlers are now selected based on the most specific handler available
++for a given exception type, rather than the order in which they were registered.
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -102,7 +102,7 @@ class App(object):
+         self._router = router or routing.DefaultRouter()
+         self._request_type = request_type
+         self._response_type = response_type
+-        self._error_handlers = []
++        self._error_handlers = {}
+         self._sinks = []
+         self._independent_middleware = independent_middleware
+ 
+@@ -124,11 +124,20 @@ class App(object):
+         if not isinstance(exception_type, type):
+             raise TypeError('exception_type must be a type.')
+ 
+-        self._error_handlers.append((exception_type, handler))
++        self._error_handlers[exception_type] = handler
+ 
+     def _find_error_handler(self, ex):
+-        # NOTE(kgriffs): Iterate in reverse so that more recently
+-        # registered handlers take precedence.
+-        for err_type, handler in reversed(self._error_handlers):
+-            if isinstance(ex, err_type):
+-                return handler
++        # NOTE(kgriffs): Find the most specific error handler for the
++        # given exception.
++        #
++        # We iterate through the MRO of the exception's type, from most
++        # specific to most general, to find the first matching handler.
++        #
++        # For example, if HTTPForbidden is raised, we will first check
++        # for a handler for HTTPForbidden, then HTTPError, then Exception,
++        # then BaseException, then object.
++        for err_type in ex.__class__.__mro__:
++            try:
++                return self._error_handlers[err_type]
++            except KeyError:
++                pass
+ 
+         return None

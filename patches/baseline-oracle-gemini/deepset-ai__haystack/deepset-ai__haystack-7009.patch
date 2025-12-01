@@ -1,0 +1,75 @@
+diff --git a/haystack/dataclasses/byte_stream.py b/haystack/dataclasses/byte_stream.py
+--- a/haystack/dataclasses/byte_stream.py
++++ b/haystack/dataclasses/byte_stream.py
+@@ -1,5 +1,5 @@
+ from dataclasses import dataclass, field
+ from typing import Any, Dict, Optional
+-import logging
++
+ 
+ @dataclass
+@@ -14,3 +14,20 @@
+     @classmethod
+     def from_string(cls, text: str, encoding: str = "utf-8", meta: Optional[Dict[str, Any]] = None) -> "ByteStream":
+         return cls(data=text.encode(encoding), meta=meta or {})
++
++    def to_string(self, encoding: str = "utf-8") -> str:
++        """
++        Convert the ByteStream to a string, metadata will not be included.
++
++        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
++        :return: The string representation of the ByteStream.
++        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
++        """
++        try:
++            return self.data.decode(encoding)
++        except UnicodeDecodeError as e:
++            # Re-raise with a more informative message
++            raise UnicodeDecodeError(
++                f"Failed to decode ByteStream data with encoding '{encoding}'. "
++                f"Original error: {e}"
++            ) from e
+diff --git a/test/dataclasses/test_byte_stream.py b/test/dataclasses/test_byte_stream.py
+--- a/test/dataclasses/test_byte_stream.py
++++ b/test/dataclasses/test_byte_stream.py
+@@ -1,5 +1,4 @@
+ import pytest
+ from haystack.dataclasses.byte_stream import ByteStream
+-from haystack.dataclasses import Document
+ 
+ 
+ class TestByteStream:
+@@ -34,3 +33,32 @@
+         assert bs.name == "test_name"
+         assert bs.mime_type == "text/plain"
+         assert bs.meta == {"key": "value"}
++
++    def test_to_string_default_encoding(self):
++        text = "hello, world!"
++        bs = ByteStream.from_string(text)
++        assert bs.to_string() == text
++
++    def test_to_string_custom_encoding(self):
++        # Test with a character that requires specific encoding, e.g., 'é' for latin-1
++        text_latin1 = "café"
++        bs_latin1 = ByteStream(data=text_latin1.encode("latin-1"))
++        assert bs_latin1.to_string(encoding="latin-1") == text_latin1
++
++        # Test with a character that requires utf-8
++        text_utf8 = "你好世界"
++        bs_utf8 = ByteStream(data=text_utf8.encode("utf-8"))
++        assert bs_utf8.to_string(encoding="utf-8") == text_utf8
++
++    def test_to_string_invalid_encoding_raises_error(self):
++        # Create bytes that are not valid utf-8
++        # This is an invalid sequence for UTF-8 (incomplete surrogate pair)
++        invalid_utf8_bytes = b"\xed\xa0\x80"
++        bs = ByteStream(data=invalid_utf8_bytes)
++
++        with pytest.raises(UnicodeDecodeError, match="Failed to decode ByteStream data with encoding 'utf-8'"):
++            bs.to_string(encoding="utf-8")
++
++        # Test trying to decode UTF-8 as Latin-1 for non-Latin-1 characters
++        bs_utf8_chinese = ByteStream(data="你好".encode("utf-8"))
++        with pytest.raises(UnicodeDecodeError, match="Failed to decode ByteStream data with encoding 'latin-1'"):
++            bs_utf8_chinese.to_string(encoding="latin-1")

@@ -1,0 +1,59 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -102,6 +102,25 @@ class HfFileSystem(AbstractFileSystem):
+         """
+         return self.info(path)["size"]
+ 
++    def url(self, path: str) -> str:
++        """
++        Get the HTTP URL of the given path.
++        
++        Args:
++            path (str): The Hugging Face Hub path in the format 
++                       "hf://[repo_id][@revision]/path/to/file"
++        
++        Returns:
++            str: The HTTP URL to access the file
++        """
++        # Parse the path to extract repo_id, revision, and file path
++        parsed_path = self._parse_path(path)
++        
++        base_url = "https://huggingface.co"
++        repo_id = parsed_path.repo_id
++        revision = parsed_path.revision or "main"
++        file_path = parsed_path.path_in_repo.lstrip('/')
++        
++        return f"{base_url}/{repo_id}/resolve/{revision}/{file_path}"
+ 
+ class HfFileSystemFile(AbstractBufferedFile):
+     def __init__(
+@@ -145,6 +164,15 @@ class HfFileSystemFile(AbstractBufferedFile):
+         self._fetch_range(0, self.size)
+         return self.buffer.getvalue()
+ 
++    def url(self) -> str:
++        """
++        Get the HTTP URL for this file.
++        
++        Returns:
++            str: The HTTP URL to access this file
++        """
++        return self.fs.url(self.path)
++
+ 
+ class HfFileSystemStreamFile(HfFileSystemFile):
+     def __init__(
+@@ -175,3 +203,12 @@ class HfFileSystemStreamFile(HfFileSystemFile):
+         if self.loc < len(self.buffer.getvalue()):
+             return self.buffer.getvalue()[self.loc]
+         return b""
++
++    def url(self) -> str:
++        """
++        Get the HTTP URL for this streamed file.
++        
++        Returns:
++            str: The HTTP URL to access this file
++        """
++        return self.fs.url(self.path)

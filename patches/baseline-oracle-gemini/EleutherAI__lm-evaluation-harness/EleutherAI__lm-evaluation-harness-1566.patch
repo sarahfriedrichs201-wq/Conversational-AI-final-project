@@ -1,0 +1,397 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,6 +1,7 @@
+ import argparse
+ import logging
+ import os
++import sys
+ import warnings
+ from collections import defaultdict
+ from datetime import datetime
+@@ -37,6 +38,171 @@
+ logger = logging.getLogger(__name__)
+ 
+ 
++def setup_parser() -> argparse.ArgumentParser:
++    """
++    Sets up the argument parser for lm-evaluation-harness CLI.
++
++    Returns:
++        argparse.ArgumentParser: The configured argument parser.
++    """
++    parser = argparse.ArgumentParser(
++        formatter_class=argparse.RawTextHelpFormatter,
++        description="CLI for lm-evaluation-harness",
++    )
++
++    parser.add_argument("--model", "-m", type=str, default="hf", help="Name of model")
++    parser.add_argument(
++        "--model_args",
++        "-a",
++        type=str,
++        default=None,
++        help="String arguments for model, e.g. `pretrained=EleutherAI/pythia-160m,dtype=float32`",
++    )
++    parser.add_argument(
++        "--tasks",
++        "-t",
++        type=str,
++        default=None,
++        help="String or comma separated list of tasks to evaluate",
++    )
++    parser.add_argument(
++        "--provide_description",
++        action="store_true",
++        help="Whether to provide a description of the task to the model. "
++        "See `--prompt_template` for more options.",
++    )
++    parser.add_argument(
++        "--num_fewshot",
++        "-n",
++        type=int,
++        default=None,
++        help="Number of examples in few-shot context",
++    )
++    parser.add_argument(
++        "--batch_size",
++        "-b",
++        type=int,
++        default=None,
++        help="Batch size for model",
++    )
++    parser.add_argument(
++        "--max_batch_size",
++        type=int,
++        default=None,
++        help="Max batch size for model. If `--batch_size` is not specified, "
++        "this will be used to automatically determine batch size. "
++        "If neither are specified, defaults to `max(1, world_size * 2)`",
++    )
++    parser.add_argument(
++        "--device",
++        type=str,
++        default=None,
++        help="Device to use for model. E.g. `cuda`, `cpu`, `mps`",
++    )
++    parser.add_argument("--no_cache", action="store_true", help="Disable cache (for debugging)")
++    parser.add_argument("--limit", type=float, default=None, help="Limit number of samples to evaluate")
++    parser.add_argument("--check_integrity", action="store_true", help="Check integrity of tasks")
++    parser.add_argument("--write_out", action="store_true", default=False, help="Write out results")
++    parser.add_argument(
++        "--output_path",
++        "-o",
++        type=str,
++        default=None,
++        help="Path to output file. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_base_path",
++        type=str,
++        default=None,
++        help="Base path for output files. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_path",
++        type=str,
++        default=None,
++        help="Path to load output files from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_tasks",
++        type=str,
++        default=None,
++        help="Path to load output tasks from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_metadata",
++        type=str,
++        default=None,
++        help="Path to load output metadata from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_config",
++        type=str,
++        default=None,
++        help="Path to load output config from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_results",
++        type=str,
++        default=None,
++        help="Path to load output results from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_metrics",
++        type=str,
++        default=None,
++        help="Path to load output metrics from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_predictions",
++        type=str,
++        default=None,
++        help="Path to load output predictions from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_samples",
++        type=str,
++        default=None,
++        help="Path to load output samples from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_log_samples",
++        type=str,
++        default=None,
++        help="Path to load output log samples from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_log_metrics",
++        type=str,
++        default=None,
++        help="Path to load output log metrics from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_log_config",
++        type=str,
++        default=None,
++        help="Path to load output log config from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_log_results",
++        type=str,
++        default=None,
++        help="Path to load output log results from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--output_load_log_predictions",
++        type=str,
++        default=None,
++        help="Path to load output log predictions from. If not specified, results are printed to stdout.",
++    )
++    parser.add_argument(
++        "--verbosity",
++        "-v",
++        type=str,
++        default="INFO",
++        help="Log error messages to stderr. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL",
++    )
++    parser.add_argument(
++        "--version",
++        action="version",
++        version=f"%(prog)s {__version__}",
++    )
++    return parser
++
++
++def check_argument_types(parser: argparse.ArgumentParser):
++    """
++    Checks if all user-defined arguments in the parser have an explicit type specification.
++    Raises a TypeError if an argument is found without an explicit type.
++    """
++    for action in parser._actions:
++        # Skip help and version actions, and actions that implicitly define type (e.g., store_true/false)
++        if isinstance(action, (argparse._HelpAction, argparse._VersionAction, argparse._StoreTrueAction, argparse._StoreFalseAction)):
++            continue
++
++        # If type is not explicitly set and choices are not used, raise an error.
++        # argparse defaults to str if type is None, but the request implies explicit typing.
++        if action.type is None and action.choices is None:
++            raise TypeError(f"Argument '{action.dest}' is missing an explicit type specification.")
++
++
+ def parse_eval_args(args=None) -> argparse.Namespace:
+     """
+     Parses command line arguments for lm-evaluation-harness.
+@@ -46,166 +212,20 @@
+     Returns:
+         argparse.Namespace: Parsed arguments.
+     """
+-    parser = argparse.ArgumentParser(
+-        formatter_class=argparse.RawTextHelpFormatter,
+-        description="CLI for lm-evaluation-harness",
+-    )
+-
+-    parser.add_argument("--model", "-m", type=str, default="hf", help="Name of model")
+-    parser.add_argument(
+-        "--model_args",
+-        "-a",
+-        type=str,
+-        default=None,
+-        help="String arguments for model, e.g. `pretrained=EleutherAI/pythia-160m,dtype=float32`",
+-    )
+-    parser.add_argument(
+-        "--tasks",
+-        "-t",
+-        type=str,
+-        default=None,
+-        help="String or comma separated list of tasks to evaluate",
+-    )
+-    parser.add_argument(
+-        "--provide_description",
+-        action="store_true",
+-        help="Whether to provide a description of the task to the model. "
+-        "See `--prompt_template` for more options.",
+-    )
+-    parser.add_argument(
+-        "--num_fewshot",
+-        "-n",
+-        type=int,
+-        default=None,
+-        help="Number of examples in few-shot context",
+-    )
+-    parser.add_argument(
+-        "--batch_size",
+-        "-b",
+-        type=int,
+-        default=None,
+-        help="Batch size for model",
+-    )
+-    parser.add_argument(
+-        "--max_batch_size",
+-        type=int,
+-        default=None,
+-        help="Max batch size for model. If `--batch_size` is not specified, "
+-        "this will be used to automatically determine batch size. "
+-        "If neither are specified, defaults to `max(1, world_size * 2)`",
+-    )
+-    parser.add_argument(
+-        "--device",
+-        type=str,
+-        default=None,
+-        help="Device to use for model. E.g. `cuda`, `cpu`, `mps`",
+-    )
+-    parser.add_argument("--no_cache", action="store_true", help="Disable cache (for debugging)")
+-    parser.add_argument("--limit", type=float, default=None, help="Limit number of samples to evaluate")
+-    parser.add_argument("--check_integrity", action="store_true", help="Check integrity of tasks")
+-    parser.add_argument("--write_out", action="store_true", default=False, help="Write out results")
+-    parser.add_argument(
+-        "--output_path",
+-        "-o",
+-        type=str,
+-        default=None,
+-        help="Path to output file. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_base_path",
+-        type=str,
+-        default=None,
+-        help="Base path for output files. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_path",
+-        type=str,
+-        default=None,
+-        help="Path to load output files from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_tasks",
+-        type=str,
+-        default=None,
+-        help="Path to load output tasks from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_metadata",
+-        type=str,
+-        default=None,
+-        help="Path to load output metadata from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_config",
+-        type=str,
+-        default=None,
+-        help="Path to load output config from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_results",
+-        type=str,
+-        default=None,
+-        help="Path to load output results from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_metrics",
+-        type=str,
+-        default=None,
+-        help="Path to load output metrics from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_predictions",
+-        type=str,
+-        default=None,
+-        help="Path to load output predictions from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_samples",
+-        type=str,
+-        default=None,
+-        help="Path to load output samples from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_log_samples",
+-        type=str,
+-        default=None,
+-        help="Path to load output log samples from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_log_metrics",
+-        type=str,
+-        default=None,
+-        help="Path to load output log metrics from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_log_config",
+-        type=str,
+-        default=None,
+-        help="Path to load output log config from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_log_results",
+-        type=str,
+-        default=None,
+-        help="Path to load output log results from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--output_load_log_predictions",
+-        type=str,
+-        default=None,
+-        help="Path to load output log predictions from. If not specified, results are printed to stdout.",
+-    )
+-    parser.add_argument(
+-        "--verbosity",
+-        "-v",
+-        type=str,
+-        default="INFO",
+-        help="Log error messages to stderr. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+-    )
+-    parser.add_argument(
+-        "--version",
+-        action="version",
+-        version=f"%(prog)s {__version__}",
+-    )
+-
+-    args = parser.parse_args(args=args)
++    parser = setup_parser()
++    check_argument_types(parser)
++
++    try:
++        args = parser.parse_args(args=args)
++    except argparse.ArgumentTypeError as e:
++        # Re-raise as TypeError to satisfy the requirement for TypeError exceptions
++        # at argument entrypoints.
++        raise TypeError(f"Invalid argument type: {e}") from e
++
+     return args
+ 
+ 
+@@ -213,7 +283,10 @@
+     """
+     Main entry point for the lm-evaluation-harness CLI.
+     """
+-    args = parse_eval_args()
++    try:
++        args = parse_eval_args()
++    except TypeError as e:
++        sys.exit(f"Error: {e}")
+ 
+     if args.verbosity:
+         logger.setLevel(args.verbosity)

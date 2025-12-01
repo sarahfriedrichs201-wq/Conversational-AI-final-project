@@ -1,0 +1,165 @@
+diff --git a/optax/tree_utils/__init__.py b/optax/tree_utils/__init__.py
+--- a/optax/tree_utils/__init__.py
++++ b/optax/tree_utils/__init__.py
+@@ -4,6 +4,7 @@
+ from optax.tree_utils._math import tree_vdot
+ from optax.tree_utils._math import tree_sum
+ from optax.tree_utils._math import tree_l2_norm
+ from optax.tree_utils._math import tree_zeros_like
++from optax.tree_utils._random import tree_random_split
+ 
+ __all__ = [
+     'tree_add',
+@@ -11,5 +12,6 @@
+     'tree_vdot',
+     'tree_sum',
+     'tree_l2_norm',
+     'tree_zeros_like',
++    'tree_random_split',
+ ]
+diff --git a/optax/tree_utils/_random.py b/optax/tree_utils/_random.py
+--- a/optax/tree_utils/_random.py
++++ b/optax/tree_utils/_random.py
+@@ -12,3 +12,29 @@
+   """
+   treedef = jax.tree_util.tree_structure(target_tree)
+   return jax.tree_util.tree_unflatten(treedef, jax.random.split(rng_key, treedef.num_leaves))
++
++
++def tree_random_split(
++    rng_key: chex.PRNGKey, 
++    target_tree: chex.ArrayTree
++) -> chex.ArrayTree:
++    """Split keys to match structure of target tree.
++    
++    This function takes a random number generator key and splits it into a tree
++    of keys that matches the structure of the provided target tree. Each leaf
++    in the returned tree will contain a unique RNG key derived from the input.
++    
++    Args:
++        rng_key: A JAX PRNGKey to be split.
++        target_tree: A pytree whose structure will be matched in the output.
++        
++    Returns:
++        A pytree of RNG keys with the same structure as `target_tree`.
++        
++    Example:
++        >>> import jax.random as jr
++        >>> import optax
++        >>> key = jr.PRNGKey(42)
++        >>> target = {'a': 1, 'b': [2, 3]}
++        >>> split_keys = optax.tree_utils.tree_random_split(key, target)
++    """
++    return _tree_rng_keys_split(rng_key, target_tree)
+diff --git a/optax/tree_utils/_random_test.py b/optax/tree_utils/_random_test.py
+--- a/optax/tree_utils/_random_test.py
++++ b/optax/tree_utils/_random_test.py
+@@ -0,0 +1,108 @@
++import jax
++import jax.numpy as jnp
++import pytest
++
++import optax
++from optax.tree_utils._random import tree_random_split
++
++
++class TestTreeRandomSplit:
++    
++    def test_basic_structure_matching(self):
++        """Test that output structure matches input tree structure."""
++        key = jax.random.PRNGKey(42)
++        target_tree = {
++            'weights': jnp.ones((5, 3)),
++            'biases': jnp.ones((3,)),
++            'config': {'learning_rate': 0.01, 'momentum': 0.9}
++        }
++        
++        result = tree_random_split(key, target_tree)
++        
++        # Check structure matches
++        assert jax.tree_util.tree_structure(result) == jax.tree_util.tree_structure(target_tree)
++        
++        # Check all leaves are RNG keys
++        def check_is_rng_key(x):
++            assert x.shape == (2,), f"Expected shape (2,), got {x.shape}"
++            assert x.dtype == jnp.uint32, f"Expected uint32, got {x.dtype}"
++        
++        jax.tree_util.tree_map(check_is_rng_key, result)
++    
++    def test_different_keys_for_different_leaves(self):
++        """Test that different leaves get different RNG keys."""
++        key = jax.random.PRNGKey(42)
++        target_tree = [1, 2, 3, 4]
++        
++        result = tree_random_split(key, target_tree)
++        
++        # All keys should be different
++        keys_list = list(result)
++        for i in range(len(keys_list)):
++            for j in range(i + 1, len(keys_list)):
++                assert not jnp.array_equal(keys_list[i], keys_list[j]), \
++                    f"Keys at positions {i} and {j} should be different"
++    
++    def test_deterministic_with_same_seed(self):
++        """Test that same input key produces same output."""
++        key = jax.random.PRNGKey(42)
++        target_tree = {'a': 1, 'b': [2, 3]}
++        
++        result1 = tree_random_split(key, target_tree)
++        result2 = tree_random_split(key, target_tree)
++        
++        # Results should be identical with same key
++        jax.tree_util.tree_map(
++            lambda x, y: jnp.testing.assert_array_equal(x, y),
++            result1, result2
++        )
++    
++    def test_different_with_different_seeds(self):
++        """Test that different input keys produce different outputs."""
++        key1 = jax.random.PRNGKey(42)
++        key2 = jax.random.PRNGKey(123)
++        target_tree = {'a': 1, 'b': [2, 3]}
++        
++        result1 = tree_random_split(key1, target_tree)
++        result2 = tree_random_split(key2, target_tree)
++        
++        # Results should be different with different keys
++        def check_different(x, y):
++            assert not jnp.array_equal(x, y), "Keys should be different"
++        
++        jax.tree_util.tree_map(check_different, result1, result2)
++    
++    def test_empty_tree(self):
++        """Test behavior with empty trees."""
++        key = jax.random.PRNGKey(42)
++        
++        # Test with empty dict
++        empty_dict = {}
++        result = tree_random_split(key, empty_dict)
++        assert result == {}
++        
++        # Test with empty list
++        empty_list = []
++        result = tree_random_split(key, empty_list)
++        assert result == []
++    
++    def test_nested_structures(self):
++        """Test with deeply nested tree structures."""
++        key = jax.random.PRNGKey(42)
++        target_tree = {
++            'model': {
++                'layer1': {'weights': jnp.ones((10, 5)), 'biases': jnp.ones((5,))},
++                'layer2': {'weights': jnp.ones((5, 3)), 'biases': jnp.ones((3,))},
++            },
++            'optimizer': ['adam', {'lr': 0.001}]
++        }
++        
++        result = tree_random_split(key, target_tree)
++        
++        # Verify structure preservation
++        assert jax.tree_util.tree_structure(result) == jax.tree_util.tree_structure(target_tree)
++        
++        # Count leaves should match
++        leaves_target = jax.tree_util.tree_leaves(target_tree)
++        leaves_result = jax.tree_util.tree_leaves(result)
++        assert len(leaves_result) == len(leaves_target)

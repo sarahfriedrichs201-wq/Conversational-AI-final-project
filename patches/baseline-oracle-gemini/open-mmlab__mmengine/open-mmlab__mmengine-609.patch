@@ -1,0 +1,48 @@
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- /dev/null
++++ b/mmengine/utils/misc.py
+@@ -0,0 +1,42 @@
++import functools
++import warnings
++from typing import Callable
++
++
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A new function, which will be deprecated soon.
++    """
++
++    def decorator(function):
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            warnings.warn(
++                f'The `{function.__name__}` function is deprecated since '
++                f'version {since} and will be removed in version {removed_in}. '
++                f'{instructions}',
++                DeprecationWarning,
++                stacklevel=2,
++            )
++            return function(*args, **kwargs)
++
++        # Add deprecation info to the docstring
++        docstring_note = (
++            f'\n.. deprecated:: {since}\n'
++            f'   `{function.__name__}` will be removed in {removed_in}. '
++            f'{instructions}')
++        if wrapper.__doc__ is None:
++            wrapper.__doc__ = docstring_note
++        else:
++            wrapper.__doc__ += docstring_note
++        return wrapper
++
++    return decorator

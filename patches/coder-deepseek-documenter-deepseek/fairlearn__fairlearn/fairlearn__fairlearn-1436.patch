@@ -1,0 +1,160 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -1,5 +1,6 @@
+ # Copyright (c) Fairlearn contributors.
+ # Licensed under the MIT License.
++import pandas as pd
+ from typing import Dict, List, Optional, Union
+ 
+ from ._annotated_metric_function import AnnotatedMetricFunction
+@@ -20,6 +21,68 @@ class DisaggregatedResult:
+         self._by_group = by_group
+         self._grouping_columns = grouping_columns
+ 
++    @classmethod
++    def _apply_functions(
++        cls,
++        *,
++        data: pd.DataFrame,
++        annotated_functions: Dict[str, AnnotatedMetricFunction],
++        grouping_names: Optional[List[str]] = None,
++    ) -> Union[pd.Series, pd.DataFrame]:
++        """
++        Apply annotated metric functions to a DataFrame, optionally grouping by specified columns.
++
++        Parameters
++        ----------
++        data : pd.DataFrame
++            The input data on which the metric functions will be applied.
++        annotated_functions : dict[str, AnnotatedMetricFunction]
++            A dictionary where keys are metric names and values are the corresponding annotated metric
++            functions.
++        grouping_names : list[str] | None
++            A list of column names to group by before applying the metric functions. If None, the
++            functions are applied to the entire DataFrame.
++
++        Returns
++        -------
++        Series or DataFrame
++            A Series or DataFrame with the results of the metric functions applied. If grouping_names is provided,
++            the results are grouped accordingly.
++        """
++        # Input validation
++        if not isinstance(data, pd.DataFrame):
++            raise TypeError("data must be a pandas DataFrame")
++        
++        if not annotated_functions:
++            raise ValueError("annotated_functions cannot be empty")
++        
++        if grouping_names is not None:
++            if not all(col in data.columns for col in grouping_names):
++                missing_cols = [col for col in grouping_names if col not in data.columns]
++                raise ValueError(f"Grouping columns not found in data: {missing_cols}")
++        
++        # Extract function objects
++        functions_dict = {}
++        for name, annotated_func in annotated_functions.items():
++            if not callable(annotated_func.function):
++                raise TypeError(f"Function for metric '{name}' is not callable")
++            functions_dict[name] = annotated_func.function
++        
++        # Apply functions
++        if grouping_names is None:
++            try:
++                result = data.agg(functions_dict)
++                return result
++            except Exception as e:
++                raise RuntimeError(f"Error applying functions to ungrouped data: {e}")
++        else:
++            try:
++                grouped = data.groupby(grouping_names)
++                result = grouped.agg(functions_dict)
++                return result
++            except Exception as e:
++                raise RuntimeError(f"Error applying functions to grouped data: {e}")
++
+     @property
+     def overall(self):
+         """Get the overall result."""
+diff --git a/tests/unit/test_disaggregated_result.py b/tests/unit/test_disaggregated_result.py
+--- a/tests/unit/test_disaggregated_result.py
++++ b/tests/unit/test_disaggregated_result.py
+@@ -1,5 +1,7 @@
+ import pytest
++import pandas as pd
+ import numpy as np
++from fairlearn.metrics._annotated_metric_function import AnnotatedMetricFunction
+ from fairlearn.metrics._disaggregated_result import DisaggregatedResult
+ 
+ 
+@@ -20,3 +22,69 @@ class TestDisaggregatedResult:
+         assert result.grouping_columns == grouping_columns
+         assert result.overall == overall
+         assert result.by_group == by_group
++
++    def test_apply_functions_no_grouping(self):
++        """Test _apply_functions without grouping."""
++        data = pd.DataFrame({
++            'feature1': [1, 2, 3, 4],
++            'feature2': [5, 6, 7, 8]
++        })
++        
++        functions = {
++            'mean_feature1': AnnotatedMetricFunction(np.mean, {'column': 'feature1'}),
++            'sum_feature2': AnnotatedMetricFunction(np.sum, {'column': 'feature2'})
++        }
++        
++        result = DisaggregatedResult._apply_functions(
++            data=data,
++            annotated_functions=functions,
++            grouping_names=None
++        )
++        
++        assert isinstance(result, pd.Series)
++        assert result['mean_feature1'] == 2.5
++        assert result['sum_feature2'] == 26
++
++    def test_apply_functions_with_grouping(self):
++        """Test _apply_functions with grouping."""
++        data = pd.DataFrame({
++            'group': ['A', 'A', 'B', 'B'],
++            'value': [1, 2, 3, 4]
++        })
++        
++        functions = {
++            'mean_value': AnnotatedMetricFunction(np.mean, {'column': 'value'}),
++            'count': AnnotatedMetricFunction(len, {})
++        }
++        
++        result = DisaggregatedResult._apply_functions(
++            data=data,
++            annotated_functions=functions,
++            grouping_names=['group']
++        )
++        
++        assert isinstance(result, pd.DataFrame)
++        assert result.loc['A', 'mean_value'] == 1.5
++        assert result.loc['B', 'mean_value'] == 3.5
++        assert result.loc['A', 'count'] == 2
++
++    def test_apply_functions_empty_functions(self):
++        """Test _apply_functions with empty functions."""
++        data = pd.DataFrame({'value': [1, 2, 3]})
++        functions = {}
++        
++        with pytest.raises(ValueError, match="annotated_functions cannot be empty"):
++            DisaggregatedResult._apply_functions(
++                data=data,
++                annotated_functions=functions,
++                grouping_names=None
++            )
++
++    def test_apply_functions_invalid_grouping(self):
++        """Test _apply_functions with invalid grouping columns."""
++        data = pd.DataFrame({'value': [1, 2, 3]})
++        functions = {'mean': AnnotatedMetricFunction(np.mean, {'column': 'value'})}
++        
++        with pytest.raises(ValueError, match="Grouping columns not found in data"):
++            DisaggregatedResult._apply_functions(data=data, annotated_functions=functions, 
++                                               grouping_names=['nonexistent_column'])

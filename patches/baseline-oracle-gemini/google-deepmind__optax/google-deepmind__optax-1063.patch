@@ -1,0 +1,48 @@
+diff --git a/optax/tree_utils/__init__.py b/optax/tree_utils/__init__.py
+--- a/optax/tree_utils/__init__.py
++++ b/optax/tree_utils/__init__.py
+@@ -16,6 +16,7 @@
+ # ==============================================================================
+ """Tree utilities."""
+ 
++from optax.tree_utils._random import tree_random_split
+ from optax.tree_utils._src.tree_utils import (
+     all_leaves,
+     assert_tree_is_on_device,
+@@ -34,4 +35,5 @@
+     "tree_map_with_path",
+     "tree_map_with_wildcards",
+     "tree_sum",
++    "tree_random_split",
+     "tree_transpose",
+     "tree_zeros_like",
+ )
+diff --git a/optax/tree_utils/_random.py b/optax/tree_utils/_random.py
+--- a/optax/tree_utils/_random.py
++++ b/optax/tree_utils/_random.py
+@@ -16,13 +16,20 @@
+ import jax
+ import jax.tree_util as jtu
+ import chex
++
+ # TODO(b/260773956): Remove this once chex.PRNGKey is a type alias for jax.Array.
+ _PRNGKey = chex.PRNGKey
+ 
+ 
+-def _tree_rng_keys_split(
++def tree_random_split(
+     rng_key: _PRNGKey, target_tree: chex.ArrayTree
+ ) -> chex.ArrayTree:
+-  """Splits keys to match structure of target tree."""
++  """Splits a PRNGKey to match the structure of a target tree.
++
++  Args:
++    rng_key: The key to split.
++    target_tree: The tree whose structure to match.
++
++  Returns:
++    A tree of rng keys with the same structure as `target_tree`.
++  """
+   num_leaves = jtu.tree_structure(target_tree).num_leaves
+   if num_leaves == 0:
+     return target_tree
