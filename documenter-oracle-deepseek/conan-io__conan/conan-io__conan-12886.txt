@@ -1,0 +1,241 @@
+# Implementation Guide: `unix_path_package_info_legacy` Compatibility Function
+
+## Overview
+
+This document provides detailed implementation instructions for adding the `unix_path_package_info_legacy` function to support Conan 1.x compatibility in recipes that require path conversion in `package_info` methods.
+
+## Repository Context
+
+### Key Files & Structure
+- **Target File**: `conan/tools/microsoft/subsystems.py`
+- **Testing**: Tests should be added to appropriate test files in `conans/test/`
+- **Build System**: Uses Travis CI (Linux/OSX) and AppVeyor (Windows)
+- **Python Compatibility**: Python 2.7, 3.4, 3.5, 3.6
+
+### Existing Code Patterns
+The codebase follows standard Python conventions with:
+- Clear function documentation
+- Proper error handling
+- Cross-platform compatibility considerations
+- Comprehensive test coverage
+
+## Implementation Plan
+
+### Step 1: Create the Function in `conan/tools/microsoft/subsystems.py`
+
+Add the following function to the existing `subsystems.py` file:
+
+```python
+def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
+    """
+    Compatibility function for Conan 1.x recipes that require path conversion in package_info.
+    
+    In Conan 2, path conversions should not be performed in the package_info method.
+    This function provides backward compatibility for recipes that still need this functionality.
+    
+    :param conanfile: The conanfile instance
+    :param path: The path to convert
+    :param path_flavor: Optional flavor specification for path conversion
+    :return: Converted path if running on Windows, original path otherwise
+    """
+    # Import here to avoid circular imports
+    from conans.client.subsystems import deduce_subsystem
+    
+    # Get the subsystem for path conversion
+    subsystem = deduce_subsystem(conanfile, path_flavor)
+    
+    # Only convert paths on Windows systems
+    if subsystem == "msys2" or subsystem == "msys":
+        from conans.client.subsystems import MSYS2
+        msys = MSYS2()
+        return msys.unix_path(path)
+    
+    # Return original path for non-Windows systems
+    return path
+```
+
+### Step 2: Add Import to Package `__init__.py`
+
+Update `conan/tools/microsoft/__init__.py` to export the new function:
+
+```python
+from .subsystems import unix_path_package_info_legacy
+
+__all__ = [
+    'unix_path_package_info_legacy',
+    # ... other existing exports
+]
+```
+
+### Step 3: Create Comprehensive Tests
+
+Create a new test file `conans/test/unittests/tools/microsoft/test_subsystems.py`:
+
+```python
+import unittest
+from unittest.mock import Mock, patch
+
+from conan.tools.microsoft.subsystems import unix_path_package_info_legacy
+
+
+class TestUnixPathPackageInfoLegacy(unittest.TestCase):
+    
+    def test_unix_path_package_info_legacy_windows_msys2(self):
+        """Test path conversion on Windows with MSYS2 subsystem"""
+        conanfile = Mock()
+        
+        with patch('conan.tools.microsoft.subsystems.deduce_subsystem') as mock_deduce:
+            with patch('conan.tools.microsoft.subsystems.MSYS2') as mock_msys:
+                mock_deduce.return_value = "msys2"
+                mock_msys_instance = Mock()
+                mock_msys_instance.unix_path.return_value = "/c/path/to/file"
+                mock_msys.return_value = mock_msys_instance
+                
+                result = unix_path_package_info_legacy(conanfile, "C:\\path\\to\\file")
+                
+                mock_deduce.assert_called_once_with(conanfile, None)
+                mock_msys_instance.unix_path.assert_called_once_with("C:\\path\\to\\file")
+                self.assertEqual(result, "/c/path/to/file")
+    
+    def test_unix_path_package_info_legacy_windows_msys(self):
+        """Test path conversion on Windows with MSYS subsystem"""
+        conanfile = Mock()
+        
+        with patch('conan.tools.microsoft.subsystems.deduce_subsystem') as mock_deduce:
+            with patch('conan.tools.microsoft.subsystems.MSYS2') as mock_msys:
+                mock_deduce.return_value = "msys"
+                mock_msys_instance = Mock()
+                mock_msys_instance.unix_path.return_value = "/c/path/to/file"
+                mock_msys.return_value = mock_msys_instance
+                
+                result = unix_path_package_info_legacy(conanfile, "C:\\path\\to\\file")
+                
+                mock_deduce.assert_called_once_with(conanfile, None)
+                mock_msys_instance.unix_path.assert_called_once_with("C:\\path\\to\\file")
+                self.assertEqual(result, "/c/path/to/file")
+    
+    def test_unix_path_package_info_legacy_non_windows(self):
+        """Test no path conversion on non-Windows systems"""
+        conanfile = Mock()
+        
+        with patch('conan.tools.microsoft.subsystems.deduce_subsystem') as mock_deduce:
+            mock_deduce.return_value = "linux"
+            
+            result = unix_path_package_info_legacy(conanfile, "/path/to/file")
+            
+            mock_deduce.assert_called_once_with(conanfile, None)
+            self.assertEqual(result, "/path/to/file")
+    
+    def test_unix_path_package_info_legacy_with_path_flavor(self):
+        """Test path conversion with custom path flavor"""
+        conanfile = Mock()
+        
+        with patch('conan.tools.microsoft.subsystems.deduce_subsystem') as mock_deduce:
+            with patch('conan.tools.microsoft.subsystems.MSYS2') as mock_msys:
+                mock_deduce.return_value = "msys2"
+                mock_msys_instance = Mock()
+                mock_msys_instance.unix_path.return_value = "/c/path/to/file"
+                mock_msys.return_value = mock_msys_instance
+                
+                result = unix_path_package_info_legacy(conanfile, "C:\\path\\to\\file", "custom_flavor")
+                
+                mock_deduce.assert_called_once_with(conanfile, "custom_flavor")
+                mock_msys_instance.unix_path.assert_called_once_with("C:\\path\\to\\file")
+                self.assertEqual(result, "/c/path/to/file")
+```
+
+### Step 4: Update Integration Tests
+
+Add integration tests to verify the function works in real recipe scenarios. Create or update `conans/test/integration/tools/microsoft/test_subsystems_integration.py`:
+
+```python
+import textwrap
+import platform
+import unittest
+
+from conans.test.utils.tools import TestClient
+
+
+class TestUnixPathPackageInfoLegacyIntegration(unittest.TestCase):
+    
+    def test_unix_path_package_info_legacy_in_recipe(self):
+        """Test the function used in a real recipe context"""
+        client = TestClient()
+        conanfile = textwrap.dedent("""
+            from conan import ConanFile
+            from conan.tools.microsoft import unix_path_package_info_legacy
+            
+            class TestConan(ConanFile):
+                def package_info(self):
+                    path = "C:\\\\path\\\\to\\\\file"
+                    converted_path = unix_path_package_info_legacy(self, path)
+                    self.output.info(f"Original path: {path}")
+                    self.output.info(f"Converted path: {converted_path}")
+                    self.cpp_info.bindirs = [converted_path]
+        """)
+        
+        client.save({"conanfile.py": conanfile})
+        client.run("create . --name=test --version=1.0")
+        
+        # Verify the function was called and produced output
+        self.assertIn("Original path: C:\\path\\to\\file", client.out)
+        # The actual converted path depends on the platform
+        if platform.system() == "Windows":
+            self.assertIn("Converted path: /c/path/to/file", client.out)
+        else:
+            self.assertIn("Converted path: C:\\path\\to\\file", client.out)
+```
+
+### Step 5: Update Documentation
+
+Add function documentation to the appropriate documentation files. The PR mentions docs will be updated separately, but ensure the function has proper docstrings as shown above.
+
+## Testing Instructions
+
+### Local Testing
+1. **Run unit tests**:
+   ```bash
+   python -m pytest conans/test/unittests/tools/microsoft/test_subsystems.py -v
+   ```
+
+2. **Run integration tests**:
+   ```bash
+   python -m pytest conans/test/integration/tools/microsoft/test_subsystems_integration.py -v
+   ```
+
+3. **Test cross-platform compatibility**:
+   - Verify function works on Windows, Linux, and macOS
+   - Test with different Python versions (2.7, 3.4, 3.5, 3.6)
+
+### CI Testing
+The existing CI configuration in `.travis.yml` and `appveyor.yml` will automatically run the tests:
+- Travis CI runs on Linux and OSX with multiple Python versions
+- AppVeyor runs on Windows with multiple Python versions
+
+## Code Style Guidelines
+
+1. **Function Naming**: Use snake_case for function names
+2. **Documentation**: Include comprehensive docstrings with parameter descriptions
+3. **Error Handling**: Use appropriate exception handling for edge cases
+4. **Imports**: Use local imports to avoid circular dependencies
+5. **Type Hints**: Consider adding type hints for better code clarity (though not required for Python 2.7 compatibility)
+
+## Migration Notes
+
+This function is specifically designed for:
+- **Backward Compatibility**: Recipes migrating from Conan 1.x to Conan 2.x
+- **Legacy Support**: Cases where path conversion in `package_info` cannot be immediately refactored
+- **Windows-specific**: Only performs conversion on Windows systems with MSYS2/MSYS subsystems
+
+**Important**: New Conan 2.x recipes should avoid path conversion in `package_info` methods and use this function only when absolutely necessary for compatibility.
+
+## Verification Checklist
+
+- [ ] Function implemented in `conan/tools/microsoft/subsystems.py`
+- [ ] Function exported in `conan/tools/microsoft/__init__.py`
+- [ ] Unit tests created and passing
+- [ ] Integration tests created and passing
+- [ ] Cross-platform compatibility verified
+- [ ] Documentation updated with proper docstrings
+- [ ] CI builds passing on all platforms
+- [ ] No breaking changes to existing functionality

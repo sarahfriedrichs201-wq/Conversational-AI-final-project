@@ -1,0 +1,211 @@
+This document outlines the implementation plan for adding a `to_string` method to the `ByteStream` class, as described in the problem statement. It provides a clear, step-by-step guide, including code examples and testing considerations, to ensure a smooth and consistent integration with the existing codebase.
+
+## Repository Overview
+
+The Haystack repository emphasizes robust engineering practices, including:
+
+*   **Testing**: Extensive unit and integration tests are expected, as indicated by the `Tests` and `Coverage Status` CI badges and the `CONTRIBUTING.md` section on "Writing tests".
+*   **Type Hinting**: The `types - Mypy` badge signifies a strong commitment to type safety, meaning all new code should include appropriate type hints.
+*   **Code Quality & Formatting**: The `Ruff` badge indicates that code is automatically linted and formatted, ensuring consistency across the codebase. Developers should run `ruff` locally before committing.
+*   **Docstrings**: Methods and classes are expected to have clear, concise docstrings explaining their purpose, parameters, and return values.
+*   **Error Handling**: Graceful error handling, especially for predictable failure modes (like `UnicodeDecodeError` in this case), is a standard practice.
+*   **License Headers**: The `licenserc.toml` file suggests that new files or significantly modified files might require a license header, though for a new method in an existing file, this is usually not necessary.
+
+The core component for this feature is `haystack/dataclasses/byte_stream.py`, which defines the `ByteStream` dataclass. The corresponding tests are located in `test/dataclasses/test_byte_stream.py`.
+
+## Implementation Plan
+
+The implementation involves modifying an existing dataclass and adding new unit tests.
+
+### Step 1: Locate and Open `haystack/dataclasses/byte_stream.py`
+
+Navigate to `haystack/dataclasses/byte_stream.py`. This file contains the `ByteStream` dataclass definition.
+
+### Step 2: Add the `to_string` Method to the `ByteStream` Class
+
+Inside the `ByteStream` class, add the `to_string` method. This method will decode the `bytes` data stored in the `self.data` attribute into a `str`.
+
+**Method Signature and Docstring:**
+The method signature and docstring should adhere to the provided specification and existing codebase style.
+
+```python
+# haystack/dataclasses/byte_stream.py
+
+# ... (existing imports and class definition)
+
+@dataclass
+class ByteStream:
+    data: bytes
+    meta: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_string(cls, string: str, encoding: str = "utf-8", meta: Optional[Dict[str, Any]] = None) -> "ByteStream":
+        """
+        Creates a ByteStream instance from a string by encoding it to bytes.
+        """
+        return cls(data=string.encode(encoding), meta=meta)
+
+    def to_string(self, encoding: str = "utf-8") -> str:
+        """
+        Convert the ByteStream to a string, metadata will not be included.
+
+        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
+        :return: The string representation of the ByteStream.
+        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
+        """
+        # Implementation goes here
+        pass # Replace this line with the actual implementation
+```
+
+**Implementation Logic:**
+The core logic involves calling the `decode()` method on the `self.data` bytes object. Crucially, it must include error handling for `UnicodeDecodeError`.
+
+```python
+# haystack/dataclasses/byte_stream.py
+
+# ... (existing code)
+
+    def to_string(self, encoding: str = "utf-8") -> str:
+        """
+        Convert the ByteStream to a string, metadata will not be included.
+
+        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
+        :return: The string representation of the ByteStream.
+        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
+        """
+        try:
+            return self.data.decode(encoding)
+        except UnicodeDecodeError as e:
+            # Custom error message for clarity
+            raise UnicodeDecodeError(
+                f"Failed to decode ByteStream data with encoding '{encoding}'. Original error: {e}"
+            ) from e
+
+```
+
+### Step 3: Locate and Open `test/dataclasses/test_byte_stream.py`
+
+Navigate to `test/dataclasses/test_byte_stream.py`. This file contains the unit tests for the `ByteStream` class.
+
+### Step 4: Add Unit Tests for `to_string`
+
+Add a new test class or methods within the existing `TestByteStream` class to thoroughly test the `to_string` method. Ensure the tests cover:
+
+*   **Default encoding (UTF-8)**: Verify correct conversion for standard strings.
+*   **Custom encoding**: Test with a different valid encoding (e.g., `latin-1`) and corresponding data.
+*   **Empty byte stream**: Ensure it returns an empty string.
+*   **`UnicodeDecodeError` handling**: Test cases where the bytes cannot be decoded with the specified encoding, verifying that the correct error is raised with an informative message.
+*   **Symmetry with `from_string`**: Demonstrate that `from_string` followed by `to_string` (with the same encoding) returns the original string.
+
+```python
+# test/dataclasses/test_byte_stream.py
+import pytest
+from haystack.dataclasses.byte_stream import ByteStream
+
+class TestByteStream:
+    # ... (existing tests)
+
+    def test_to_string_default_encoding(self):
+        """
+        Tests that to_string correctly decodes bytes to a string using the default 'utf-8' encoding.
+        """
+        original_string = "hello, world!"
+        bs = ByteStream.from_string(original_string)
+        text = bs.to_string()
+        assert text == original_string
+
+    def test_to_string_custom_encoding(self):
+        """
+        Tests that to_string correctly decodes bytes to a string using a specified custom encoding.
+        """
+        # Test with a multi-byte UTF-8 string
+        original_string_utf8 = "你好世界" # Chinese characters
+        bs_utf8 = ByteStream.from_string(original_string_utf8, encoding="utf-8")
+        text_utf8 = bs_utf8.to_string(encoding="utf-8")
+        assert text_utf8 == original_string_utf8
+
+        # Test with a latin-1 string
+        original_string_latin1 = "Grüße mit Umlauten"
+        bs_latin1 = ByteStream.from_string(original_string_latin1, encoding="latin-1")
+        text_latin1 = bs_latin1.to_string(encoding="latin-1")
+        assert text_latin1 == original_string_latin1
+
+    def test_to_string_empty_bytes(self):
+        """
+        Tests that to_string returns an empty string for an empty ByteStream.
+        """
+        bs = ByteStream(data=b"")
+        text = bs.to_string()
+        assert text == ""
+
+    def test_to_string_unicode_decode_error(self):
+        """
+        Tests that to_string raises a UnicodeDecodeError when bytes cannot be decoded
+        with the specified encoding.
+        """
+        # Bytes that are not valid UTF-8
+        invalid_utf8_bytes = b"\xc3\x28" # An invalid UTF-8 sequence
+        bs_invalid_utf8 = ByteStream(data=invalid_utf8_bytes)
+        with pytest.raises(UnicodeDecodeError, match="Failed to decode ByteStream data with encoding 'utf-8'"):
+            bs_invalid_utf8.to_string(encoding="utf-8")
+
+        # Bytes that are valid UTF-8 but not valid ASCII
+        utf8_only_bytes = "é".encode("utf-8") # b'\xc3\xa9'
+        bs_utf8_only = ByteStream(data=utf8_only_bytes)
+        with pytest.raises(UnicodeDecodeError, match="Failed to decode ByteStream data with encoding 'ascii'"):
+            bs_utf8_only.to_string(encoding="ascii")
+
+    def test_to_string_symmetry_with_from_string(self):
+        """
+        Tests the symmetry: from_string(s).to_string() should return the original string s.
+        """
+        test_strings = [
+            "Hello, Haystack!",
+            "This is a test string with some special characters: éàçüö",
+            "こんにちは世界", # Japanese
+            "안녕하세요", # Korean
+            "1234567890!@#$%^&*()",
+        ]
+        encodings = ["utf-8", "latin-1"]
+
+        for original_string in test_strings:
+            for encoding in encodings:
+                try:
+                    # Attempt to encode the string with the current encoding
+                    # Some characters might not be representable in all encodings (e.g., Japanese in latin-1)
+                    encoded_bytes = original_string.encode(encoding)
+                    bs = ByteStream(data=encoded_bytes)
+                    decoded_string = bs.to_string(encoding=encoding)
+                    assert decoded_string == original_string
+                except UnicodeEncodeError:
+                    # If the original string cannot be encoded with this encoding, skip this specific test case
+                    # This ensures we only test valid encoding/decoding pairs.
+                    continue
+
+```
+
+### Step 5: Run Tests and Linting
+
+Before committing, ensure all tests pass and the code adheres to the project's style guidelines.
+
+1.  **Run Unit Tests**:
+    ```bash
+    pytest test/dataclasses/test_byte_stream.py
+    ```
+    Or to run all tests:
+    ```bash
+    pytest
+    ```
+2.  **Run Linting and Formatting**:
+    The project uses `Ruff` and `Mypy`. It's good practice to run these locally.
+    ```bash
+    # To check for linting errors and format
+    ruff check . --fix
+    ruff format .
+
+    # To check type hints
+    mypy haystack/
+    ```
+    Refer to `CONTRIBUTING.md` for detailed instructions on setting up your development environment and running these tools.
+
+By following these steps, you will successfully implement the `to_string` method for the `ByteStream` class, ensuring it is functional, well-tested, and consistent with the existing codebase.

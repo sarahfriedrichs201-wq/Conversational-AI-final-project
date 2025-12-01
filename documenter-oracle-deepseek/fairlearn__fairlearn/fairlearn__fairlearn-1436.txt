@@ -1,0 +1,287 @@
+# Implementation Guide: Refactor DisaggregatedResult._apply_functions
+
+## Overview
+
+This document provides detailed instructions for refactoring the `_apply_functions` method in the `DisaggregatedResult` class to simplify code complexity using pandas built-in methods and consolidate common logic.
+
+## Current State Analysis
+
+The current implementation likely contains repetitive code for handling grouped vs. ungrouped operations. The goal is to:
+1. Leverage pandas' built-in aggregation methods
+2. Refactor common initialization logic for `overall` and `by_group` results
+3. Maintain existing functionality while improving code clarity
+
+## Implementation Steps
+
+### Step 1: Analyze Current Implementation
+
+First, examine the existing `_apply_functions` method to understand the current logic flow:
+
+```python
+# Current structure (pseudo-code)
+def _apply_functions(*, data, annotated_functions, grouping_names):
+    if grouping_names is None:
+        # Apply functions to entire DataFrame
+        results = {}
+        for name, func in annotated_functions.items():
+            results[name] = func(data)
+        return pd.Series(results)
+    else:
+        # Group by specified columns and apply functions
+        grouped = data.groupby(grouping_names)
+        results = {}
+        for name, func in annotated_functions.items():
+            results[name] = grouped.apply(func)
+        return pd.DataFrame(results)
+```
+
+### Step 2: Refactor Using Pandas Built-in Methods
+
+Replace manual iteration with pandas' `agg` method for more concise and efficient code:
+
+```python
+def _apply_functions(
+    *,
+    data: pd.DataFrame,
+    annotated_functions: dict[str, AnnotatedMetricFunction],
+    grouping_names: list[str] | None,
+) -> pd.Series | pd.DataFrame:
+    """
+    Apply annotated metric functions to a DataFrame, optionally grouping by specified columns.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        The input data on which the metric functions will be applied.
+    annotated_functions : dict[str, AnnotatedMetricFunction]
+        A dictionary where keys are metric names and values are the corresponding annotated metric
+        functions.
+    grouping_names : list[str] | None
+        A list of column names to group by before applying the metric functions. If None, the
+        functions are applied to the entire DataFrame.
+
+    Returns
+    -------
+    Series or DataFrame
+        A Series or DataFrame with the results of the metric functions applied. If grouping_names is provided,
+        the results are grouped accordingly.
+    """
+    # Extract function objects from annotated_functions
+    functions_dict = {name: func.function for name, func in annotated_functions.items()}
+    
+    if grouping_names is None:
+        # Apply aggregation to entire DataFrame without grouping
+        result = data.agg(functions_dict)
+        return result
+    else:
+        # Apply aggregation with grouping
+        grouped = data.groupby(grouping_names)
+        result = grouped.agg(functions_dict)
+        return result
+```
+
+### Step 3: Handle Edge Cases and Validation
+
+Add input validation and edge case handling:
+
+```python
+def _apply_functions(
+    *,
+    data: pd.DataFrame,
+    annotated_functions: dict[str, AnnotatedMetricFunction],
+    grouping_names: list[str] | None,
+) -> pd.Series | pd.DataFrame:
+    # Input validation
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError("data must be a pandas DataFrame")
+    
+    if not annotated_functions:
+        raise ValueError("annotated_functions cannot be empty")
+    
+    if grouping_names is not None:
+        if not all(col in data.columns for col in grouping_names):
+            missing_cols = [col for col in grouping_names if col not in data.columns]
+            raise ValueError(f"Grouping columns not found in data: {missing_cols}")
+    
+    # Extract function objects
+    functions_dict = {}
+    for name, annotated_func in annotated_functions.items():
+        if not callable(annotated_func.function):
+            raise TypeError(f"Function for metric '{name}' is not callable")
+        functions_dict[name] = annotated_func.function
+    
+    # Apply functions
+    if grouping_names is None:
+        try:
+            result = data.agg(functions_dict)
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Error applying functions to ungrouped data: {e}")
+    else:
+        try:
+            grouped = data.groupby(grouping_names)
+            result = grouped.agg(functions_dict)
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Error applying functions to grouped data: {e}")
+```
+
+### Step 4: Update Related Methods
+
+Identify and update any methods that call `_apply_functions` to ensure compatibility:
+
+```python
+# In DisaggregatedResult.create or similar methods
+def create(cls, data, functions, grouping_columns=None):
+    """
+    Consolidated creation method that handles both overall and by_group results.
+    """
+    # Common initialization logic
+    if grouping_columns is None:
+        grouping_names = None
+    else:
+        grouping_names = grouping_columns
+    
+    # Use refactored _apply_functions
+    result = cls._apply_functions(
+        data=data,
+        annotated_functions=functions,
+        grouping_names=grouping_names
+    )
+    
+    return cls(result, grouping_columns=grouping_columns)
+```
+
+### Step 5: Add Unit Tests
+
+Create comprehensive unit tests to verify the refactored functionality:
+
+```python
+# test_disaggregated_result.py
+import pytest
+import pandas as pd
+import numpy as np
+from fairlearn.metrics._disaggregated_result import DisaggregatedResult
+
+class TestDisaggregatedResultApplyFunctions:
+    def test_apply_functions_no_grouping(self):
+        """Test _apply_functions without grouping."""
+        data = pd.DataFrame({
+            'feature1': [1, 2, 3, 4],
+            'feature2': [5, 6, 7, 8]
+        })
+        
+        functions = {
+            'mean_feature1': AnnotatedMetricFunction(np.mean, {'column': 'feature1'}),
+            'sum_feature2': AnnotatedMetricFunction(np.sum, {'column': 'feature2'})
+        }
+        
+        result = DisaggregatedResult._apply_functions(
+            data=data,
+            annotated_functions=functions,
+            grouping_names=None
+        )
+        
+        assert isinstance(result, pd.Series)
+        assert result['mean_feature1'] == 2.5
+        assert result['sum_feature2'] == 26
+    
+    def test_apply_functions_with_grouping(self):
+        """Test _apply_functions with grouping."""
+        data = pd.DataFrame({
+            'group': ['A', 'A', 'B', 'B'],
+            'value': [1, 2, 3, 4]
+        })
+        
+        functions = {
+            'mean_value': AnnotatedMetricFunction(np.mean, {'column': 'value'}),
+            'count': AnnotatedMetricFunction(len, {})
+        }
+        
+        result = DisaggregatedResult._apply_functions(
+            data=data,
+            annotated_functions=functions,
+            grouping_names=['group']
+        )
+        
+        assert isinstance(result, pd.DataFrame)
+        assert result.loc['A', 'mean_value'] == 1.5
+        assert result.loc['B', 'mean_value'] == 3.5
+        assert result.loc['A', 'count'] == 2
+    
+    def test_apply_functions_empty_data(self):
+        """Test _apply_functions with empty DataFrame."""
+        data = pd.DataFrame()
+        functions = {
+            'count': AnnotatedMetricFunction(len, {})
+        }
+        
+        with pytest.raises(ValueError):
+            DisaggregatedResult._apply_functions(
+                data=data,
+                annotated_functions=functions,
+                grouping_names=None
+            )
+    
+    def test_apply_functions_invalid_grouping(self):
+        """Test _apply_functions with invalid grouping columns."""
+        data = pd.DataFrame({'value': [1, 2, 3]})
+        functions = {
+            'mean': AnnotatedMetricFunction(np.mean, {'column': 'value'})
+        }
+        
+        with pytest.raises(ValueError):
+            DisaggregatedResult._apply_functions(
+                data=data,
+                annotated_functions=functions,
+                grouping_names=['nonexistent_column']
+            )
+```
+
+### Step 6: Update Documentation
+
+Update docstrings and any relevant user documentation:
+
+```python
+# Add to the class docstring or module documentation
+"""
+Refactored Implementation Notes:
+- Uses pandas built-in aggregation methods for better performance and readability
+- Consolidated logic for grouped and ungrouped operations
+- Added comprehensive input validation and error handling
+"""
+```
+
+## Testing Strategy
+
+1. **Unit Tests**: Verify individual function behavior with various inputs
+2. **Integration Tests**: Ensure the refactored method works with existing code
+3. **Edge Cases**: Test with empty data, invalid inputs, and boundary conditions
+4. **Performance**: Compare execution time with previous implementation
+
+## Code Style Guidelines
+
+- Follow existing pandas-centric patterns in the codebase
+- Use descriptive variable names consistent with the project
+- Maintain type hints for all function signatures
+- Include comprehensive docstrings with examples where appropriate
+- Follow the project's error handling conventions
+
+## Migration Considerations
+
+- The refactored method should maintain backward compatibility
+- Existing tests should pass without modification (unless they test implementation details)
+- Performance should be equivalent or improved
+- Function signatures and return types remain unchanged
+
+## Verification Checklist
+
+- [ ] All existing tests pass
+- [ ] New unit tests cover the refactored logic
+- [ ] Performance is maintained or improved
+- [ ] Code complexity is reduced (measured by tools like radon)
+- [ ] Documentation is updated
+- [ ] Edge cases are properly handled
+- [ ] Input validation is comprehensive
+
+This refactoring simplifies the codebase while maintaining functionality and improving maintainability through better use of pandas' built-in capabilities.

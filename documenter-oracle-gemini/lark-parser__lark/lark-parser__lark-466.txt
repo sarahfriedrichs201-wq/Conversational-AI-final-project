@@ -1,0 +1,213 @@
+The goal is to add `visit_topdown` methods to the `Visitor` and `Visitor_Recursive` classes in `lark/visitors.py`. These methods should perform a top-down traversal of a `Tree` structure, calling the appropriate `visit_rule_name` or `__default__` method for each node before visiting its children. A new test case will also be added to `tests/test_trees.py` to verify the functionality.
+
+## Repository Overview
+
+Lark is a parsing toolkit for Python. Its core components include:
+*   **`lark.Lark`**: The main parser class, which takes a grammar and produces a parser.
+*   **`lark.tree.Tree`**: The fundamental data structure representing the parse tree. A `Tree` object has a `data` attribute (the rule name) and a `children` attribute (a list of sub-trees or tokens).
+*   **`lark.visitors.Visitor`**: An abstract base class for tree traversal. Its primary method, `visit(tree)`, performs a bottom-up traversal. It dispatches calls to methods named `visit_rule_name` or `__default__` if no specific method exists. This class typically uses an iterative approach for traversal.
+*   **`lark.visitors.Visitor_Recursive`**: A subclass of `Visitor` that implements a recursive bottom-up traversal.
+*   **`lark.visitors.Transformer`**: Similar to `Visitor`, but designed for transforming trees (modifying nodes and returning new ones) rather than just visiting.
+
+The existing `Visitor` and `Visitor_Recursive` classes already provide a `visit` method for bottom-up traversal. The new `visit_topdown` methods will mirror this functionality but with a top-down order.
+
+## Implementation Plan
+
+The implementation will involve two main parts:
+1.  Adding the `visit_topdown` methods to `lark/visitors.py`.
+2.  Adding a test case to `tests/test_trees.py` to validate the new methods.
+
+### Part 1: Implement `visit_topdown` in `lark/visitors.py`
+
+Both `Visitor` and `Visitor_Recursive` classes need a `visit_topdown` method. The key difference between them is the traversal strategy: `Visitor` uses an iterative approach (typically a stack-based DFS), while `Visitor_Recursive` uses a recursive approach. Both should dispatch to `visit_rule_name` or `__default__` for processing each node.
+
+**Common Internal Method for Dispatch:**
+Both `Visitor` and `Visitor_Recursive` likely use an internal method to dispatch to the user-defined `visit_rule_name` or `__default__` methods. Let's assume this method is `_call_user_func(self, tree)`. If such a method doesn't explicitly exist, it can be implemented as:
+
+```python
+# This logic is typically part of the base Visitor class or a helper.
+# It finds and calls the appropriate method for the given tree node.
+def _call_user_func(self, tree):
+    method = getattr(self, 'visit_' + tree.data, self.__default__)
+    return method(tree)
+```
+*Self-correction:* Looking at common `lark` patterns, the `_call_user_func` is often implicitly handled by the `_visitor_callbacks` dictionary or similar mechanisms. For simplicity and consistency with the existing `visit` methods, we will directly call `getattr(self, 'visit_' + tree.data, self.__default__)(tree)` within the traversal logic.
+
+#### 1.1. `Visitor.visit_topdown` (Iterative)
+
+This method will perform an iterative depth-first, top-down traversal. It will use a stack to manage the nodes to visit.
+
+**File:** `lark/visitors.py`
+
+```python
+class Visitor:
+    # ... existing methods ...
+
+    def visit_topdown(self, tree):
+        """
+        Visits the tree in a top-down (pre-order) fashion, calling the appropriate
+        'visit_rule_name' or '__default__' method for each node.
+
+        The traversal is iterative (stack-based).
+
+        Args:
+            tree (Tree): The root of the tree to visit.
+
+        Returns:
+            Tree: The original tree (as this visitor is typically for side-effects).
+        """
+        # Use a list as a stack for iterative DFS.
+        # We push the root node first.
+        stack = [tree]
+
+        while stack:
+            current_node = stack.pop()
+
+            # Process the current node (call user-defined method)
+            # This is the "top-down" part: process parent before children.
+            method = getattr(self, 'visit_' + current_node.data, self.__default__)
+            method(current_node)
+
+            # Add children to the stack in reverse order to ensure left-to-right
+            # processing when popped (LIFO stack).
+            # Only add Tree objects, not tokens.
+            for child in reversed(current_node.children):
+                if isinstance(child, Tree):
+                    stack.append(child)
+        return tree
+```
+
+#### 1.2. `Visitor_Recursive.visit_topdown` (Recursive)
+
+This method will perform a recursive depth-first, top-down traversal.
+
+**File:** `lark/visitors.py`
+
+```python
+class Visitor_Recursive(Visitor):
+    # ... existing methods ...
+
+    def visit_topdown(self, tree):
+        """
+        Visits the tree in a top-down (pre-order) fashion, calling the appropriate
+        'visit_rule_name' or '__default__' method for each node.
+
+        The traversal is recursive.
+
+        Args:
+            tree (Tree): The root of the tree to visit.
+
+        Returns:
+            Tree: The original tree (as this visitor is typically for side-effects).
+        """
+        # Process the current node (call user-defined method)
+        # This is the "top-down" part: process parent before children.
+        method = getattr(self, 'visit_' + tree.data, self.__default__)
+        method(tree)
+
+        # Recursively visit children from left to right.
+        # Only visit Tree objects, not tokens.
+        for child in tree.children:
+            if isinstance(child, Tree):
+                self.visit_topdown(child)
+        return tree
+```
+
+### Part 2: Add Test Case in `tests/test_trees.py`
+
+A new test method will be added to `tests/test_trees.py` to verify the `visit_topdown` functionality for both `Visitor` and `Visitor_Recursive`. This test will reuse the tree structure provided in the problem description and compare the output of the top-down visit with the expected sequence. It will also include the bottom-up visit for comparison, as suggested in the PR.
+
+**File:** `tests/test_trees.py`
+
+```python
+import unittest
+import sys
+from io import StringIO
+from lark.tree import Tree
+from lark.visitors import Visitor, Visitor_Recursive
+
+# ... (existing imports and test classes) ...
+
+class TestVisitors(unittest.TestCase):
+    # ... (existing test methods, if any) ...
+
+    def test_visit_topdown(self):
+        """
+        Tests the top-down traversal for both iterative (Visitor)
+        and recursive (Visitor_Recursive) visitors.
+        Also includes a bottom-up test for comparison.
+        """
+        # Setup the test tree structure
+        tree = Tree("a", [
+            Tree("b", [
+                Tree("c", []),
+                Tree("d", [])
+            ]),
+            Tree("e", [
+                Tree("f", []),
+                Tree("g", [])
+            ])
+        ])
+
+        # Define a simple visitor that prints the node data
+        class Printer(Visitor):
+            def __init__(self):
+                self.output = []
+            def __default__(self, tree):
+                self.output.append(tree.data)
+                return tree # Visitors usually return the node, or None for side-effects
+
+        class Printer_Recursive(Visitor_Recursive):
+            def __init__(self):
+                self.output = []
+            def __default__(self, tree):
+                self.output.append(tree.data)
+                return tree
+
+        # --- Test Iterative Visitor (top-down) ---
+        printer_iterative_td = Printer()
+        printer_iterative_td.visit_topdown(tree)
+        expected_topdown = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+        self.assertEqual(printer_iterative_td.output, expected_topdown,
+                         "Iterative Visitor_topdown failed")
+
+        # --- Test Recursive Visitor (top-down) ---
+        printer_recursive_td = Printer_Recursive()
+        printer_recursive_td.visit_topdown(tree)
+        self.assertEqual(printer_recursive_td.output, expected_topdown,
+                         "Recursive Visitor_topdown failed")
+
+        # --- Test Iterative Visitor (bottom-up, for comparison) ---
+        printer_iterative_bu = Printer()
+        printer_iterative_bu.visit(tree) # Assuming 'visit' is the bottom-up method
+        expected_bottomup = ['c', 'd', 'b', 'f', 'g', 'e', 'a']
+        self.assertEqual(printer_iterative_bu.output, expected_bottomup,
+                         "Iterative Visitor (bottom-up) failed")
+
+        # --- Test Recursive Visitor (bottom-up, for comparison) ---
+        printer_recursive_bu = Printer_Recursive()
+        printer_recursive_bu.visit(tree) # Assuming 'visit' is the bottom-up method
+        self.assertEqual(printer_recursive_bu.output, expected_bottomup,
+                         "Recursive Visitor (bottom-up) failed")
+
+```
+
+### Coding Style and Best Practices
+
+*   **PEP 8 Compliance**: Ensure all new code adheres to PEP 8, including naming conventions, indentation (4 spaces), and line length.
+*   **Docstrings**: Add clear and concise docstrings for the new methods, explaining their purpose, arguments, and return values.
+*   **Consistency**: Maintain consistency with the existing codebase's style for variable names, comments, and overall structure. For instance, if existing visitors return `tree` even for side-effect operations, follow that pattern.
+*   **Error Handling**: For `Visitor` methods, typically no explicit error handling is needed for invalid tree structures, as the parser should produce valid trees.
+*   **Type Checking**: The `isinstance(child, Tree)` check is important to ensure that only `Tree` nodes are traversed, and not `Token` objects that might be present in `tree.children`.
+
+### Testing
+
+After implementing the changes:
+1.  Ensure you have the test dependencies installed: `pip install -r test-requirements.txt`.
+2.  Run the tests using `tox` (as indicated by `.travis.yml`) or `pytest` if configured, or directly `python -m unittest tests/test_trees.py`.
+    ```bash
+    tox
+    # or
+    python -m unittest tests.test_trees.TestVisitors.test_visit_topdown
+    ```
+3.  All existing tests should pass, and the new `test_visit_topdown` test should also pass.

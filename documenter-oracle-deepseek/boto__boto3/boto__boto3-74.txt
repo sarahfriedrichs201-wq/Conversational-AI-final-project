@@ -1,0 +1,342 @@
+# Implementation Guide: Load Reference Data with JMESPath Query
+
+## Overview
+
+This document provides detailed instructions for implementing a feature that allows reference data to be automatically loaded when a resource path with JMESPath query is defined. The feature enables nested resource attributes to be populated from parent resource data without requiring explicit load operations.
+
+## Problem Context
+
+Currently, when accessing nested resource attributes that haven't been loaded, users encounter `ResourceLoadException`. The goal is to automatically load reference data from parent resource metadata when available, or trigger a load operation if the parent is loadable.
+
+### Before Implementation
+```python
+>>> ni = ec2.NetworkInterface('abc123')
+>>> ni.association.public_ip
+ResourceLoadException: ec2.NetworkInterfaceAssociation has no load method
+```
+
+### After Implementation
+```python
+>>> ni = ec2.NetworkInterface('abc123')
+>>> ni.association.public_ip
+'127.0.0.1'
+```
+
+## Implementation Plan
+
+### 1. Analyze Current Reference Handling
+
+First, examine how references are currently handled in the resource system. Look for:
+
+- Reference class definitions
+- Resource loading mechanisms
+- Parent-child resource relationships
+- Meta data storage and access patterns
+
+### 2. Modify Reference Class
+
+**File:** `boto3/resources/factory.py` (or similar reference handling file)
+
+```python
+class Reference:
+    def __init__(self, name, resource_path, parent):
+        self.name = name
+        self.resource_path = resource_path
+        self.parent = parent
+        self._value = None
+        
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+            
+        if self._value is None:
+            # NEW: Attempt to load from parent meta data
+            self._value = self._load_from_parent_data(instance)
+            
+        return self._value
+        
+    def _load_from_parent_data(self, instance):
+        """
+        Attempt to load reference data from parent's meta.data using JMESPath.
+        If data is not available and parent is loadable, trigger load operation.
+        """
+        parent = self.parent
+        
+        # Check if parent has loaded data in meta.data
+        if hasattr(parent, 'meta') and hasattr(parent.meta, 'data'):
+            parent_data = parent.meta.data
+            if parent_data:
+                # Apply JMESPath query if resource_path is defined
+                if self.resource_path:
+                    import jmespath
+                    result = jmespath.search(self.resource_path, parent_data)
+                    if result is not None:
+                        return result
+        
+        # If data not available, check if parent is loadable
+        if hasattr(parent, 'load'):
+            try:
+                parent.load()
+                # Retry after load
+                if hasattr(parent, 'meta') and hasattr(parent.meta, 'data'):
+                    parent_data = parent.meta.data
+                    if parent_data and self.resource_path:
+                        import jmespath
+                        result = jmespath.search(self.resource_path, parent_data)
+                        if result is not None:
+                            return result
+            except Exception:
+                # If load fails, return None to maintain original behavior
+                pass
+                
+        return None
+```
+
+### 3. Update Resource Factory
+
+**File:** `boto3/resources/factory.py`
+
+Modify the resource factory to handle the new reference loading behavior:
+
+```python
+class ResourceFactory:
+    def create_reference(self, name, resource_path, parent):
+        """Create a reference that can auto-load from parent data."""
+        reference = Reference(name, resource_path, parent)
+        return reference
+        
+    def load_reference_data(self, reference, instance):
+        """
+        Public method to manually trigger reference data loading.
+        Useful for testing and explicit control.
+        """
+        return reference._load_from_parent_data(instance)
+```
+
+### 4. Add JMESPath Dependency Handling
+
+Ensure JMESPath is properly imported and available. Since it's already in `requirements.txt`, no additional installation is needed.
+
+**File:** Add import at appropriate location
+```python
+try:
+    import jmespath
+except ImportError:
+    # Handle case where jmespath is not available
+    jmespath = None
+```
+
+### 5. Implement Error Handling
+
+Create custom exceptions for reference loading:
+
+**File:** `boto3/exceptions.py`
+```python
+class ReferenceLoadError(Exception):
+    """Base exception for reference loading errors."""
+    pass
+
+class JMESPathError(ReferenceLoadError):
+    """Exception raised when JMESPath query fails."""
+    pass
+```
+
+### 6. Add Configuration Option
+
+**File:** `boto3/session.py` or configuration module
+```python
+class Session:
+    def __init__(self, ...):
+        # ... existing code ...
+        self._auto_load_references = True  # New config option
+        
+    def disable_auto_reference_loading(self):
+        """Disable automatic reference loading for this session."""
+        self._auto_load_references = False
+        
+    def enable_auto_reference_loading(self):
+        """Enable automatic reference loading for this session."""
+        self._auto_load_references = True
+```
+
+### 7. Update Reference Implementation
+
+Modify the actual reference implementation to respect the configuration:
+
+```python
+class Reference:
+    def __init__(self, name, resource_path, parent, session=None):
+        self.name = name
+        self.resource_path = resource_path
+        self.parent = parent
+        self.session = session
+        self._value = None
+        
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+            
+        if self._value is None:
+            # Check if auto-loading is enabled
+            if (self.session is None or 
+                (hasattr(self.session, '_auto_load_references') and 
+                 self.session._auto_load_references)):
+                self._value = self._load_from_parent_data(instance)
+            
+        return self._value
+```
+
+## Testing Strategy
+
+### 1. Unit Tests
+
+**File:** `tests/unit/test_reference_loading.py`
+
+```python
+import unittest
+import boto3
+from boto3.resources.factory import ResourceFactory
+from boto3.exceptions import JMESPathError
+
+class TestReferenceLoading(unittest.TestCase):
+    def setUp(self):
+        self.factory = ResourceFactory()
+        self.session = boto3.Session(region_name='us-east-1')
+        
+    def test_reference_loads_from_parent_data(self):
+        # Create mock parent with meta.data
+        parent = MockParent()
+        parent.meta.data = {
+            'Association': {
+                'PublicIp': '127.0.0.1'
+            }
+        }
+        
+        # Create reference with JMESPath query
+        reference = self.factory.create_reference(
+            'public_ip', 
+            'Association.PublicIp', 
+            parent
+        )
+        
+        # Verify reference loads data correctly
+        self.assertEqual(reference.__get__(None, None), '127.0.0.1')
+        
+    def test_reference_triggers_parent_load(self):
+        # Create mock parent that needs loading
+        parent = MockLoadableParent()
+        parent.load_called = False
+        
+        def mock_load():
+            parent.load_called = True
+            parent.meta.data = {'Ip': '192.168.1.1'}
+            
+        parent.load = mock_load
+        
+        # Create reference
+        reference = self.factory.create_reference('ip', 'Ip', parent)
+        
+        # Access should trigger load
+        result = reference.__get__(None, None)
+        self.assertTrue(parent.load_called)
+        self.assertEqual(result, '192.168.1.1')
+        
+    def test_jmespath_error_handling(self):
+        # Test invalid JMESPath query
+        parent = MockParent()
+        parent.meta.data = {'Data': 'value'}
+        
+        reference = self.factory.create_reference(
+            'invalid', 
+            'Invalid[Path',  # Invalid JMESPath
+            parent
+        )
+        
+        # Should handle JMESPath errors gracefully
+        result = reference.__get__(None, None)
+        self.assertIsNone(result)
+```
+
+### 2. Integration Tests
+
+**File:** `tests/integration/test_network_interface.py`
+
+```python
+class TestNetworkInterfaceIntegration(unittest.TestCase):
+    def test_association_public_ip_auto_load(self):
+        # This test requires actual AWS credentials and proper setup
+        ec2 = boto3.resource('ec2', region_name='us-east-1')
+        
+        # Get a network interface (use known test instance)
+        ni = ec2.NetworkInterface('eni-123456')
+        
+        # This should now work without explicit load
+        public_ip = ni.association.public_ip
+        self.assertIsNotNone(public_ip)
+```
+
+## Performance Considerations
+
+1. **Lazy Loading**: References should only load data when first accessed
+2. **Caching**: Loaded data should be cached to avoid repeated JMESPath queries
+3. **Configuration**: Allow users to disable auto-loading for performance-critical applications
+
+## Backward Compatibility
+
+- The feature should be opt-in or have minimal impact on existing code
+- Existing code that handles `ResourceLoadException` should continue to work
+- Add deprecation warnings if changing existing behavior significantly
+
+## Documentation Updates
+
+Update relevant documentation to explain the new feature:
+
+**File:** `docs/source/guide/resources.rst`
+
+```rst
+Automatic Reference Loading
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Boto3 now supports automatic loading of reference data when a resource path 
+with JMESPath query is defined. This eliminates the need for explicit load 
+operations in many common scenarios.
+
+Example:
+
+.. code-block:: python
+
+    # Before: Would raise ResourceLoadException
+    ni = ec2.NetworkInterface('eni-123456')
+    print(ni.association.public_ip)  # Automatically loads if data available
+    
+Configuration:
+
+.. code-block:: python
+
+    # Disable automatic reference loading
+    session = boto3.Session()
+    session.disable_auto_reference_loading()
+```
+
+## Implementation Checklist
+
+- [ ] Analyze current reference handling code
+- [ ] Implement modified Reference class with auto-loading
+- [ ] Update ResourceFactory to support new reference behavior
+- [ ] Add proper error handling and exceptions
+- [ ] Implement configuration options
+- [ ] Write comprehensive unit tests
+- [ ] Write integration tests
+- [ ] Update documentation
+- [ ] Performance testing and optimization
+- [ ] Backward compatibility verification
+
+## Expected Outcomes
+
+After implementation, users should be able to:
+1. Access nested resource attributes without explicit load operations
+2. Have reference data automatically populated from parent metadata
+3. Configure auto-loading behavior per session
+4. Maintain backward compatibility with existing code
+
+This implementation significantly improves the developer experience by reducing boilerplate code and making resource access more intuitive.

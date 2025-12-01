@@ -1,0 +1,262 @@
+This document outlines the implementation plan for introducing a configurable default value for non-specified fields in Graphene's `InputObjectType`. This feature aims to resolve the ambiguity when an optional input field is not provided versus when it is explicitly set to `None`.
+
+## 1. Introduction & Problem Statement
+
+Currently, when an optional field in an `InputObjectType` is not provided in the GraphQL input, accessing it via dot notation (e.g., `input.fieldName`) returns `None`. This creates ambiguity because a user could also explicitly set the field's value to `None`. It becomes impossible to distinguish between a field that was omitted and a field that was intentionally set to `None`.
+
+This document details the implementation of a new, opt-in mechanism: a global function `set_input_object_type_default_value(default_value)`. This function will allow developers to specify a sentinel value (e.g., `graphene.types.scalars.Undefined`) that will be returned for non-specified optional fields, instead of `None`. The default behavior will remain `None` to ensure backward compatibility.
+
+## 2. Repository Overview
+
+The core of this feature will reside within the `graphene` library itself, specifically impacting how `InputObjectType` instances handle field access.
+
+*   **`graphene/types/inputobjecttype.py`**: This file contains the `InputObjectType` class definition and its associated metaclass (`InputObjectTypeMeta`). This is the primary target for modifications, including the introduction of the new global function and changes to how field values are retrieved.
+*   **`graphene/types/scalars.py`**: This file defines various scalar types, including `Undefined`. The `Undefined` scalar is a prime candidate for the sentinel value users might want to configure.
+*   **`graphene/tests/`**: Existing test files (e.g., `graphene/tests/test_inputobjecttype.py`) will need to be extended to cover the new functionality.
+
+`InputObjectType` instances are designed to behave like dictionary-like objects, allowing both dictionary-style (`input['fieldName']`) and dot-style (`input.fieldName`) access to their fields. The underlying mechanism for retrieving field values, especially when a field is not explicitly provided in the input, is where the change will be focused.
+
+## 3. Implementation Plan
+
+The implementation will involve introducing a global state variable, a new function to modify this state, and a targeted change within the `InputObjectType`'s field access logic.
+
+### Step 1: Define Global Default Value Variable
+
+A module-level variable will be introduced in `graphene/types/inputobjecttype.py` to store the configurable default value.
+
+*   **File**: `graphene/types/inputobjecttype.py`
+*   **Variable Name**: `_input_object_type_default_value`
+*   **Initial Value**: `None` (to maintain current behavior and backward compatibility).
+
+```python
+# graphene/types/inputobjecttype.py
+
+# ... existing imports ...
+from graphene.types.scalars import Undefined # Will be useful for examples/tests
+
+# Global variable to store the default value for non-specified InputObjectType fields.
+# Initialized to None for backward compatibility.
+_input_object_type_default_value = None
+```
+
+### Step 2: Implement `set_input_object_type_default_value` Function
+
+This function will allow users to change the global default value.
+
+*   **File**: `graphene/types/inputobjecttype.py`
+*   **Function Signature**: `def set_input_object_type_default_value(default_value: Any) -> None:`
+*   **Functionality**: Updates the `_input_object_type_default_value` global variable.
+*   **Docstring**: Must clearly explain its purpose, usage, and the importance of calling it early.
+
+```python
+# graphene/types/inputobjecttype.py
+
+# ... (previous code including _input_object_type_default_value) ...
+
+def set_input_object_type_default_value(default_value: Any) -> None:
+    """
+    Sets the default value returned for non-specified fields in InputObjectType instances.
+
+    This function allows users to change the sentinel value that will be returned
+    when an optional InputObjectType field is accessed but was not provided in the
+    incoming GraphQL input. By default, this value is `None`, which can be ambiguous
+    if `None` is also a valid explicit input.
+
+    A common use case is to set this to `graphene.types.scalars.Undefined` to
+    differentiate between a field explicitly set to `None` and a field that was
+    not provided at all.
+
+    This function should be called early in the application's lifecycle,
+    before any InputObjectType definitions are processed.
+
+    Args:
+        default_value: The value to return for non-specified optional fields.
+                       Defaults to `None` if not set.
+    """
+    global _input_object_type_default_value
+    _input_object_type_default_value = default_value
+```
+
+### Step 3: Modify `InputObjectType` Field Access
+
+The `InputObjectType` class (or a base class it inherits from) needs to be modified to use the `_input_object_type_default_value` when a field is requested but was not present in the input.
+
+`InputObjectType` instances typically store the provided input values in an internal dictionary (e.g., `self._values` or `self.__dict__`). They also have a `_meta` attribute (managed by `InputObjectTypeMeta`) that holds information about all defined fields for that type.
+
+The most likely place for this modification is within the `__getattr__` method of `InputObjectType` (or a base class it inherits from that handles attribute access for fields).
+
+*   **File**: `graphene/types/inputobjecttype.py`
+*   **Target Method**: `InputObjectType.__getattr__` (or similar internal lookup logic).
+*   **Change**: When `__getattr__` is called for a `name`:
+    1.  First, check if `name` is present in the *provided* input values (e.g., `self._values`). If yes, return that value.
+    2.  If not, check if `name` is a *defined field* in the `InputObjectType`'s schema (e.g., by checking `name in self._meta.fields`).
+    3.  If `name` is a defined field but not in the provided input values, return `_input_object_type_default_value`.
+    4.  Otherwise, raise `AttributeError` or defer to `super().__getattr__`.
+
+```python
+# graphene/types/inputobjecttype.py
+
+# ... (previous code) ...
+
+class InputObjectType(graphene.types.base.GrapheneType):
+    # ... existing class definition ...
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Assuming input values are stored in self._values or similar
+        # This part might vary slightly based on actual Graphene implementation
+        self._values = kwargs # Example: storing provided values
+
+    def __getattr__(self, name: str) -> Any:
+        # 1. Check if the attribute was explicitly provided in the input
+        if name in self._values:
+            return self._values[name]
+
+        # 2. Check if the attribute is a defined field in the InputObjectType's schema
+        #    (self._meta.fields typically holds a mapping of field names to Field objects)
+        if name in self._meta.fields:
+            # If it's a defined field but not provided, return the global default
+            return _input_object_type_default_value
+
+        # 3. If it's neither provided nor a defined field, raise AttributeError
+        #    or delegate to the parent class's __getattr__ if applicable.
+        #    For InputObjectType, typically an AttributeError is raised for undefined fields.
+        raise AttributeError(
+            f"'{self.__class__.__name__}' object has no attribute '{name}'"
+        )
+
+    # It's also possible that __getitem__ needs similar logic if it's used for optional fields.
+    # If InputObjectType overrides __getitem__, ensure it also respects _input_object_type_default_value.
+    # def __getitem__(self, name: str) -> Any:
+    #     if name in self._values:
+    #         return self._values[name]
+    #     if name in self._meta.fields:
+    #         return _input_object_type_default_value
+    #     raise KeyError(f"'{self.__class__.__name__}' object has no key '{name}'")
+
+```
+
+### Step 4: Add Type Hinting
+
+Ensure that all new code (the global variable, the new function, and any modified method signatures) includes appropriate Python type hints for clarity and maintainability, consistent with the existing Graphene codebase.
+
+### Step 5: Add Unit Tests
+
+Comprehensive unit tests are crucial to ensure the feature works as expected and doesn't introduce regressions.
+
+*   **File**: `graphene/tests/test_inputobjecttype.py` (or a new dedicated test file if preferred, following existing patterns).
+*   **Test Cases**:
+    *   **Default Behavior**: Verify that without calling `set_input_object_type_default_value`, non-specified optional fields still return `None`.
+    *   **Custom Sentinel Value**:
+        *   Call `set_input_object_type_default_value(Undefined)`.
+        *   Define an `InputObjectType` with an optional field.
+        *   Create an instance where the optional field is *not* provided.
+        *   Assert that accessing the field returns `Undefined`.
+    *   **Explicit `None`**:
+        *   With a custom sentinel set (e.g., `Undefined`).
+        *   Create an `InputObjectType` instance where an optional field is *explicitly* set to `None`.
+        *   Assert that accessing the field returns `None` (not the sentinel). This confirms explicit `None` is respected.
+    *   **Multiple `InputObjectType`s**: Ensure that setting the default value affects all subsequently defined `InputObjectType`s.
+    *   **Resetting Default**: Test calling `set_input_object_type_default_value(None)` after setting a custom value, to ensure it reverts to the original behavior.
+    *   **Non-existent Field**: Ensure that accessing a field that is neither provided nor defined in the schema still raises an `AttributeError` (or `KeyError` for `__getitem__`).
+
+```python
+# graphene/tests/test_inputobjecttype.py (Example Test Structure)
+
+import pytest
+import graphene
+from graphene.types.scalars import Undefined
+from graphene.types.inputobjecttype import set_input_object_type_default_value, _input_object_type_default_value
+
+# Store original default to restore after tests
+_original_default_value = _input_object_type_default_value
+
+@pytest.fixture(autouse=True)
+def reset_input_object_type_default_value():
+    """Fixture to reset the global default value after each test."""
+    global _input_object_type_default_value
+    _input_object_type_default_value = _original_default_value
+    yield
+    _input_object_type_default_value = _original_default_value
+
+
+def test_input_object_type_default_value_is_none_by_default():
+    class MyInput(graphene.InputObjectType):
+        field_a = graphene.String()
+        field_b = graphene.Int(required=False)
+
+    input_instance = MyInput(field_a="hello")
+    assert input_instance.field_a == "hello"
+    assert input_instance.field_b is None # Should be None by default
+
+def test_input_object_type_returns_custom_sentinel_for_non_specified_fields():
+    set_input_object_type_default_value(Undefined)
+
+    class MyInput(graphene.InputObjectType):
+        field_a = graphene.String()
+        field_b = graphene.Int(required=False)
+        field_c = graphene.Boolean(required=False)
+
+    input_instance = MyInput(field_a="world")
+    assert input_instance.field_a == "world"
+    assert input_instance.field_b is Undefined
+    assert input_instance.field_c is Undefined
+
+def test_input_object_type_respects_explicit_none_with_custom_sentinel():
+    set_input_object_type_default_value(Undefined)
+
+    class MyInput(graphene.InputObjectType):
+        field_a = graphene.String()
+        field_b = graphene.Int(required=False)
+
+    input_instance = MyInput(field_a="test", field_b=None)
+    assert input_instance.field_a == "test"
+    assert input_instance.field_b is None # Should still be None, not Undefined
+
+def test_input_object_type_raises_attribute_error_for_non_existent_field():
+    class MyInput(graphene.InputObjectType):
+        field_a = graphene.String()
+
+    input_instance = MyInput(field_a="test")
+    with pytest.raises(AttributeError, match="object has no attribute 'non_existent_field'"):
+        _ = input_instance.non_existent_field
+
+def test_set_input_object_type_default_value_can_be_reset():
+    set_input_object_type_default_value(Undefined)
+    class MyInputA(graphene.InputObjectType):
+        field_a = graphene.String(required=False)
+    assert MyInputA().field_a is Undefined
+
+    set_input_object_type_default_value(None) # Reset to default
+    class MyInputB(graphene.InputObjectType):
+        field_b = graphene.String(required=False)
+    assert MyInputB().field_b is None
+
+def test_set_input_object_type_default_value_affects_all_input_object_types():
+    set_input_object_type_default_value("CUSTOM_SENTINEL")
+
+    class InputOne(graphene.InputObjectType):
+        val = graphene.String(required=False)
+
+    class InputTwo(graphene.InputObjectType):
+        another_val = graphene.Int(required=False)
+
+    assert InputOne().val == "CUSTOM_SENTINEL"
+    assert InputTwo().another_val == "CUSTOM_SENTINEL"
+```
+
+### Step 6: Update Documentation
+
+*   **Docstring**: Ensure the `set_input_object_type_default_value` function has a clear and comprehensive docstring, as provided in Step 2.
+*   **`InputObjectType` Docstring**: Consider adding a brief note to the `InputObjectType` class docstring referencing the new function and its impact on optional fields.
+*   **`README.md` / `README.rst`**: Since this is an opt-in, non-breaking change, it might not warrant a top-level `README` update immediately. However, for future reference, it could be mentioned in a "New Features" section if a new major/minor version is released. For now, the docstring is sufficient.
+
+## 4. Coding Style & Best Practices
+
+*   **PEP 8 Compliance**: Adhere to Graphene's existing PEP 8 style, including line length, naming conventions, and whitespace.
+*   **Docstrings**: All new functions and significant code blocks should have clear, concise, and informative docstrings.
+*   **Type Hinting**: Use Python type hints consistently for function arguments, return values, and variables, matching the style used in the surrounding Graphene codebase.
+*   **Readability**: Prioritize clear and understandable code.
+*   **Minimal Impact**: Ensure changes are localized and do not inadvertently affect other parts of the Graphene library. The global variable approach is a trade-off for an opt-in, non-breaking change.
+
+By following these steps, the new feature can be implemented robustly, providing users with greater control over `InputObjectType` behavior while maintaining backward compatibility.

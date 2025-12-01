@@ -1,0 +1,166 @@
+# Implementation Guide: Adding `url` Method to `HfFileSystem`
+
+## Overview
+
+This document provides a detailed implementation guide for adding `url` methods to the `HfFileSystem` class and its file objects. The goal is to enable conversion of Hugging Face Hub paths to HTTP URLs, making it easier to work with libraries that support HTTP URLs but not fsspec paths.
+
+## Repository Context
+
+The `huggingface_hub` library provides a client interface to interact with the Hugging Face Hub. The `HfFileSystem` is an fsspec-compatible filesystem implementation for accessing Hugging Face repositories.
+
+## Implementation Plan
+
+### 1. File Location and Structure
+
+The implementation will be added to `src/huggingface_hub/hf_file_system.py`. We need to add three methods:
+- `HfFileSystem.url()` - instance method
+- `HfFileSystemFile.url()` - instance method  
+- `HfFileSystemStreamFile.url()` - instance method
+
+### 2. URL Construction Logic
+
+Hugging Face Hub URLs follow this pattern:
+```
+https://huggingface.co/{repo_id}/resolve/{revision}/{path_in_repo}
+```
+
+Where:
+- `repo_id`: The repository identifier (e.g., "username/model-name")
+- `revision`: The git revision (branch, tag, or commit hash)
+- `path_in_repo`: The path to the file within the repository
+
+### 3. Implementation Details
+
+#### Step 1: Add `url` method to `HfFileSystem` class
+
+```python
+def url(self, path: str) -> str:
+    """
+    Get the HTTP URL of the given path.
+    
+    Args:
+        path (str): The Hugging Face Hub path in the format 
+                   "hf://[repo_id][@revision]/path/to/file"
+    
+    Returns:
+        str: The HTTP URL to access the file
+        
+    Example:
+        >>> fs = HfFileSystem()
+        >>> fs.url("hf://bert-base-uncased@main/pytorch_model.bin")
+        'https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin'
+    """
+    # Parse the path to extract repo_id, revision, and file path
+    parsed_path = self._parse_path(path)
+    
+    # Construct the URL using the Hugging Face Hub pattern
+    base_url = "https://huggingface.co"
+    repo_id = parsed_path.repo_id
+    revision = parsed_path.revision or "main"  # Default to 'main' if no revision specified
+    file_path = parsed_path.path_in_repo.lstrip('/')  # Remove leading slash
+    
+    return f"{base_url}/{repo_id}/resolve/{revision}/{file_path}"
+```
+
+#### Step 2: Add `url` method to `HfFileSystemFile` class
+
+```python
+def url(self) -> str:
+    """
+    Get the HTTP URL for this file.
+    
+    Returns:
+        str: The HTTP URL to access this file
+    """
+    # Use the filesystem's url method with the file's path
+    return self.fs.url(self.path)
+```
+
+#### Step 3: Add `url` method to `HfFileSystemStreamFile` class
+
+```python
+def url(self) -> str:
+    """
+    Get the HTTP URL for this streamed file.
+    
+    Returns:
+        str: The HTTP URL to access this file
+    """
+    # Use the filesystem's url method with the file's path
+    return self.fs.url(self.path)
+```
+
+### 4. Integration with Existing Code
+
+The `HfFileSystem` class already has path parsing logic in the `_parse_path` method. We'll leverage this existing functionality to extract repository information from paths.
+
+### 5. Error Handling
+
+The implementation should handle:
+- Invalid path formats
+- Missing repository information
+- Special characters in paths (URL encoding is handled by the requests library when needed)
+
+### 6. Testing Strategy
+
+Create tests in the appropriate test file (likely `tests/test_hf_file_system.py`) to verify:
+
+```python
+def test_hf_filesystem_url():
+    fs = HfFileSystem()
+    
+    # Test basic URL construction
+    url = fs.url("hf://bert-base-uncased/pytorch_model.bin")
+    assert url == "https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin"
+    
+    # Test with revision
+    url = fs.url("hf://bert-base-uncased@v1.0/pytorch_model.bin")
+    assert url == "https://huggingface.co/bert-base-uncased/resolve/v1.0/pytorch_model.bin"
+    
+    # Test with nested paths
+    url = fs.url("hf://bert-base-uncased/config.json")
+    assert url == "https://huggingface.co/bert-base-uncased/resolve/main/config.json"
+
+def test_hf_filesystem_file_url():
+    fs = HfFileSystem()
+    file_obj = fs.open("hf://bert-base-uncased/pytorch_model.bin")
+    url = file_obj.url()
+    assert url == "https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin"
+```
+
+### 7. Code Style Guidelines
+
+- Follow existing code style (PEP 8)
+- Use type hints as shown in the existing codebase
+- Include comprehensive docstrings with examples
+- Maintain consistency with existing method signatures and patterns
+
+### 8. Dependencies and Compatibility
+
+This implementation:
+- Does not introduce new external dependencies
+- Maintains backward compatibility
+- Follows the pattern established by other filesystem implementations (gcsfs, s3fs)
+
+### 9. Usage Examples
+
+After implementation, users can:
+
+```python
+from huggingface_hub import HfFileSystem
+
+fs = HfFileSystem()
+
+# Get URL for a model file
+url = fs.url("hf://bert-base-uncased/pytorch_model.bin")
+# url = "https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin"
+
+# Use with file objects
+with fs.open("hf://bert-base-uncased/config.json") as f:
+    file_url = f.url()
+    # file_url = "https://huggingface.co/bert-base-uncased/resolve/main/config.json"
+```
+
+## Summary
+
+This implementation provides a consistent way to convert Hugging Face Hub paths to HTTP URLs, making it easier to integrate with libraries that expect HTTP URLs. The approach follows established patterns in the codebase and maintains compatibility with existing functionality.

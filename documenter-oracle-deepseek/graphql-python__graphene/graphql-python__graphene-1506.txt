@@ -1,0 +1,247 @@
+# Implementation Guide: InputObjectType Default Value Sentinel
+
+## Overview
+
+This document provides a detailed implementation guide for adding a configurable default value mechanism to `InputObjectType` in Graphene. The feature allows users to differentiate between unset fields and fields explicitly set to `None` by using a configurable sentinel value.
+
+## Repository Context
+
+- **Primary File**: `graphene/types/inputobjecttype.py`
+- **Feature**: Add `set_input_object_type_default_value()` function
+- **Goal**: Maintain backward compatibility while allowing opt-in sentinel values
+- **Default Behavior**: Preserve current `None` return for unset fields
+
+## Implementation Plan
+
+### Step 1: Modify `graphene/types/inputobjecttype.py`
+
+#### 1.1 Add Module-Level Configuration
+
+Add a module-level variable to store the default value and a function to modify it:
+
+```python
+# graphene/types/inputobjecttype.py
+
+# Module-level configuration
+_INPUT_OBJECT_TYPE_DEFAULT_VALUE = None
+
+def set_input_object_type_default_value(default_value):
+    """
+    Change the sentinel value returned by non-specified fields in an InputObjectType.
+    
+    Useful to differentiate between a field not being set and a field being set to None
+    by using a sentinel value (e.g., Undefined is a good sentinel value for this purpose).
+    
+    This function should be called at the beginning of the app or in some other place 
+    where it is guaranteed to be called before any InputObjectType is defined.
+    
+    Args:
+        default_value: The value to return for non-specified input fields
+    """
+    global _INPUT_OBJECT_TYPE_DEFAULT_VALUE
+    _INPUT_OBJECT_TYPE_DEFAULT_VALUE = default_value
+```
+
+#### 1.2 Modify InputObjectType Initialization
+
+Update the `InputObjectType` class to use the configurable default value. Look for where field values are accessed when they're not provided in the input.
+
+**Locate the `__init__` method or attribute access mechanism** in `InputObjectType` and modify it:
+
+```python
+class InputObjectType(object):
+    def __init__(self, **kwargs):
+        # Existing initialization code...
+        
+        # For each field in the type, set the value from kwargs or use default
+        for field_name in self._meta.fields:
+            if field_name in kwargs:
+                setattr(self, field_name, kwargs[field_name])
+            else:
+                # Use the configurable default value instead of hardcoded None
+                setattr(self, field_name, _INPUT_OBJECT_TYPE_DEFAULT_VALUE)
+```
+
+#### 1.3 Alternative: Modify Attribute Access
+
+If the current implementation uses `__getattr__` or property-based access, modify accordingly:
+
+```python
+class InputObjectType(object):
+    def __getattr__(self, name):
+        if name in self._meta.fields:
+            # Return the configurable default value for unset fields
+            return _INPUT_OBJECT_TYPE_DEFAULT_VALUE
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+```
+
+### Step 2: Add Documentation
+
+#### 2.1 Add Function Documentation
+
+Ensure the function has comprehensive docstring (already included in Step 1.1).
+
+#### 2.2 Update Module Documentation
+
+Add documentation at the top of the file explaining the feature:
+
+```python
+"""
+InputObjectType implementation for Graphene.
+
+This module provides InputObjectType which allows defining input types for GraphQL mutations
+and queries. It includes configurable default value behavior for unset fields.
+"""
+```
+
+### Step 3: Add Tests
+
+Create or update test files to verify the functionality:
+
+#### 3.1 Test File: `tests/types/test_inputobjecttype.py`
+
+Add tests for the new functionality:
+
+```python
+import pytest
+from graphene import InputObjectType, String
+from graphene.types.inputobjecttype import set_input_object_type_default_value, Undefined
+
+def test_set_input_object_type_default_value():
+    """Test that set_input_object_type_default_value changes the default value."""
+    
+    # Test default behavior (None)
+    class TestInput(InputObjectType):
+        optional_field = String()
+    
+    input_instance = TestInput()
+    assert input_instance.optional_field is None
+    
+    # Test custom sentinel value
+    set_input_object_type_default_value(Undefined)
+    
+    class TestInput2(InputObjectType):
+        optional_field = String()
+    
+    input_instance2 = TestInput2()
+    assert input_instance2.optional_field is Undefined
+    
+    # Test explicit None vs unset
+    input_instance_explicit_none = TestInput2(optional_field=None)
+    assert input_instance_explicit_none.optional_field is None
+    
+    # Reset to default for other tests
+    set_input_object_type_default_value(None)
+
+def test_backward_compatibility():
+    """Ensure default behavior remains None for backward compatibility."""
+    class TestInput(InputObjectType):
+        optional_field = String()
+    
+    input_instance = TestInput()
+    assert input_instance.optional_field is None
+```
+
+### Step 4: Update Documentation
+
+#### 4.1 Add to UPGRADE or CHANGELOG
+
+Add an entry describing the new feature:
+
+```markdown
+## New Features
+
+### Configurable InputObjectType Default Values
+
+You can now configure the default value returned for unset fields in InputObjectType:
+
+```python
+from graphene import InputObjectType, String
+from graphene.types.inputobjecttype import set_input_object_type_default_value
+from graphql import Undefined
+
+# Set early in application initialization
+set_input_object_type_default_value(Undefined)
+
+class UserInput(InputObjectType):
+    name = String(required=True)
+    email = String()  # Optional field
+
+# Now you can differentiate:
+user1 = UserInput(name="John")  # user1.email is Undefined
+user2 = UserInput(name="Jane", email=None)  # user2.email is None
+```
+
+This helps distinguish between fields that weren't provided vs fields explicitly set to None.
+```
+
+## Implementation Details
+
+### Key Considerations
+
+1. **Thread Safety**: The implementation uses a module-level variable, which is suitable for most use cases since configuration typically happens at application startup.
+
+2. **Timing**: The function must be called before any `InputObjectType` classes are defined, as the default value is used during class initialization.
+
+3. **Backward Compatibility**: The default value remains `None`, ensuring no breaking changes for existing code.
+
+### Code Style Guidelines
+
+- Follow existing Graphene naming conventions (snake_case for functions)
+- Maintain consistent docstring format
+- Use the same import patterns as the rest of the codebase
+- Follow existing error handling patterns
+
+### Error Handling
+
+The implementation is straightforward and doesn't require complex error handling since it's a simple configuration function. However, consider:
+
+- Adding type hints in the future (when Graphene adopts them)
+- Potential validation of the default value (though any Python object should be acceptable)
+
+## Usage Example
+
+```python
+from graphene import InputObjectType, String, Mutation
+from graphene.types.inputobjecttype import set_input_object_type_default_value
+from graphql import Undefined
+
+# Configure early in application
+set_input_object_type_default_value(Undefined)
+
+class UserInput(InputObjectType):
+    name = String(required=True)
+    email = String()  # Optional
+    phone = String()  # Optional
+
+class CreateUser(Mutation):
+    class Arguments:
+        user_data = UserInput(required=True)
+    
+    success = Boolean()
+    
+    def mutate(self, info, user_data):
+        # Differentiate between unset and explicitly None
+        if user_data.email is Undefined:
+            # Email was not provided
+            print("No email provided")
+        elif user_data.email is None:
+            # Email was explicitly set to None
+            print("Email explicitly set to None")
+        else:
+            # Email has a value
+            print(f"Email: {user_data.email}")
+        
+        return CreateUser(success=True)
+```
+
+## Testing Strategy
+
+1. **Unit Tests**: Verify the function changes the module variable
+2. **Integration Tests**: Ensure InputObjectType instances use the configured value
+3. **Backward Compatibility Tests**: Verify default behavior remains unchanged
+4. **Edge Cases**: Test with various sentinel values (None, Undefined, custom objects)
+
+## Conclusion
+
+This implementation provides a non-breaking, opt-in solution to the ambiguity problem with InputObjectType field access. The feature is simple to implement and use while maintaining full backward compatibility with existing Graphene applications.

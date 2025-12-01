@@ -1,0 +1,183 @@
+# Implementation Guide: Adding Categories to Japanese Company Provider
+
+## Overview
+
+This document provides detailed instructions for implementing a `company_category` method for the Japanese company provider in the Faker library. The implementation will add Japanese company categories similar to those found in Ruby Faker's Japanese locale.
+
+## Repository Context
+
+- **Project**: Faker (Python fake data generator)
+- **Target File**: `faker/providers/company/ja_JP/__init__.py`
+- **Method to Implement**: `company_category(self)`
+- **Inspiration Source**: Ruby Faker's Japanese locale categories
+
+## Implementation Plan
+
+### Step 1: Create/Update the Japanese Company Provider File
+
+Create or update the file `faker/providers/company/ja_JP/__init__.py` with the following structure:
+
+```python
+from .. import Provider as CompanyProvider
+
+
+class Provider(CompanyProvider):
+    """
+    Japanese company provider
+    """
+    
+    # Company categories sourced from Ruby Faker's ja.yml
+    company_categories = [
+        '株式会社',
+        '有限会社',
+        '合名会社',
+        '合資会社',
+        '合同会社',
+        '一般社団法人',
+        '公益社団法人',
+        '一般財団法人',
+        '公益財団法人',
+        '医療法人',
+        '学校法人',
+        '宗教法人',
+        '社会福祉法人',
+        '特定非営利活動法人',
+        '独立行政法人',
+        '国立大学法人',
+        '公立大学法人',
+        '企業',
+        '個人事業主',
+        '協同組合',
+        '信用金庫',
+        '信用組合',
+        '労働金庫',
+        '農協',
+        '漁協',
+        '生活協同組合',
+        '事業協同組合',
+        '協業組合',
+        '企業組合',
+    ]
+    
+    def company_category(self):
+        """
+        Returns a random Japanese company category
+        """
+        return self.random_element(self.company_categories)
+```
+
+### Step 2: Implementation Details
+
+#### 2.1 Category List
+The `company_categories` list contains Japanese business entity types and organizational forms:
+- **株式会社 (Kabushiki Kaisha)**: Stock company
+- **有限会社 (Yūgen Kaisha)**: Limited company
+- **合名会社 (Gōmei Kaisha)**: Unlimited partnership company
+- **合資会社 (Gōshi Kaisha)**: Limited partnership company
+- **合同会社 (Gōdō Kaisha)**: Limited liability company
+- Various法人 (Hōjin) types: Corporate juridical persons
+- Other business forms like cooperatives and credit unions
+
+#### 2.2 Method Implementation
+The `company_category` method:
+- Uses `self.random_element()` to select a random category from the list
+- Follows the existing Faker pattern for provider methods
+- Returns a string containing the Japanese company category
+
+### Step 3: Testing the Implementation
+
+Create a test file to verify the implementation works correctly:
+
+```python
+# test_japanese_company_category.py
+from faker import Faker
+
+def test_japanese_company_category():
+    fake = Faker('ja_JP')
+    
+    # Generate multiple categories to ensure randomness
+    categories = [fake.company_category() for _ in range(20)]
+    
+    # Verify all generated categories are from our list
+    valid_categories = [
+        '株式会社', '有限会社', '合名会社', '合資会社', '合同会社',
+        '一般社団法人', '公益社団法人', '一般財団法人', '公益財団法人',
+        '医療法人', '学校法人', '宗教法人', '社会福祉法人', '特定非営利活動法人',
+        '独立行政法人', '国立大学法人', '公立大学法人', '企業', '個人事業主',
+        '協同組合', '信用金庫', '信用組合', '労働金庫', '農協', '漁協',
+        '生活協同組合', '事業協同組合', '協業組合', '企業組合'
+    ]
+    
+    for category in categories:
+        assert category in valid_categories, f"Invalid category: {category}"
+    
+    print("All tests passed!")
+
+if __name__ == "__main__":
+    test_japanese_company_category()
+```
+
+### Step 4: Integration with Existing Company Provider
+
+The implementation follows the existing Faker provider pattern:
+- Inherits from `CompanyProvider` base class
+- Uses `self.random_element()` for random selection (consistent with other providers)
+- Maintains the same method signature pattern as other provider methods
+
+### Step 5: Usage Examples
+
+Show how users will interact with the new feature:
+
+```python
+from faker import Faker
+
+# Create a Japanese Faker instance
+fake = Faker('ja_JP')
+
+# Generate Japanese company categories
+print(fake.company_category())  # Example: '株式会社'
+print(fake.company_category())  # Example: '有限会社'
+print(fake.company_category())  # Example: '一般社団法人'
+
+# Can be combined with other company methods
+company_name = f"{fake.company_category()} {fake.company()}"
+print(company_name)  # Example: '株式会社 山田商事'
+```
+
+### Step 6: File Structure Verification
+
+Ensure the file structure matches Faker's localization pattern:
+```
+faker/
+├── providers/
+│   ├── company/
+│   │   ├── __init__.py
+│   │   └── ja_JP/
+│   │       └── __init__.py  # This is our target file
+```
+
+## Code Style Guidelines
+
+1. **Imports**: Use absolute imports within providers (`from .. import Provider`)
+2. **Class Structure**: Follow the existing provider class pattern
+3. **Method Naming**: Use snake_case for method names
+4. **Documentation**: Include docstrings in both Japanese and English where appropriate
+5. **List Formatting**: Maintain consistent list formatting with one item per line
+
+## Validation Checklist
+
+- [ ] Method returns a random element from the category list
+- [ ] All categories are valid Japanese business entity types
+- [ ] Method follows Faker's provider pattern
+- [ ] File is placed in the correct location (`faker/providers/company/ja_JP/`)
+- [ ] Tests pass and verify random selection from the category list
+- [ ] No breaking changes to existing functionality
+
+## Additional Notes
+
+- The category list is comprehensive and covers most Japanese business entity types
+- The implementation is minimal and follows Faker's established patterns
+- No external dependencies are introduced
+- The feature is backward compatible and doesn't affect existing functionality
+
+This implementation provides Japanese users with authentic company categories that match real-world Japanese business entities, enhancing the realism of generated Japanese company data.

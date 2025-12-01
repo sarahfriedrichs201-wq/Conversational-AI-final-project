@@ -1,0 +1,224 @@
+# Implementation Guide: Adding Deprecated Function Decorator to MMEngine
+
+## Overview
+
+This document provides a detailed implementation guide for adding a `deprecated_function` decorator to MMEngine's utility module. This feature will help developers mark deprecated functions with appropriate warnings and documentation.
+
+## Repository Context
+
+MMEngine is a foundational library for training deep learning models based on PyTorch. The codebase follows a clean, modular architecture with comprehensive documentation. The new function should be added to `mmengine/utils/misc.py` and should follow the existing code style and patterns.
+
+## Implementation Plan
+
+### 1. File Location and Structure
+
+**File**: `mmengine/utils/misc.py`
+
+Add the `deprecated_function` decorator to this file, which contains various utility functions.
+
+### 2. Required Imports
+
+Add the following imports at the top of `mmengine/utils/misc.py`:
+
+```python
+import functools
+import warnings
+from typing import Callable
+```
+
+### 3. Function Implementation
+
+Add the following function to `mmengine/utils/misc.py`:
+
+```python
+def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
+    """Marks functions as deprecated.
+    
+    Throw a warning when a deprecated function is called, and add a note in the
+    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
+
+    Args:
+        since (str): The version when the function was first deprecated.
+        removed_in (str): The version when the function will be removed.
+        instructions (str): The action users should take.
+
+    Returns:
+        Callable: A decorator that marks the function as deprecated.
+    """
+    
+    def decorator(function: Callable) -> Callable:
+        """Inner decorator function that wraps the deprecated function."""
+        
+        @functools.wraps(function)
+        def wrapper(*args, **kwargs):
+            """Wrapper function that shows deprecation warning."""
+            warnings.warn(
+                f"Function {function.__name__} is deprecated since version {since} "
+                f"and will be removed in version {removed_in}. {instructions}",
+                category=DeprecationWarning,
+                stacklevel=2
+            )
+            return function(*args, **kwargs)
+        
+        # Add deprecation note to the function's docstring
+        deprecation_note = (
+            f"\n\n.. deprecated:: {since}\n"
+            f"    This function is deprecated and will be removed in version {removed_in}.\n"
+            f"    {instructions}\n"
+        )
+        
+        if wrapper.__doc__ is None:
+            wrapper.__doc__ = deprecation_note
+        else:
+            wrapper.__doc__ += deprecation_note
+        
+        return wrapper
+    
+    return decorator
+```
+
+### 4. Usage Example
+
+To demonstrate how to use the decorator, add the following example in the function's docstring or create a separate test file:
+
+```python
+# Example usage:
+@deprecated_function(
+    since="0.4.0", 
+    removed_in="0.6.0", 
+    instructions="Please use new_function() instead."
+)
+def old_function():
+    """This is an old function that should not be used anymore."""
+    return "old result"
+```
+
+### 5. Testing
+
+Create comprehensive tests to ensure the decorator works correctly. Add tests to the appropriate test file (likely `tests/test_utils/test_misc.py`):
+
+```python
+import pytest
+import warnings
+from mmengine.utils.misc import deprecated_function
+
+def test_deprecated_function():
+    """Test that deprecated_function decorator works correctly."""
+    
+    # Test function with decorator
+    @deprecated_function(
+        since="0.4.0",
+        removed_in="0.6.0", 
+        instructions="Use new_func instead."
+    )
+    def test_func():
+        return "test_result"
+    
+    # Test that warning is raised
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = test_func()
+        
+        # Check that warning was raised
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "test_func" in str(w[0].message)
+        assert "0.4.0" in str(w[0].message)
+        assert "0.6.0" in str(w[0].message)
+        assert "Use new_func instead" in str(w[0].message)
+        
+        # Check that function still works
+        assert result == "test_result"
+    
+    # Test that docstring is modified
+    assert "deprecated" in test_func.__doc__
+    assert "0.4.0" in test_func.__doc__
+    assert "0.6.0" in test_func.__doc__
+
+def test_deprecated_function_with_args():
+    """Test deprecated function with arguments."""
+    
+    @deprecated_function(
+        since="0.4.0",
+        removed_in="0.6.0",
+        instructions="Use new_func instead."
+    )
+    def func_with_args(x, y=10):
+        return x + y
+    
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        result = func_with_args(5, y=3)
+        assert result == 8
+```
+
+### 6. Documentation Updates
+
+Update the relevant documentation files to include information about the new decorator:
+
+**File**: `docs/en/api/utils.rst` and `docs/zh-CN/api/utils.rst`
+
+Add the following to the documentation:
+
+```rst
+Miscellaneous Utilities
+-----------------------
+
+.. automodule:: mmengine.utils.misc
+   :members:
+   :show-inheritance:
+```
+
+### 7. Code Style Compliance
+
+Ensure the implementation follows MMEngine's coding standards:
+
+- Use type hints for all function signatures
+- Follow Google-style docstring format
+- Use descriptive variable names
+- Include comprehensive error handling
+- Follow the existing import organization pattern
+
+### 8. Pre-commit and Linting
+
+Run the following commands to ensure code quality:
+
+```bash
+# Run pre-commit hooks
+pre-commit run --all-files
+
+# Run specific linters
+flake8 mmengine/utils/misc.py
+isort mmengine/utils/misc.py
+black mmengine/utils/misc.py
+```
+
+### 9. Integration Testing
+
+Test the integration with downstream projects by:
+
+1. Creating a simple example that uses the decorator
+2. Verifying that the warning system works correctly
+3. Ensuring the decorator doesn't break existing functionality
+
+## Implementation Checklist
+
+- [ ] Add required imports to `mmengine/utils/misc.py`
+- [ ] Implement `deprecated_function` decorator
+- [ ] Add comprehensive unit tests
+- [ ] Update documentation
+- [ ] Run pre-commit hooks and fix any issues
+- [ ] Verify functionality with integration tests
+- [ ] Ensure backward compatibility
+- [ ] Update changelog if necessary
+
+## Expected Behavior
+
+When a function decorated with `@deprecated_function` is called:
+
+1. A `DeprecationWarning` is raised with information about the deprecation
+2. The function's original behavior is preserved
+3. The function's docstring is updated with deprecation information
+4. The warning includes the since version, removal version, and instructions
+
+This implementation follows the pattern established in PyTorch's deprecation system while integrating seamlessly with MMEngine's existing architecture and coding standards.

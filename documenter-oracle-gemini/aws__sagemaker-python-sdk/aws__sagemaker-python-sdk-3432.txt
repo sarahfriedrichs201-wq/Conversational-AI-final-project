@@ -1,0 +1,347 @@
+The goal is to extend the `sagemaker-python-sdk` to support Graviton instances for PyTorch and TensorFlow frameworks when retrieving Deep Learning Container (DLC) image URIs. This involves modifying the logic that determines the image scope based on the instance type and updating the framework-specific image URI mappings to include Graviton-compatible images.
+
+## Implementation Plan
+
+This plan outlines the necessary changes to integrate Graviton support for PyTorch and TensorFlow image URI retrieval.
+
+### 1. Repository Overview
+
+The core logic for retrieving image URIs resides in `src/sagemaker/image_uris.py`. Framework-specific image URI mappings are typically found in subdirectories like `src/sagemaker/pytorch/image_uris.py` and `src/sagemaker/tensorflow/image_uris.py`.
+
+The `sagemaker.image_uris.retrieve` function is the public API for this functionality. It takes parameters like `framework`, `region`, `instance_type`, `py_version`, `container_version`, and `image_scope` to determine the correct image URI.
+
+Graviton instances are identified by a 'g' in their instance type name (e.g., `ml.c6g.4xlarge`, `ml.t4g.2xlarge`). The corresponding DLC images will have an `image_scope` suffix like `-graviton` (e.g., `inference-graviton`).
+
+### 2. Detailed Implementation Steps
+
+#### Step 1: Modify `src/sagemaker/image_uris.py`
+
+The function `_get_image_scope_for_instance_type` needs to be implemented to detect Graviton instance types and adjust the `image_scope` accordingly.
+
+**File**: `src/sagemaker/image_uris.py`
+
+**Function**: `_get_image_scope_for_instance_type`
+
+**Description**: This function will inspect the provided `instance_type`. If it's a Graviton instance type and the `framework` is either "pytorch" or "tensorflow", it will append "-graviton" to the `image_scope`. Otherwise, it will return the original `image_scope`.
+
+**Pseudo-code**:
+
+```python
+import re
+
+# ... (other imports and existing code)
+
+def _get_image_scope_for_instance_type(framework: str, instance_type: str, image_scope: str) -> str:
+    """Extract the image scope from instance type.
+
+    Args:
+        framework (str): The framework for which to retrieve the image URI.
+        instance_type (str): The SageMaker instance type.
+        image_scope (str): The original image scope (e.g., "training", "inference").
+
+    Returns:
+        str: The modified image scope, potentially including "-graviton" suffix.
+    """
+    if instance_type and re.search(r"\.c\dg|\.m\dg|\.r\dg|\.t\dg", instance_type, re.IGNORECASE):
+        # Check if the instance type contains a 'g' indicating a Graviton instance.
+        # Example: ml.c6g.4xlarge, ml.t4g.2xlarge
+        # Regex matches patterns like .c6g, .m6g, .r6g, .t4g
+        
+        # Only apply Graviton scope for PyTorch and TensorFlow for now.
+        if framework in ("pytorch", "tensorflow"):
+            return f"{image_scope}-graviton"
+    return image_scope
+
+# ... (rest of the file)
+```
+
+**Integration with `retrieve` function**:
+Ensure that the `retrieve` function (or any internal function it calls to determine the final image scope) utilizes this new `_get_image_scope_for_instance_type` function. A common pattern is to call it early in the `retrieve` function's logic to get the final `image_scope` before looking up the URI.
+
+Example of how `retrieve` might use it (conceptual, actual implementation might vary slightly based on existing structure):
+
+```python
+# In sagemaker/image_uris.py, within the retrieve function:
+def retrieve(
+    framework: str,
+    region: str,
+    version: Optional[str] = None,
+    py_version: Optional[str] = None,
+    instance_type: Optional[str] = None,
+    container_version: Optional[str] = None,
+    distribution: Optional[str] = None,
+    image_scope: Optional[str] = None,
+    base_framework_version: Optional[str] = None,
+    model_uri: Optional[str] = None,
+    tolerate_v2_version: Optional[bool] = False,
+    tolerate_deprecated_model: Optional[bool] = False,
+    uri_type: Optional[str] = None,
+) -> str:
+    # ... existing logic ...
+
+    # Determine the effective image scope, considering Graviton instances
+    effective_image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
+
+    # ... use effective_image_scope for subsequent lookups ...
+    # e.g., in _retrieve_image_uri_from_framework_versions or similar helper
+```
+
+#### Step 2: Update Framework-Specific Image URI Mappings
+
+You will need to add entries for Graviton images in the respective framework's `image_uris.py` file. These files typically contain dictionaries mapping framework versions, Python versions, container versions, and image scopes to specific ECR URIs.
+
+**File**: `src/sagemaker/pytorch/image_uris.py`
+
+**Description**: Add new entries to the `_supported_versions` or similar mapping structure for PyTorch Graviton inference images.
+
+**Pseudo-code (Illustrative, actual structure may vary)**:
+
+```python
+# In src/sagemaker/pytorch/image_uris.py
+
+# ... (existing imports and definitions)
+
+_PYTORCH_VERSION_MAP = {
+    "1.12.1": {
+        "py38": {
+            "cpu": {
+                "ubuntu20.04": {
+                    "training": "763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-training:1.12.1-cpu-py38-ubuntu20.04",
+                    "inference": "763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-inference:1.12.1-cpu-py38-ubuntu20.04",
+                    "inference-graviton": "763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-inference-graviton:1.12.1-cpu-py38-ubuntu20.04-sagemaker",
+                },
+            },
+            # ... other cpu/gpu entries ...
+        },
+        # ... other python versions ...
+    },
+    # ... other PyTorch versions ...
+}
+
+# Ensure _supported_versions or similar structures are updated if they are the primary source
+# for retrieve.
+# Example:
+_supported_versions = {
+    # ... existing entries ...
+    (
+        "pytorch",
+        "1.12.1",
+        "py38",
+        "ubuntu20.04",
+        "inference-graviton",
+    ): "763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-inference-graviton:1.12.1-cpu-py38-ubuntu20.04-sagemaker",
+    # ...
+}
+```
+
+**File**: `src/sagemaker/tensorflow/image_uris.py`
+
+**Description**: Add new entries to the `_supported_versions` or similar mapping structure for TensorFlow Graviton inference images.
+
+**Pseudo-code (Illustrative, actual structure may vary)**:
+
+```python
+# In src/sagemaker/tensorflow/image_uris.py
+
+# ... (existing imports and definitions)
+
+_TF_VERSION_MAP = {
+    "2.9.1": {
+        "py38": {
+            "cpu": {
+                "ubuntu20.04": {
+                    "training": "763104351884.dkr.ecr.{region}.amazonaws.com/tensorflow-training:2.9.1-cpu-py38-ubuntu20.04",
+                    "inference": "763104351884.dkr.ecr.{region}.amazonaws.com/tensorflow-inference:2.9.1-cpu-py38-ubuntu20.04",
+                    "inference-graviton": "763104351884.dkr.ecr.{region}.amazonaws.com/tensorflow-inference-graviton:2.9.1-cpu-py38-ubuntu20.04-sagemaker",
+                },
+            },
+            # ... other cpu/gpu entries ...
+        },
+        # ... other python versions ...
+    },
+    # ... other TensorFlow versions ...
+}
+
+# Ensure _supported_versions or similar structures are updated if they are the primary source
+# for retrieve.
+# Example:
+_supported_versions = {
+    # ... existing entries ...
+    (
+        "tensorflow",
+        "2.9.1",
+        "py38",
+        "ubuntu20.04",
+        "inference-graviton",
+    ): "763104351884.dkr.ecr.{region}.amazonaws.com/tensorflow-inference-graviton:2.9.1-cpu-py38-ubuntu20.04-sagemaker",
+    # ...
+}
+```
+
+**Important Considerations for Mappings**:
+*   **Region**: Ensure the ECR URIs are correctly formatted with `{region}` placeholders.
+*   **Version Compatibility**: The Graviton images are typically tied to specific framework versions, Python versions, and container versions (e.g., `ubuntu20.04`). Verify these match the available Graviton DLCs.
+*   **CPU Only**: Graviton instances are CPU-based. Ensure the mappings reflect this (e.g., `cpu` in the path if applicable).
+*   **Training vs. Inference**: The provided examples are for inference. If Graviton training images become available, similar entries for `training-graviton` would be needed.
+
+#### Step 3: Add/Update Unit Tests
+
+New unit tests are crucial to verify the correct behavior of the Graviton support.
+
+**File**: `tests/unit/test_image_uris.py`
+
+**Description**: Add test cases for `_get_image_scope_for_instance_type` and `sagemaker.image_uris.retrieve`.
+
+**Pseudo-code**:
+
+```python
+# In tests/unit/test_image_uris.py
+
+import pytest
+from sagemaker import image_uris
+from sagemaker.image_uris import _get_image_scope_for_instance_type
+
+# ... (existing imports and test classes)
+
+class TestGetImageScopeForInstanceType:
+    @pytest.mark.parametrize(
+        "framework, instance_type, image_scope, expected_scope",
+        [
+            ("pytorch", "ml.c6g.4xlarge", "inference", "inference-graviton"),
+            ("tensorflow", "ml.t4g.2xlarge", "inference", "inference-graviton"),
+            ("pytorch", "ml.m5.xlarge", "inference", "inference"),  # Non-Graviton
+            ("tensorflow", "ml.p3.2xlarge", "training", "training"),  # Non-Graviton
+            ("xgboost", "ml.c6g.xlarge", "inference", "inference"),  # Other framework
+            ("pytorch", None, "inference", "inference"),  # No instance type
+            ("pytorch", "ml.c6g.4xlarge", "training", "training-graviton"), # Graviton training
+        ],
+    )
+    def test_get_image_scope_for_instance_type(self, framework, instance_type, image_scope, expected_scope):
+        assert _get_image_scope_for_instance_type(framework, instance_type, image_scope) == expected_scope
+
+class TestImageUrisRetrieveGraviton:
+    # Mock the internal _retrieve_image_uri_from_framework_versions or similar
+    # to control the returned URI without needing actual AWS calls.
+    # Alternatively, ensure the framework-specific image_uris.py files are correctly loaded.
+
+    def test_retrieve_pytorch_graviton_inference(self, monkeypatch):
+        # Mock the internal mapping or the final lookup logic if necessary
+        # to ensure the correct Graviton URI is returned.
+        # For simplicity, assuming the framework-specific image_uris.py are correctly updated.
+        expected_uri = "763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-graviton:1.12.1-cpu-py38-ubuntu20.04-sagemaker"
+        
+        # Mock the internal function that actually performs the lookup based on the resolved scope
+        def mock_retrieve_from_versions(*args, **kwargs):
+            if kwargs.get("image_scope") == "inference-graviton" and kwargs.get("framework") == "pytorch":
+                return expected_uri.format(region=kwargs.get("region"))
+            # Fallback for other scopes if needed
+            return "some_other_uri" 
+
+        monkeypatch.setattr(image_uris, "_retrieve_image_uri_from_framework_versions", mock_retrieve_from_versions)
+
+        uri = image_uris.retrieve(
+            "pytorch",
+            "us-west-2",
+            instance_type="ml.c6g.4xlarge",
+            version="1.12.1",
+            py_version="py38",
+            container_version="ubuntu20.04",
+            image_scope="inference", # Original scope
+        )
+        assert uri == expected_uri
+
+    def test_retrieve_tensorflow_graviton_inference(self, monkeypatch):
+        expected_uri = "763104351884.dkr.ecr.us-west-2.amazonaws.com/tensorflow-inference-graviton:2.9.1-cpu-py38-ubuntu20.04-sagemaker"
+        
+        def mock_retrieve_from_versions(*args, **kwargs):
+            if kwargs.get("image_scope") == "inference-graviton" and kwargs.get("framework") == "tensorflow":
+                return expected_uri.format(region=kwargs.get("region"))
+            return "some_other_uri"
+
+        monkeypatch.setattr(image_uris, "_retrieve_image_uri_from_framework_versions", mock_retrieve_from_versions)
+
+        uri = image_uris.retrieve(
+            "tensorflow",
+            "us-west-2",
+            instance_type="ml.t4g.2xlarge",
+            version="2.9.1",
+            py_version="py38",
+            container_version="ubuntu20.04",
+            image_scope="inference", # Original scope
+        )
+        assert uri == expected_uri
+
+    def test_retrieve_pytorch_non_graviton_inference(self):
+        # Ensure non-graviton instances still return standard URIs
+        uri = image_uris.retrieve(
+            "pytorch",
+            "us-west-2",
+            instance_type="ml.m5.xlarge",
+            version="1.12.1",
+            py_version="py38",
+            container_version="ubuntu20.04",
+            image_scope="inference",
+        )
+        assert "pytorch-inference:" in uri and "-graviton" not in uri
+        
+    def test_retrieve_tensorflow_non_graviton_inference(self):
+        # Ensure non-graviton instances still return standard URIs
+        uri = image_uris.retrieve(
+            "tensorflow",
+            "us-west-2",
+            instance_type="ml.c5.xlarge",
+            version="2.9.1",
+            py_version="py38",
+            container_version="ubuntu20.04",
+            image_scope="inference",
+        )
+        assert "tensorflow-inference:" in uri and "-graviton" not in uri
+```
+
+#### Step 4: Update `CHANGELOG.md`
+
+Add an entry to the `CHANGELOG.md` file under the "Features" section for the next release version.
+
+**File**: `CHANGELOG.md`
+
+**Pseudo-code**:
+
+```markdown
+# Changelog
+
+## vX.Y.Z (YYYY-MM-DD)
+
+### Features
+
+ * Add Graviton support for PyTorch and TensorFlow inference image URIs.
+
+### Bug Fixes and Other Changes
+
+# ... (rest of the file)
+```
+
+### 3. Coding Style
+
+The repository uses `black` for code formatting. Ensure all new and modified code adheres to `black`'s formatting rules. Run `black .` in the repository root before committing.
+
+### 4. Testing
+
+*   **Unit Tests**: As described in Step 3, comprehensive unit tests are essential for `_get_image_scope_for_instance_type` and `sagemaker.image_uris.retrieve` to cover Graviton and non-Graviton scenarios for PyTorch and TensorFlow.
+*   **Local Testing (as per PR description)**:
+    ```bash
+    >>> import sagemaker
+    >>> sagemaker.image_uris.retrieve("pytorch","us-west-2", instance_type="ml.c6g.4xlarge")
+    '763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-graviton:1.12.1-cpu-py38-ubuntu20.04-sagemaker'
+
+    >>> sagemaker.image_uris.retrieve("tensorflow","us-west-2", instance_type="ml.t4g.2xlarge")
+    '763104351884.dkr.ecr.us-west-2.amazonaws.com/tensorflow-inference-graviton:2.9.1-cpu-py38-ubuntu20.04-sagemaker'
+    ```
+    These tests should pass after implementing the changes.
+
+### 5. Review Checklist
+
+Before submitting the changes, ensure all items in the provided "Merge Checklist" are addressed, especially:
+*   Backward compatibility.
+*   Commit message format.
+*   Documentation (if any user-facing changes beyond `image_uris.retrieve` are made).
+*   All new tests pass.

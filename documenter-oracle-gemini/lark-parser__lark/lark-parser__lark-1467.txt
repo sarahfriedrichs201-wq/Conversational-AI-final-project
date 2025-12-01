@@ -1,0 +1,182 @@
+The goal is to add a new method `find_token(self, token_type: str) -> Iterator[_Leaf_T]` to the `Tree` class in `lark/tree.py`. This method should recursively traverse the tree and its subtrees, yielding all `Token` objects whose `type` attribute matches the provided `token_type`.
+
+## Repository Overview
+
+Lark is a parsing toolkit for Python. At its core, it generates parse trees from grammars and input text. The `lark/tree.py` file defines the fundamental data structures for these parse trees:
+
+*   **`Tree`**: Represents a node in the parse tree, corresponding to a grammar rule. It has a `data` attribute (the rule name) and a `children` attribute (a list of `Tree` or `Token` objects).
+*   **`Token`**: Represents a leaf node in the parse tree, corresponding to a terminal symbol (a token) from the input. It has `type` (the token's name, e.g., 'NUMBER', 'WORD') and `value` (the actual text matched).
+
+The `Tree` class already contains several methods for traversing and querying the tree, such as `iter_subtrees`, `find_data`, and `find_pred`. These methods often use `yield` or `yield from` for efficient iteration and recursion, which will be a good pattern to follow for `find_token`.
+
+The `_Leaf_T` type hint used in the problem description is an alias for `Token` within `lark/tree.py`, indicating that the method should yield `Token` objects.
+
+## Implementation Plan
+
+### 1. Locate and Modify `lark/tree.py`
+
+The `find_token` method needs to be added directly to the `Tree` class definition within `lark/tree.py`.
+
+### 2. Add Necessary Imports
+
+At the top of `lark/tree.py`, ensure `Iterator` is imported from the `typing` module. `Token` and `Tree` are defined within the same module, so no explicit import is needed for them within the method's scope.
+
+```python
+# In lark/tree.py, near other imports
+from typing import Iterator, TYPE_CHECKING
+
+# ... other imports ...
+
+if TYPE_CHECKING:
+    from .lexer import Token
+    _Leaf_T = Token # This is already defined, just for context
+```
+
+### 3. Implement the `find_token` Method
+
+The method will iterate through the `children` of the current `Tree` instance. For each child:
+*   If the child is a `Token` and its `type` matches `token_type`, yield that `Token`.
+*   If the child is a `Tree`, recursively call `find_token` on that child and `yield from` its results.
+
+This ensures a depth-first traversal of the tree.
+
+#### Pseudo-code for `lark/tree.py`
+
+```python
+# In lark/tree.py
+
+# ... existing code ...
+
+class Tree(object):
+    # ... existing attributes and methods ...
+
+    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
+        """
+        Returns all tokens whose type equals the given token_type.
+
+        This is a recursive function that will find tokens in all the subtrees.
+        The traversal order is depth-first.
+
+        Args:
+            token_type: The type of the token to search for (e.g., 'NUMBER', 'WORD').
+
+        Yields:
+            Token: All matching tokens found in the tree.
+
+        Example:
+            >>> from lark import Lark
+            >>> parser = Lark('start: (NUMBER | WORD)+', parser='lalr',
+            ...               lexer_callbacks={'NUMBER': int})
+            >>> tree = parser.parse('123 hello 456 world')
+            >>> list(tree.find_token('NUMBER'))
+            [Token('NUMBER', 123), Token('NUMBER', 456)]
+            >>> list(tree.find_token('WORD'))
+            [Token('WORD', 'hello'), Token('WORD', 'world')]
+            >>> list(tree.find_token('NON_EXISTENT'))
+            []
+        """
+        for child in self.children:
+            if isinstance(child, Token):
+                if child.type == token_type:
+                    yield child
+            elif isinstance(child, Tree):
+                yield from child.find_token(token_type)
+
+    # ... existing methods ...
+```
+
+### 4. Add Unit Tests
+
+New functionality requires robust testing. Create a new test case or add to an existing one in `lark/tests/test_tree.py` (if it exists) or `lark/tests/test_lark.py`.
+
+The tests should cover:
+*   Finding tokens at the top level.
+*   Finding tokens within nested subtrees.
+*   Finding multiple tokens of the same type.
+*   Finding no tokens when the type doesn't exist.
+*   Finding no tokens when the tree is empty (though `Tree` objects are rarely truly empty in practice, a minimal tree could be used).
+
+#### Pseudo-code for `lark/tests/test_tree.py` (or similar)
+
+```python
+# In lark/tests/test_tree.py (or a new test file if test_tree.py doesn't exist)
+
+import unittest
+from lark import Lark, Tree, Token
+
+class TestTreeMethods(unittest.TestCase):
+    def setUp(self):
+        # A simple grammar for testing token finding
+        self.parser = Lark('''
+            start: expr+
+            expr: NUMBER | WORD | group
+            group: "(" expr+ ")"
+            %import common.NUMBER
+            %import common.WORD
+            %ignore " "
+        ''', parser='lalr')
+
+    def test_find_token_basic(self):
+        tree = self.parser.parse("123 hello (456 world)")
+        
+        # Test finding NUMBER tokens
+        numbers = list(tree.find_token('NUMBER'))
+        self.assertEqual(len(numbers), 2)
+        self.assertEqual(numbers[0].value, '123')
+        self.assertEqual(numbers[1].value, '456')
+
+        # Test finding WORD tokens
+        words = list(tree.find_token('WORD'))
+        self.assertEqual(len(words), 2)
+        self.assertEqual(words[0].value, 'hello')
+        self.assertEqual(words[1].value, 'world')
+
+        # Test finding a non-existent token type
+        non_existent = list(tree.find_token('IDENTIFIER'))
+        self.assertEqual(len(non_existent), 0)
+
+    def test_find_token_nested(self):
+        tree = self.parser.parse("( (1) (hello world) )")
+        
+        # Test finding NUMBER in nested structure
+        numbers = list(tree.find_token('NUMBER'))
+        self.assertEqual(len(numbers), 1)
+        self.assertEqual(numbers[0].value, '1')
+
+        # Test finding WORD in nested structure
+        words = list(tree.find_token('WORD'))
+        self.assertEqual(len(words), 2)
+        self.assertEqual(words[0].value, 'hello')
+        self.assertEqual(words[1].value, 'world')
+
+    def test_find_token_empty_tree(self):
+        # A tree with no children (not typical for parsed output, but good for edge cases)
+        empty_tree = Tree('empty', [])
+        self.assertEqual(list(empty_tree.find_token('ANY')), [])
+
+    def test_find_token_no_match(self):
+        tree = self.parser.parse("123")
+        self.assertEqual(list(tree.find_token('WORD')), [])
+        
+        tree = self.parser.parse("hello")
+        self.assertEqual(list(tree.find_token('NUMBER')), [])
+
+```
+
+### 5. Run Tests and Linting
+
+After implementing the method and tests:
+*   Run the tests using `tox` as indicated in `.travis.yml`:
+    ```bash
+    tox
+    ```
+*   Ensure all existing tests pass and the new tests pass.
+*   Check for any linting errors or style warnings. Lark generally follows PEP 8.
+
+### Coding Style Guidelines
+
+*   **Type Hinting**: Use type hints for arguments and return values as shown in the pseudo-code.
+*   **Docstrings**: Follow the existing NumPy/Sphinx style for docstrings, including `Args`, `Yields`, and `Example` sections.
+*   **Variable Naming**: Use clear, descriptive variable names (e.g., `token_type`, `child`).
+*   **Readability**: Keep the code concise and easy to understand. The `isinstance` checks and `yield from` pattern are idiomatic for tree traversals in Lark.
+*   **Imports**: Place imports at the top of the file, grouped by standard library, third-party, and local modules.

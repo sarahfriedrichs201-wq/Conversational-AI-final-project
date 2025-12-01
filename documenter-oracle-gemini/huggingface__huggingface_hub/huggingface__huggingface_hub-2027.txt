@@ -1,0 +1,270 @@
+The goal is to add a `url` method to `HfFileSystem` and its file objects (`HfFileSystemFile`, `HfFileSystemStreamFile`) to convert `fsspec` paths (e.g., `hf://datasets/org/repo/path/to/file.txt`) into standard HTTP URLs (e.g., `https://huggingface.co/datasets/org/repo/resolve/main/path/to/file.txt`). This will leverage the existing `huggingface_hub.utils.hf_hub_url` utility function.
+
+## Repository Overview
+
+The `huggingface_hub` library provides a client to interact with the Hugging Face Hub. It includes an `fsspec` implementation (`HfFileSystem`) which allows treating Hub repositories as standard filesystems. This enables other libraries that support `fsspec` to seamlessly interact with models, datasets, and spaces on the Hub.
+
+Key components relevant to this task:
+*   `src/huggingface_hub/hf_file_system.py`: This file contains the `HfFileSystem` class, which is the core `fsspec` implementation for Hugging Face Hub. It also defines `HfFileSystemFile` and `HfFileSystemStreamFile`, which are the file-like objects returned by `HfFileSystem` when opening files.
+*   `src/huggingface_hub/utils/_hf_hub_url.py`: This module (or a similar `utils` module) contains the `hf_hub_url` function, which is the canonical way to construct URLs for files on the Hugging Face Hub. This function will be central to our implementation.
+
+The existing codebase follows standard Python practices, including type hints, clear docstrings, and a focus on reusability (e.g., using `hf_hub_url` instead of re-implementing URL logic).
+
+## Implementation Plan
+
+The implementation will involve adding the `url` method to three classes: `HfFileSystem`, `HfFileSystemFile`, and `HfFileSystemStreamFile`. The `HfFileSystem.url` method will be the primary logic provider, with the file object methods delegating to it.
+
+### 1. Locate and Import `hf_hub_url`
+
+The `hf_hub_url` function is the standard way to generate URLs for files on the Hugging Face Hub. We need to import it into `src/huggingface_hub/hf_file_system.py`.
+
+**Action:** Add the following import statement at the top of `src/huggingface_hub/hf_file_system.py`:
+
+```python
+# src/huggingface_hub/hf_file_system.py
+# ... existing imports ...
+from huggingface_hub.utils import hf_hub_url
+# ... rest of the file ...
+```
+
+### 2. Implement `HfFileSystem.url(self, path: str) -> str`
+
+This method will take an `fsspec` path (which might include the `hf://` protocol or be relative to the filesystem's `repo_id`) and convert it into an HTTP URL.
+
+**Logic:**
+1.  Use `self._get_repo_and_path(path)` to parse the input `path` into its `repo_id` and `path_in_repo` components. This method correctly handles both absolute `hf://` paths and paths relative to the `HfFileSystem` instance's `repo_id`.
+2.  Call `hf_hub_url` with the extracted `repo_id`, `path_in_repo` (as `filename`), and the `repo_type`, `revision`, and `endpoint` from the `HfFileSystem` instance (`self.repo_type`, `self.revision`, `self.endpoint`).
+
+**Pseudo-code for `src/huggingface_hub/hf_file_system.py`:**
+
+```python
+# src/huggingface_hub/hf_file_system.py
+
+# ... other methods in HfFileSystem ...
+
+class HfFileSystem(AbstractFileSystem):
+    # ... existing attributes and methods ...
+
+    def url(self, path: str) -> str:
+        """
+        Get the HTTP URL of the given path.
+
+        Args:
+            path (`str`):
+                Path to the file on the Hugging Face Hub. Can be an absolute path
+                (e.g., "hf://datasets/org/repo/path/to/file.txt") or a path
+                relative to the filesystem's `repo_id` (e.g., "path/to/file.txt"
+                if the filesystem was initialized with `repo_id="org/repo"`).
+
+        Returns:
+            `str`: The HTTP URL for the file.
+
+        Raises:
+            `ValueError`: If the path corresponds to a directory (as `hf_hub_url`
+                          is designed for files).
+        """
+        repo_id, path_in_repo = self._get_repo_and_path(path)
+
+        if not path_in_repo:
+            # If path_in_repo is empty, it means the path points to the root of the repo.
+            # hf_hub_url expects a filename, so this is likely a directory.
+            # We can either raise an error or return the base repo URL.
+            # Given the problem statement's focus on "files", raising an error is safer.
+            raise ValueError(f"Cannot get URL for a directory path: '{path}'. "
+                             "The `url` method is intended for files.")
+
+        return hf_hub_url(
+            repo_id=repo_id,
+            filename=path_in_repo,
+            repo_type=self.repo_type,
+            revision=self.revision,
+            endpoint=self.endpoint,
+        )
+
+# ... rest of the file ...
+```
+
+### 3. Implement `HfFileSystemFile.url(self) -> str`
+
+This method will simply delegate to the parent `HfFileSystem`'s `url` method, passing its own `path`.
+
+**Pseudo-code for `src/huggingface_hub/hf_file_system.py`:**
+
+```python
+# src/huggingface_hub/hf_file_system.py
+
+# ... other methods in HfFileSystemFile ...
+
+class HfFileSystemFile(AbstractBufferedFile):
+    # ... existing attributes and methods ...
+
+    def url(self) -> str:
+        """
+        Get the HTTP URL of this file.
+
+        Returns:
+            `str`: The HTTP URL for the file.
+        """
+        return self.fs.url(self.path)
+
+# ... rest of the file ...
+```
+
+### 4. Implement `HfFileSystemStreamFile.url(self) -> str`
+
+Similar to `HfFileSystemFile.url`, this method will delegate to the parent `HfFileSystem`'s `url` method.
+
+**Pseudo-code for `src/huggingface_hub/hf_file_system.py`:**
+
+```python
+# src/huggingface_hub/hf_file_system.py
+
+# ... other methods in HfFileSystemStreamFile ...
+
+class HfFileSystemStreamFile(AbstractBufferedFile):
+    # ... existing attributes and methods ...
+
+    def url(self) -> str:
+        """
+        Get the HTTP URL of this file.
+
+        Returns:
+            `str`: The HTTP URL for the file.
+        """
+        return self.fs.url(self.path)
+
+# ... rest of the file ...
+```
+
+### 5. Add Unit Tests
+
+Comprehensive unit tests are essential to ensure the new functionality works as expected and doesn't introduce regressions. Tests should cover various scenarios for `HfFileSystem.url`, and then simple delegation tests for `HfFileSystemFile.url` and `HfFileSystemStreamFile.url`.
+
+**File:** `tests/test_hf_file_system.py` (or a new dedicated test file if preferred, but `test_hf_file_system.py` seems appropriate).
+
+**Test Scenarios:**
+*   **Basic file URL:** Test with a simple file path in a public model repo.
+*   **Dataset/Space repo type:** Ensure `repo_type` is correctly handled.
+*   **Specific revision:** Test with a branch or commit hash.
+*   **Relative paths:** Test when `HfFileSystem` is initialized with a `repo_id` and `url` is called with a path relative to it.
+*   **Custom endpoint:** Test if `endpoint` is correctly passed to `hf_hub_url`.
+*   **Directory path:** Verify that calling `url` on a directory path raises a `ValueError` as designed.
+*   **File object URLs:** Open a file and call its `url` method.
+
+**Pseudo-code for `tests/test_hf_file_system.py`:**
+
+```python
+# tests/test_hf_file_system.py
+import pytest
+from huggingface_hub import HfFileSystem
+from huggingface_hub.utils import hf_hub_url
+
+# Assuming a test fixture for HfFileSystem or creating instances directly
+# For simplicity, let's use a known public repo for testing.
+TEST_REPO_ID = "hf-internal-testing/tiny-random-private" # A small, public repo
+TEST_FILE_PATH = "config.json"
+TEST_DATASET_REPO_ID = "hf-internal-testing/librispeech_asr_dummy"
+TEST_DATASET_FILE_PATH = "dummy_data/share.json"
+TEST_REVISION = "main" # Or a specific commit/branch for more robust testing
+
+def test_hf_file_system_url_basic():
+    fs = HfFileSystem()
+    expected_url = hf_hub_url(
+        repo_id=TEST_REPO_ID,
+        filename=TEST_FILE_PATH,
+        repo_type="model", # Default for hf_hub_url if not specified
+        revision=TEST_REVISION,
+        endpoint=fs.endpoint,
+    )
+    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
+    assert fs.url(f"{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url # Test without protocol if fs is not initialized with repo_id
+
+def test_hf_file_system_url_with_repo_id_init():
+    fs = HfFileSystem(repo_id=TEST_REPO_ID)
+    expected_url = hf_hub_url(
+        repo_id=TEST_REPO_ID,
+        filename=TEST_FILE_PATH,
+        repo_type="model",
+        revision=TEST_REVISION,
+        endpoint=fs.endpoint,
+    )
+    assert fs.url(TEST_FILE_PATH) == expected_url # Relative path
+    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url # Absolute path still works
+
+def test_hf_file_system_url_dataset_type():
+    fs = HfFileSystem(repo_type="dataset")
+    expected_url = hf_hub_url(
+        repo_id=TEST_DATASET_REPO_ID,
+        filename=TEST_DATASET_FILE_PATH,
+        repo_type="dataset",
+        revision=TEST_REVISION,
+        endpoint=fs.endpoint,
+    )
+    assert fs.url(f"hf://datasets/{TEST_DATASET_REPO_ID}/{TEST_DATASET_FILE_PATH}") == expected_url
+
+def test_hf_file_system_url_specific_revision():
+    # Assuming a specific revision exists for testing, e.g., a known commit hash
+    # For simplicity, we'll use "main" here, but in a real test, use a distinct one.
+    test_revision = "main" # Or a specific commit hash
+    fs = HfFileSystem(revision=test_revision)
+    expected_url = hf_hub_url(
+        repo_id=TEST_REPO_ID,
+        filename=TEST_FILE_PATH,
+        repo_type="model",
+        revision=test_revision,
+        endpoint=fs.endpoint,
+    )
+    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
+
+def test_hf_file_system_url_custom_endpoint():
+    custom_endpoint = "https://custom.huggingface.co"
+    fs = HfFileSystem(endpoint=custom_endpoint)
+    expected_url = hf_hub_url(
+        repo_id=TEST_REPO_ID,
+        filename=TEST_FILE_PATH,
+        repo_type="model",
+        revision=TEST_REVISION,
+        endpoint=custom_endpoint,
+    )
+    assert fs.url(f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}") == expected_url
+
+def test_hf_file_system_url_directory_path_raises_error():
+    fs = HfFileSystem()
+    with pytest.raises(ValueError, match="Cannot get URL for a directory path"):
+        fs.url(f"hf://{TEST_REPO_ID}") # Root of the repo
+    with pytest.raises(ValueError, match="Cannot get URL for a directory path"):
+        fs.url(f"hf://{TEST_REPO_ID}/src") # A sub-directory
+
+def test_hf_file_system_file_url():
+    fs = HfFileSystem()
+    file_path = f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}"
+    with fs.open(file_path, "rb") as f:
+        expected_url = fs.url(file_path)
+        assert f.url() == expected_url
+
+def test_hf_file_system_stream_file_url():
+    fs = HfFileSystem()
+    file_path = f"hf://{TEST_REPO_ID}/{TEST_FILE_PATH}"
+    # Assuming HfFileSystem.open returns HfFileSystemStreamFile for "rb" mode
+    # or a specific method to get a stream file.
+    # For simplicity, let's assume open returns the correct type for this test.
+    with fs.open(file_path, "rb") as f:
+        expected_url = fs.url(file_path)
+        assert f.url() == expected_url
+```
+
+### 6. Update Docstrings and Type Hints
+
+Ensure all new methods have clear docstrings explaining their purpose, arguments, and return values, following the existing style of the `huggingface_hub` library. Type hints should be consistently applied. The pseudo-code above already includes these.
+
+### 7. Run Tests
+
+Follow the instructions in `tests/README.md` to run the test suite:
+
+1.  `pip install -e .[testing]`
+2.  `sudo apt-get update; sudo apt-get install git-lfs -y`
+3.  `HUGGINGFACE_CO_STAGING=1 pytest -sv ./tests/`
+
+Ensure all existing tests pass, and especially that the newly added tests for the `url` methods pass.
+
+By following these steps, the `url` method will be correctly implemented and thoroughly tested, providing a valuable utility for users interacting with the Hugging Face Hub via `fsspec`.

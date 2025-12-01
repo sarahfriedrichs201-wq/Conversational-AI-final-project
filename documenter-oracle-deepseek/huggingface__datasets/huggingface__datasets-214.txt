@@ -1,0 +1,339 @@
+# 🤗 Datasets `.filter()` Method Implementation Guide
+
+## Overview
+
+This document provides a detailed implementation guide for adding a `.filter()` method to the Hugging Face Datasets library. The filter method will allow users to efficiently filter dataset examples based on custom functions, similar to the existing `.map()` functionality.
+
+## Repository Context
+
+The Hugging Face Datasets library provides:
+- One-line dataloaders for public datasets
+- Efficient data pre-processing capabilities
+- Support for various data formats (CSV, JSON, text, images, audio, etc.)
+
+The implementation should follow the existing patterns used in the `.map()` method while providing a clean interface for filtering operations.
+
+## Implementation Plan
+
+### 1. Core Filter Method Implementation
+
+**File:** `src/nlp/arrow_dataset.py`
+
+```python
+def filter(
+    self,
+    function: Optional[Callable] = None,
+    with_indices: bool = False,
+    input_columns: Optional[Union[str, List[str]]] = None,
+    batched: bool = False,
+    batch_size: Optional[int] = 1000,
+    remove_columns: Optional[List[str]] = None,
+    keep_in_memory: bool = False,
+    load_from_cache_file: bool = True,
+    cache_file_name: Optional[str] = None,
+    writer_batch_size: Optional[int] = 1000,
+    disable_nullable: bool = True,
+    fn_kwargs: Optional[dict] = None,
+    num_proc: Optional[int] = None,
+    desc: Optional[str] = None,
+) -> "Dataset":
+    """
+    Apply a filter function to all elements in the dataset and return a new dataset
+    containing only the examples for which the function returns True.
+    
+    Args:
+        function (`callable`): Filter function with one of the following signatures:
+            - `function(example: Dict) -> bool` if `with_indices=False` and `batched=False`
+            - `function(example: Dict, indices: int) -> bool` if `with_indices=True` and `batched=False`
+            - `function(batch: Dict[str, List]) -> List[bool]` if `batched=True` and `with_indices=False`
+            - `function(batch: Dict[str, List], indices: List[int]) -> List[bool]` if `batched=True` and `with_indices=True`
+        with_indices (`bool`, defaults to `False`): Provide example indices to `function`.
+        input_columns (`Optional[Union[str, List[str]]]`, defaults to `None`): Columns to be passed to `function` as positional arguments.
+        batched (`bool`, defaults to `False`): Provide batches of examples to `function`.
+        batch_size (`Optional[int]`, defaults to `1000`): Number of examples per batch provided to `function` if `batched=True`.
+        remove_columns (`Optional[List[str]]`, defaults to `None`): Remove columns before filtering.
+        keep_in_memory (`bool`, defaults to `False`): Keep the dataset in memory instead of writing to cache.
+        load_from_cache_file (`bool`, defaults to `True`): Use cache file if available.
+        cache_file_name (`Optional[str]`, defaults to `None`): Name of cache file to use.
+        writer_batch_size (`Optional[int]`, defaults to `1000`): Number of rows per write operation.
+        disable_nullable (`bool`, defaults to `True`): Allow null values in the table.
+        fn_kwargs (`Optional[dict]`, defaults to `None`): Additional keyword arguments to pass to `function`.
+        num_proc (`Optional[int]`, defaults to `None`): Number of processes for multiprocessing.
+        desc (`Optional[str]`, defaults to `None`): Description for tqdm progress bar.
+    
+    Returns:
+        `Dataset`: A new dataset with filtered examples.
+    """
+```
+
+### 2. Internal Filter Implementation
+
+The filter method will leverage the existing `.map()` infrastructure but with a specialized filtering approach:
+
+```python
+def _filter_implementation(
+    self,
+    function: Callable,
+    with_indices: bool = False,
+    batched: bool = False,
+    batch_size: Optional[int] = 1000,
+    **kwargs,
+) -> "Dataset":
+    """
+    Internal implementation of the filter operation.
+    """
+    # Create a wrapper function that converts filter results to the format expected by map
+    def filter_wrapper(*args, **wrapper_kwargs):
+        if batched:
+            # For batched processing
+            if with_indices:
+                batch, indices = args[0], args[1]
+                filter_results = function(batch, indices, **wrapper_kwargs)
+            else:
+                batch = args[0]
+                filter_results = function(batch, **wrapper_kwargs)
+            
+            # Convert boolean list to indices of examples to keep
+            indices_to_keep = [i for i, keep in enumerate(filter_results) if keep]
+            
+            if indices_to_keep:
+                # Filter the batch to only include kept examples
+                filtered_batch = {}
+                for key in batch:
+                    filtered_batch[key] = [batch[key][i] for i in indices_to_keep]
+                return filtered_batch
+            else:
+                # Return empty batch if no examples are kept
+                return {key: [] for key in batch}
+        else:
+            # For single example processing
+            if with_indices:
+                example, idx = args[0], args[1]
+                keep = function(example, idx, **wrapper_kwargs)
+            else:
+                example = args[0]
+                keep = function(example, **wrapper_kwargs)
+            
+            # Return the example if it should be kept, None otherwise
+            return example if keep else None
+    
+    # Use map with the wrapper function
+    # Note: We need to handle the case where examples are filtered out (return None)
+    filtered_dataset = self.map(
+        filter_wrapper,
+        with_indices=with_indices,
+        batched=batched,
+        batch_size=batch_size,
+        remove_columns=kwargs.get('remove_columns'),
+        keep_in_memory=kwargs.get('keep_in_memory', False),
+        load_from_cache_file=kwargs.get('load_from_cache_file', True),
+        cache_file_name=kwargs.get('cache_file_name'),
+        writer_batch_size=kwargs.get('writer_batch_size', 1000),
+        disable_nullable=kwargs.get('disable_nullable', True),
+        fn_kwargs=kwargs.get('fn_kwargs'),
+        num_proc=kwargs.get('num_proc'),
+        desc=kwargs.get('desc', "Filtering"),
+    )
+    
+    # Remove None values (filtered out examples)
+    # This requires additional processing to clean up the dataset
+    return self._remove_filtered_examples(filtered_dataset)
+```
+
+### 3. Helper Method for Removing Filtered Examples
+
+```python
+def _remove_filtered_examples(self, dataset_with_nones: "Dataset") -> "Dataset":
+    """
+    Remove examples that were filtered out (returned as None).
+    """
+    # Get indices of non-None examples
+    valid_indices = []
+    for i in range(len(dataset_with_nones)):
+        # Check if the example is valid (not filtered out)
+        # This assumes that filtered examples are marked in a way we can detect
+        # Implementation details may vary based on how map handles None returns
+        if self._is_valid_example(dataset_with_nones[i]):
+            valid_indices.append(i)
+    
+    # Create a new dataset with only valid examples
+    return dataset_with_nones.select(valid_indices)
+
+def _is_valid_example(self, example: dict) -> bool:
+    """
+    Check if an example is valid (not filtered out).
+    """
+    # Implementation depends on how filtered examples are marked
+    # One approach: check if any required field exists and is not None
+    return example is not None and len(example) > 0
+```
+
+### 4. Alternative Implementation Using Arrow Tables
+
+For better performance with large datasets, consider a direct Arrow table implementation:
+
+```python
+def _filter_with_arrow(
+    self,
+    function: Callable,
+    with_indices: bool = False,
+    batched: bool = False,
+    batch_size: Optional[int] = 1000,
+    **kwargs,
+) -> "Dataset":
+    """
+    Filter implementation using direct Arrow table operations for better performance.
+    """
+    import pyarrow as pa
+    
+    # Get the underlying Arrow table
+    table = self.data
+    
+    if batched:
+        # Process in batches
+        all_indices_to_keep = []
+        
+        for i in range(0, len(table), batch_size):
+            batch_end = min(i + batch_size, len(table))
+            batch_indices = list(range(i, batch_end))
+            
+            # Extract batch
+            batch = table.slice(i, batch_end - i)
+            batch_dict = batch.to_pydict()
+            
+            if with_indices:
+                filter_results = function(batch_dict, batch_indices, **kwargs.get('fn_kwargs', {}))
+            else:
+                filter_results = function(batch_dict, **kwargs.get('fn_kwargs', {}))
+            
+            # Get indices to keep from this batch
+            batch_keep_indices = [batch_indices[j] for j, keep in enumerate(filter_results) if keep]
+            all_indices_to_keep.extend(batch_keep_indices)
+    else:
+        # Process individual examples
+        all_indices_to_keep = []
+        
+        for i in range(len(table)):
+            example = table.slice(i, 1).to_pydict()
+            # Convert single example from batch format
+            single_example = {k: v[0] for k, v in example.items()}
+            
+            if with_indices:
+                keep = function(single_example, i, **kwargs.get('fn_kwargs', {}))
+            else:
+                keep = function(single_example, **kwargs.get('fn_kwargs', {}))
+            
+            if keep:
+                all_indices_to_keep.append(i)
+    
+    # Create new dataset with filtered indices
+    return self.select(all_indices_to_keep)
+```
+
+## 5. Complete Filter Method
+
+Putting it all together:
+
+```python
+def filter(
+    self,
+    function: Optional[Callable] = None,
+    with_indices: bool = False,
+    input_columns: Optional[Union[str, List[str]]] = None,
+    batched: bool = False,
+    batch_size: Optional[int] = 1000,
+    remove_columns: Optional[List[str]] = None,
+    keep_in_memory: bool = False,
+    load_from_cache_file: bool = True,
+    cache_file_name: Optional[str] = None,
+    writer_batch_size: Optional[int] = 1000,
+    disable_nullable: bool = True,
+    fn_kwargs: Optional[dict] = None,
+    num_proc: Optional[int] = None,
+    desc: Optional[str] = None,
+) -> "Dataset":
+    """
+    Apply a filter function to all elements in the dataset.
+    """
+    # Input validation
+    if function is None:
+        raise ValueError("Filter function cannot be None")
+    
+    # Prepare kwargs for internal implementation
+    filter_kwargs = {
+        'with_indices': with_indices,
+        'batched': batched,
+        'batch_size': batch_size,
+        'remove_columns': remove_columns,
+        'keep_in_memory': keep_in_memory,
+        'load_from_cache_file': load_from_cache_file,
+        'cache_file_name': cache_file_name,
+        'writer_batch_size': writer_batch_size,
+        'disable_nullable': disable_nullable,
+        'fn_kwargs': fn_kwargs,
+        'num_proc': num_proc,
+        'desc': desc or "Filtering",
+    }
+    
+    # Choose implementation based on dataset size and batched flag
+    if batched or len(self) > 10000:
+        # Use Arrow implementation for better performance with large datasets or batched processing
+        return self._filter_with_arrow(function, **filter_kwargs)
+    else:
+        # Use map-based implementation for smaller datasets
+        return self._filter_implementation(function, **filter_kwargs)
+```
+
+## 6. Usage Examples
+
+Based on the provided sample code, here's how the filter method should work:
+
+```python
+# Example 1: Filter with indices
+def remove_under_idx_5(example, idx):
+    return idx < 5
+
+result = ds.filter(remove_under_idx_5, with_indices=True)
+
+# Example 2: Filter without indices  
+def only_keep_examples_with_is_in_context(example):
+    return "is" in example["context"]
+
+result = ds.filter(only_keep_examples_with_is_in_context)
+
+# Example 3: Batched filtering
+def filter_batch(batch):
+    # batch is a dict of lists: {"context": ["text1", "text2", ...], ...}
+    return ["is" in context for context in batch["context"]]
+
+result = ds.filter(filter_batch, batched=True, batch_size=1000)
+```
+
+## 7. Testing Strategy
+
+Create comprehensive tests covering:
+
+- Basic filtering functionality
+- Filtering with indices
+- Batched filtering
+- Edge cases (empty results, all results filtered out)
+- Performance with large datasets
+- Integration with caching system
+- Error handling for invalid filter functions
+
+## 8. Performance Considerations
+
+- For small datasets (< 10K examples), use the map-based implementation
+- For large datasets or batched processing, use the Arrow table implementation
+- Leverage existing caching infrastructure from `.map()`
+- Consider memory usage when filtering very large datasets
+
+## 9. Documentation Updates
+
+Update the library documentation to include:
+- Method signature and parameters
+- Usage examples
+- Performance characteristics
+- Comparison with alternative filtering approaches
+
+This implementation provides a clean, efficient filtering interface that follows the existing patterns in the Hugging Face Datasets library while providing the flexibility and performance needed for various use cases.

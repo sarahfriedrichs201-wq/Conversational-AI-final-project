@@ -1,0 +1,271 @@
+# Implementation Guide: Adding `optax.tree_utils.tree_random_split`
+
+## Overview
+
+This document provides a step-by-step guide for exposing the private function `_tree_rng_keys_split` as a public API function `tree_random_split` in the Optax library. The function splits random number generator keys to match the structure of a target tree.
+
+## Repository Context
+
+- **Library**: Optax - A gradient processing and optimization library for JAX
+- **Code Style**: Follows JAX/NumPy conventions with type annotations using `chex` types
+- **Testing**: Comprehensive testing required for all new public functions
+- **Documentation**: Public APIs must be documented in the main module exports
+
+## Implementation Steps
+
+### Step 1: Modify the Private Implementation File
+
+**File**: `optax/tree_utils/_random.py`
+
+Add the public function that wraps the existing private implementation:
+
+```python
+def tree_random_split(
+    rng_key: chex.PRNGKey, 
+    target_tree: chex.ArrayTree
+) -> chex.ArrayTree:
+    """Split keys to match structure of target tree.
+    
+    This function takes a random number generator key and splits it into a tree
+    of keys that matches the structure of the provided target tree. Each leaf
+    in the returned tree will contain a unique RNG key derived from the input.
+    
+    Args:
+        rng_key: A JAX PRNGKey to be split.
+        target_tree: A pytree whose structure will be matched in the output.
+        
+    Returns:
+        A pytree of RNG keys with the same structure as `target_tree`.
+        
+    Example:
+        >>> import jax.random as jr
+        >>> import optax
+        >>> key = jr.PRNGKey(42)
+        >>> target = {'a': 1, 'b': [2, 3]}
+        >>> split_keys = optax.tree_utils.tree_random_split(key, target)
+        >>> jax.tree_util.tree_structure(split_keys) == jax.tree_util.tree_structure(target)
+        Array(True, dtype=bool)
+    """
+    return _tree_rng_keys_split(rng_key, target_tree)
+```
+
+### Step 2: Update Module Exports
+
+**File**: `optax/tree_utils/__init__.py`
+
+Add the new public function to the module exports:
+
+```python
+"""Tree utility functions."""
+
+from optax.tree_utils._accumulation import tree_add
+from optax.tree_utils._math import tree_add_scalar_mul
+from optax.tree_utils._math import tree_vdot
+from optax.tree_utils._math import tree_sum
+from optax.tree_utils._math import tree_l2_norm
+from optax.tree_utils._math import tree_zeros_like
+
+# Add the new import
+from optax.tree_utils._random import tree_random_split
+
+__all__ = [
+    'tree_add',
+    'tree_add_scalar_mul', 
+    'tree_vdot',
+    'tree_sum',
+    'tree_l2_norm',
+    'tree_zeros_like',
+    'tree_random_split',  # Add this line
+]
+```
+
+### Step 3: Update Main Library Exports
+
+**File**: `optax/__init__.py`
+
+Ensure the tree_utils module is properly exported from the main package:
+
+```python
+"""Optax: gradient processing and optimization for JAX."""
+
+# ... existing imports ...
+
+from optax import tree_utils
+
+# ... rest of the file remains unchanged ...
+```
+
+### Step 4: Create Comprehensive Tests
+
+**File**: `optax/tree_utils/_random_test.py`
+
+Create thorough tests for the new public function:
+
+```python
+import jax
+import jax.numpy as jnp
+import pytest
+
+import optax
+from optax.tree_utils._random import tree_random_split
+
+
+class TestTreeRandomSplit:
+    
+    def test_basic_structure_matching(self):
+        """Test that output structure matches input tree structure."""
+        key = jax.random.PRNGKey(42)
+        target_tree = {
+            'weights': jnp.ones((5, 3)),
+            'biases': jnp.ones((3,)),
+            'config': {'learning_rate': 0.01, 'momentum': 0.9}
+        }
+        
+        result = tree_random_split(key, target_tree)
+        
+        # Check structure matches
+        assert jax.tree_util.tree_structure(result) == jax.tree_util.tree_structure(target_tree)
+        
+        # Check all leaves are RNG keys
+        def check_is_rng_key(x):
+            assert x.shape == (2,), f"Expected shape (2,), got {x.shape}"
+            assert x.dtype == jnp.uint32, f"Expected uint32, got {x.dtype}"
+        
+        jax.tree_util.tree_map(check_is_rng_key, result)
+    
+    def test_different_keys_for_different_leaves(self):
+        """Test that different leaves get different RNG keys."""
+        key = jax.random.PRNGKey(42)
+        target_tree = [1, 2, 3, 4]
+        
+        result = tree_random_split(key, target_tree)
+        
+        # All keys should be different
+        keys_list = list(result)
+        for i in range(len(keys_list)):
+            for j in range(i + 1, len(keys_list)):
+                assert not jnp.array_equal(keys_list[i], keys_list[j]), \
+                    f"Keys at positions {i} and {j} should be different"
+    
+    def test_deterministic_with_same_seed(self):
+        """Test that same input key produces same output."""
+        key = jax.random.PRNGKey(42)
+        target_tree = {'a': 1, 'b': [2, 3]}
+        
+        result1 = tree_random_split(key, target_tree)
+        result2 = tree_random_split(key, target_tree)
+        
+        # Results should be identical with same key
+        jax.tree_util.tree_map(
+            lambda x, y: jnp.testing.assert_array_equal(x, y),
+            result1, result2
+        )
+    
+    def test_different_with_different_seeds(self):
+        """Test that different input keys produce different outputs."""
+        key1 = jax.random.PRNGKey(42)
+        key2 = jax.random.PRNGKey(123)
+        target_tree = {'a': 1, 'b': [2, 3]}
+        
+        result1 = tree_random_split(key1, target_tree)
+        result2 = tree_random_split(key2, target_tree)
+        
+        # Results should be different with different keys
+        def check_different(x, y):
+            assert not jnp.array_equal(x, y), "Keys should be different"
+        
+        jax.tree_util.tree_map(check_different, result1, result2)
+    
+    def test_empty_tree(self):
+        """Test behavior with empty trees."""
+        key = jax.random.PRNGKey(42)
+        
+        # Test with empty dict
+        empty_dict = {}
+        result = tree_random_split(key, empty_dict)
+        assert result == {}
+        
+        # Test with empty list
+        empty_list = []
+        result = tree_random_split(key, empty_list)
+        assert result == []
+    
+    def test_nested_structures(self):
+        """Test with deeply nested tree structures."""
+        key = jax.random.PRNGKey(42)
+        target_tree = {
+            'model': {
+                'layer1': {'weights': jnp.ones((10, 5)), 'biases': jnp.ones((5,))},
+                'layer2': {'weights': jnp.ones((5, 3)), 'biases': jnp.ones((3,))},
+            },
+            'optimizer': ['adam', {'lr': 0.001}]
+        }
+        
+        result = tree_random_split(key, target_tree)
+        
+        # Verify structure preservation
+        assert jax.tree_util.tree_structure(result) == jax.tree_util.tree_structure(target_tree)
+        
+        # Count leaves should match
+        leaves_target = jax.tree_util.tree_leaves(target_tree)
+        leaves_result = jax.tree_util.tree_leaves(result)
+        assert len(leaves_result) == len(leaves_target)
+```
+
+### Step 5: Update Documentation
+
+**File**: `docs/api/tree_utils.rst` (if it exists) or ensure it gets auto-generated
+
+Add documentation for the new function. The function should appear in the auto-generated API documentation, but you may want to add specific examples:
+
+```rst
+Tree Utilities
+==============
+
+.. currentmodule:: optax.tree_utils
+
+.. autofunction:: tree_random_split
+```
+
+### Step 6: Verify Implementation
+
+Run the following commands to verify your implementation:
+
+```bash
+# Run tests specifically for the tree_utils module
+python -m pytest optax/tree_utils/_random_test.py -v
+
+# Run all tests to ensure no regressions
+bash test.sh
+
+# Check that the function is properly exported
+python -c "import optax; print(hasattr(optax.tree_utils, 'tree_random_split'))"
+```
+
+## Code Style Guidelines
+
+1. **Type Annotations**: Use `chex.PRNGKey` and `chex.ArrayTree` for type hints
+2. **Docstrings**: Follow Google-style docstrings with Args, Returns, and Examples sections
+3. **Naming**: Use snake_case for function names
+4. **Imports**: Group imports (standard library, third-party, local) with blank lines
+5. **Testing**: Write comprehensive tests covering edge cases and expected behavior
+
+## Expected Outcome
+
+After implementing these changes, users will be able to:
+
+```python
+import optax
+import jax.random as jr
+
+# Split a key to match any tree structure
+key = jr.PRNGKey(42)
+target_structure = {'weights': params, 'biases': biases}
+split_keys = optax.tree_utils.tree_random_split(key, target_structure)
+
+# Use the split keys for various operations
+new_weights = jr.normal(split_keys['weights'], params.shape)
+new_biases = jr.normal(split_keys['biases'], biases.shape)
+```
+
+The function provides a convenient way to generate structured random keys that match arbitrary pytree structures, which is particularly useful for initializing parameters or adding noise to structured data.

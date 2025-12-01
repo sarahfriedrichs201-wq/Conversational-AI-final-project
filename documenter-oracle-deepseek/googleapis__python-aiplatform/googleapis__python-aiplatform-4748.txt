@@ -1,0 +1,261 @@
+# Implementation Guide: Vector Search Samples for Filtering and Crowding
+
+## Overview
+
+This document provides detailed implementation instructions for adding two new vector search sample functions to the Google Cloud Vertex AI Python SDK. The samples demonstrate advanced vector search capabilities including hybrid queries and filtering with crowding constraints.
+
+## Repository Context
+
+The codebase is the `googleapis/python-aiplatform` repository, which contains the Vertex AI SDK for Python. The samples are located in the `samples/model-builder/vector_search/` directory.
+
+## Files to Modify
+
+### Primary File: `samples/model-builder/vector_search/vector_search_find_neighbors_sample.py`
+
+## Implementation Details
+
+### 1. Function: `vector_search_find_neighbors_hybrid_queries`
+
+#### Purpose
+Demonstrate hybrid vector search queries that combine multiple search strategies.
+
+#### Implementation Steps
+
+1. **Import Required Modules**
+```python
+from typing import List
+from google.cloud import aiplatform
+```
+
+2. **Function Signature and Documentation**
+```python
+def vector_search_find_neighbors_hybrid_queries(
+    project: str,
+    location: str,
+    index_endpoint_name: str,
+    deployed_index_id: str,
+    num_neighbors: int,
+) -> List[List[aiplatform.matching_engine.matching_engine_index_endpoint.MatchNeighbor]]:
+    """Query the vector search index using example hybrid queries.
+    
+    This function demonstrates hybrid search capabilities by combining
+    different query strategies in a single request.
+    
+    Args:
+        project: Required. Project ID.
+        location: Required. The region name.
+        index_endpoint_name: Required. Index endpoint to run the query against.
+        deployed_index_id: Required. The ID of the DeployedIndex to run the queries against.
+        num_neighbors: Required. The number of neighbors to return.
+    
+    Returns:
+        A list of nearest neighbors for each query.
+    """
+```
+
+3. **Function Implementation**
+```python
+    # Initialize the Vertex AI client
+    aiplatform.init(project=project, location=location)
+    
+    # Get the index endpoint
+    index_endpoint = aiplatform.MatchingEngineIndexEndpoint(
+        index_endpoint_name=index_endpoint_name
+    )
+    
+    # Define example hybrid queries
+    # Query 1: Combination of dense and sparse vectors
+    dense_query = [0.1, 0.2, 0.3, 0.4]  # Example dense vector
+    sparse_query = {
+        "indices": [1, 3, 5],
+        "values": [0.5, 0.8, 0.2]
+    }
+    
+    # Query 2: Multiple embedding types
+    query_embeddings = [
+        [0.1, 0.2, 0.3, 0.4],  # Primary embedding
+        [0.5, 0.6, 0.7, 0.8]   # Secondary embedding
+    ]
+    
+    # Execute hybrid queries
+    # Note: The actual hybrid query implementation may vary based on the
+    # specific MatchingEngineIndexEndpoint API capabilities
+    neighbors = index_endpoint.find_neighbors(
+        deployed_index_id=deployed_index_id,
+        queries=query_embeddings,
+        num_neighbors=num_neighbors
+    )
+    
+    return neighbors
+```
+
+4. **Region Tag Placement**
+Add the region tag at line 66:
+```python
+# [START aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
+def vector_search_find_neighbors_hybrid_queries(...):
+    # ... implementation
+# [END aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
+```
+
+### 2. Function: `vector_search_find_neighbors_filtering_crowding`
+
+#### Purpose
+Demonstrate vector search with filtering and crowding constraints to control result distribution.
+
+#### Implementation Steps
+
+1. **Import Required Classes**
+```python
+from typing import List
+from google.cloud import aiplatform
+```
+
+2. **Function Signature and Documentation**
+```python
+def vector_search_find_neighbors_filtering_crowding(
+    project: str,
+    location: str,
+    index_endpoint_name: str,
+    deployed_index_id: str,
+    queries: List[List[float]],
+    num_neighbors: int,
+    filter: List[aiplatform.matching_engine.matching_engine_index_endpoint.Namespace],
+    numeric_filter: List[aiplatform.matching_engine.matching_engine_index_endpoint.NumericNamespace],
+    per_crowding_attribute_neighbor_count: int,
+) -> List[List[aiplatform.matching_engine.matching_engine_index_endpoint.MatchNeighbor]]:
+    """Query the vector search index with filtering and crowding.
+    
+    This function demonstrates advanced search capabilities including
+    namespace filtering, numeric filtering, and crowding constraints.
+    
+    Args:
+        project: Required. Project ID.
+        location: Required. The region name.
+        index_endpoint_name: Required. Index endpoint to run the query against.
+        deployed_index_id: Required. The ID of the DeployedIndex to run the queries against.
+        queries: Required. A list of queries. Each query is a list of floats.
+        num_neighbors: Required. The number of neighbors to return.
+        filter: Required. A list of Namespaces for filtering the matching results.
+        numeric_filter: Required. A list of NumericNamespaces for filtering.
+        per_crowding_attribute_neighbor_count: Required. Maximum matches with same crowding tag.
+    
+    Returns:
+        A list of nearest neighbors for each query.
+    """
+```
+
+3. **Function Implementation**
+```python
+    # Initialize the Vertex AI client
+    aiplatform.init(project=project, location=location)
+    
+    # Get the index endpoint
+    index_endpoint = aiplatform.MatchingEngineIndexEndpoint(
+        index_endpoint_name=index_endpoint_name
+    )
+    
+    # Execute query with filtering and crowding constraints
+    neighbors = index_endpoint.find_neighbors(
+        deployed_index_id=deployed_index_id,
+        queries=queries,
+        num_neighbors=num_neighbors,
+        filter=filter,
+        numeric_filter=numeric_filter,
+        per_crowding_attribute_neighbor_count=per_crowding_attribute_neighbor_count
+    )
+    
+    return neighbors
+```
+
+4. **Region Tag Placement**
+Add the region tag at line 130:
+```python
+# [START aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
+def vector_search_find_neighbors_filtering_crowding(...):
+    # ... implementation
+# [END aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
+```
+
+## Usage Examples
+
+### Example 1: Hybrid Queries
+```python
+# Example usage of hybrid queries
+results = vector_search_find_neighbors_hybrid_queries(
+    project="my-project",
+    location="us-central1",
+    index_endpoint_name="my-index-endpoint",
+    deployed_index_id="deployed-index-123",
+    num_neighbors=10
+)
+```
+
+### Example 2: Filtering and Crowding
+```python
+from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace, NumericNamespace
+
+# Define filters
+namespace_filters = [
+    Namespace("color", ["red"], []),  # Include red, no excludes
+    Namespace("shape", [], ["square"])  # Exclude square shapes
+]
+
+numeric_filters = [
+    NumericNamespace(name="price", value_float=100.0, op="LESS_EQUAL"),
+    NumericNamespace(name="rating", value_int=4, op="GREATER")
+]
+
+# Execute filtered search
+results = vector_search_find_neighbors_filtering_crowding(
+    project="my-project",
+    location="us-central1",
+    index_endpoint_name="my-index-endpoint",
+    deployed_index_id="deployed-index-123",
+    queries=[[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
+    num_neighbors=20,
+    filter=namespace_filters,
+    numeric_filter=numeric_filters,
+    per_crowding_attribute_neighbor_count=5
+)
+```
+
+## Testing Requirements
+
+1. **Unit Tests**: Create corresponding test functions in the test directory
+2. **Sample Validation**: Ensure the samples work with actual Vertex AI endpoints
+3. **Documentation**: Update any relevant sample documentation
+
+## Code Style Guidelines
+
+- Follow Google Python Style Guide
+- Use type hints for all function parameters and return values
+- Include comprehensive docstrings with Args and Returns sections
+- Maintain consistency with existing sample code patterns
+- Use descriptive variable names
+- Include error handling where appropriate
+
+## Dependencies
+
+- `google-cloud-aiplatform` >= 1.75.0 (ensure compatibility with new features)
+- Python 3.7+
+
+## Verification Checklist
+
+- [ ] Functions compile without syntax errors
+- [ ] Type hints are correct and consistent
+- [ ] Docstrings follow Google style
+- [ ] Region tags are properly placed
+- [ ] Examples work with actual Vertex AI services
+- [ ] No breaking changes to existing functionality
+- [ ] Proper error handling for invalid inputs
+
+## Next Steps
+
+After implementation:
+1. Run sample tests to verify functionality
+2. Update CHANGELOG.md if these are significant new features
+3. Consider adding these samples to the documentation
+4. Verify region tags are properly recognized by snippet-bot
+
+This implementation provides clear, reusable examples of advanced vector search capabilities that developers can use as reference for their own applications.

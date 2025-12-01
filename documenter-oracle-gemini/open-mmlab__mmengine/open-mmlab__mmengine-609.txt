@@ -1,0 +1,221 @@
+The following document outlines the implementation plan for adding a `deprecated_function` decorator to the MMEngine library. This decorator will allow developers to mark functions as deprecated, issuing a warning when they are called and modifying their docstrings to reflect their deprecation status.
+
+## 1. Repository Overview
+
+MMEngine is a foundational library for training deep learning models based on PyTorch, providing a universal and powerful runner, an open architecture with unified interfaces, and a customizable training process.
+
+The `mmengine/utils` directory typically contains various utility functions and helpers that are broadly applicable across the library. The `mmengine/utils/misc.py` file is a suitable location for general-purpose utility functions that don't fit into more specific categories.
+
+Tests for utility functions are usually located in the `tests/test_utils/` directory, with a corresponding file name (e.g., `tests/test_utils/test_misc.py` for `mmengine/utils/misc.py`).
+
+The project adheres to PEP 8 coding standards, uses type hints, and maintains comprehensive docstrings.
+
+## 2. Feature Description
+
+The goal is to implement a Python decorator factory, `deprecated_function`, which will:
+1.  Take `since` (version deprecated), `removed_in` (version to be removed), and `instructions` (user guidance) as arguments.
+2.  Return a decorator that, when applied to a function:
+    *   Modifies the function's `__doc__` attribute to prepend a deprecation notice.
+    *   Wraps the function such that calling it issues a `DeprecationWarning` with a clear message.
+    *   Ensures the original function's behavior (arguments, return value) is preserved.
+
+This functionality is inspired by PyTorch's `torch.onnx._deprecation.py`.
+
+## 3. Implementation Plan
+
+### 3.1. File Modification
+
+The `deprecated_function` decorator will be implemented in `mmengine/utils/misc.py`.
+
+### 3.2. Dependencies
+
+The following standard library modules will be required:
+*   `functools`: For `functools.wraps` to preserve the metadata of the decorated function.
+*   `warnings`: For issuing `DeprecationWarning`.
+*   `typing`: For type hints, specifically `Callable` and `Any`.
+
+### 3.3. `deprecated_function` Decorator Logic
+
+The `deprecated_function` will be a decorator factory, meaning it's a function that takes arguments and returns the actual decorator.
+
+1.  **Outer Function (`deprecated_function`)**:
+    *   Accepts `since`, `removed_in`, and `instructions` as string arguments.
+    *   Returns the `decorator` function.
+
+2.  **Inner Decorator (`decorator`)**:
+    *   Accepts the function to be deprecated (`function: Callable`) as an argument.
+    *   **Docstring Modification**:
+        *   Retrieve the original docstring of `function`. If `function.__doc__` is `None`, treat it as an empty string.
+        *   Construct a deprecation message string using `since`, `removed_in`, and `instructions`.
+        *   Prepend this deprecation message to the original docstring, separated by two newlines for readability.
+        *   Assign the modified string back to `function.__doc__`.
+    *   Returns the `wrapper` function, decorated with `functools.wraps(function)`.
+
+3.  **Innermost Wrapper (`wrapper`)**:
+    *   Accepts `*args` and `**kwargs` to handle any arguments passed to the original function.
+    *   **Warning Issuance**:
+        *   Construct a warning message string, similar to the docstring message, but formatted for a warning.
+        *   Use `warnings.warn()` to issue a `DeprecationWarning`.
+        *   Set `stacklevel=2` to ensure the warning points to the *caller* of the deprecated function, not the internal `wrapper` function.
+    *   **Function Execution**:
+        *   Call the original `function` with `*args` and `**kwargs`.
+        *   Return the result of the original function call.
+
+### 3.4. Type Hinting
+
+Ensure all functions and their parameters/return values are properly type-hinted using `typing.Callable`, `str`, `Any`, etc., consistent with MMEngine's codebase.
+
+### 3.5. Coding Style
+
+*   Adhere to PEP 8.
+*   Use f-strings for string formatting.
+*   Provide a clear and concise docstring for the `deprecated_function` itself, explaining its purpose, arguments, and return value.
+*   Follow existing import conventions.
+
+## 4. Pseudo-code (mmengine/utils/misc.py)
+
+```python
+import functools
+import warnings
+from typing import Any, Callable
+
+def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
+    """Marks functions as deprecated.
+
+    Throw a warning when a deprecated function is called, and add a note in the
+    docstring.
+
+    Args:
+        since (str): The version when the function was first deprecated.
+        removed_in (str): The version when the function will be removed.
+        instructions (str): The action users should take.
+
+    Returns:
+        Callable: A new function, which will be deprecated soon.
+    """
+    def decorator(function: Callable) -> Callable:
+        # Construct the deprecation message for the docstring
+        deprecation_message = (
+            f'Deprecated since version {since} and will be removed in version '
+            f'{removed_in}. {instructions}'
+        )
+
+        # Modify the function's docstring
+        original_doc = function.__doc__ if function.__doc__ else ''
+        # Prepend the deprecation message to the docstring
+        function.__doc__ = f'{deprecation_message}\n\n{original_doc}'.strip()
+
+        @functools.wraps(function)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Construct the warning message
+            warning_message = (
+                f'{function.__name__} is deprecated since version {since} and '
+                f'will be removed in version {removed_in}. {instructions}'
+            )
+            # Issue a DeprecationWarning, pointing to the caller of the deprecated function
+            warnings.warn(warning_message, DeprecationWarning, stacklevel=2)
+            # Call the original function
+            return function(*args, **kwargs)
+        return wrapper
+    return decorator
+
+```
+
+## 5. Testing Plan
+
+A new test file, `tests/test_utils/test_misc.py`, should be created or an existing one modified to include tests for `deprecated_function`.
+
+### 5.1. Test Cases
+
+1.  **Test Warning Issuance**:
+    *   Define a simple function and decorate it with `deprecated_function`.
+    *   Call the decorated function within a `pytest.warns(DeprecationWarning)` context to assert that the warning is issued.
+    *   Verify the content of the warning message.
+
+2.  **Test Docstring Modification**:
+    *   Define a function with an existing docstring and decorate it.
+    *   Check if the `__doc__` attribute of the decorated function contains the correct deprecation message prepended to the original docstring.
+    *   Define a function *without* an existing docstring and decorate it.
+    *   Check if its `__doc__` attribute correctly contains only the deprecation message.
+
+3.  **Test Original Functionality Preservation**:
+    *   Define a function that performs some operation and returns a value.
+    *   Decorate it with `deprecated_function`.
+    *   Call the decorated function and assert that it returns the correct value and performs its intended side effects (if any).
+    *   Test with arguments and keyword arguments.
+
+### 5.2. Pseudo-code (tests/test_utils/test_misc.py)
+
+```python
+import warnings
+from mmengine.utils.misc import deprecated_function
+
+def test_deprecated_function_warning():
+    """Test if deprecated_function issues a DeprecationWarning."""
+
+    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
+    def old_func(a, b):
+        return a + b
+
+    with pytest.warns(DeprecationWarning) as record:
+        result = old_func(1, 2)
+        assert result == 3
+        assert len(record) == 1
+        assert issubclass(record[0].category, DeprecationWarning)
+        assert 'old_func is deprecated since version 0.1.0 and will be removed in version 0.2.0. Use new_func instead.' in str(record[0].message)
+
+def test_deprecated_function_docstring_with_original_doc():
+    """Test docstring modification for a function with an existing docstring."""
+
+    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
+    def func_with_doc():
+        """This is the original docstring."""
+        pass
+
+    expected_doc = (
+        'Deprecated since version 0.1.0 and will be removed in version 0.2.0. '
+        'Use new_func instead.\n\nThis is the original docstring.'
+    )
+    assert func_with_doc.__doc__ == expected_doc
+
+def test_deprecated_function_docstring_without_original_doc():
+    """Test docstring modification for a function without an existing docstring."""
+
+    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
+    def func_without_doc():
+        pass
+
+    expected_doc = (
+        'Deprecated since version 0.1.0 and will be removed in version 0.2.0. '
+        'Use new_func instead.'
+    )
+    assert func_without_doc.__doc__ == expected_doc
+
+def test_deprecated_function_preserves_original_logic():
+    """Test if the decorated function still executes its original logic."""
+
+    @deprecated_function(since='0.1.0', removed_in='0.2.0', instructions='Use new_func instead.')
+    def calculate_sum(x, y):
+        return x + y
+
+    with pytest.warns(DeprecationWarning):
+        assert calculate_sum(5, 7) == 12
+        assert calculate_sum(x=10, y=20) == 30
+
+```
+
+## 6. Documentation Updates
+
+1.  **Docstring**: The `deprecated_function` itself must have a comprehensive docstring as provided in the pseudo-code.
+2.  **Changelog**: Add an entry to `docs/en/notes/changelog.md` and `docs/zh_CN/notes/changelog.md` under the "Enhancements" section for the next release version, describing the addition of the `deprecated_function` utility.
+
+    Example entry for `changelog.md`:
+    ```markdown
+    ### vX.Y.Z (YYYY-MM-DD)
+    **Enhancements**
+    - Add `deprecated_function` decorator to `mmengine.utils.misc` for marking deprecated functions.
+    ```
+
+## 7. Pre-commit / Linting
+
+Before submitting the pull request, ensure all pre-commit hooks are run and any linting issues are resolved to maintain code quality and style consistency. This typically involves running `pre-commit run --all-files`.

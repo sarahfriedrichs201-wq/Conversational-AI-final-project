@@ -1,0 +1,308 @@
+# Implementation Guide: Exception Handling for AppSyncResolver
+
+## Overview
+
+This document provides detailed implementation instructions for adding exception handling to the `AppSyncResolver` class in the AWS Lambda Powertools Python library. The feature enables developers to register custom exception handlers for AppSync resolvers, similar to the existing HTTP resolver exception handling mechanism.
+
+## Repository Context
+
+The AWS Lambda Powertools Python library provides utilities for implementing serverless best practices. The `event_handler` module contains classes for handling different AWS Lambda event sources, including `AppSyncResolver` for GraphQL resolvers.
+
+## Implementation Plan
+
+### 1. Core Implementation Files
+
+#### File: `aws_lambda_powertools/event_handler/appsync.py`
+
+**Add the following class attributes to `AppSyncResolver`:**
+```python
+class AppSyncResolver:
+    def __init__(self):
+        # Existing initialization code...
+        self._exception_handlers: dict[type[Exception], Callable] = {}
+```
+
+**Implement the `exception_handler` decorator method:**
+```python
+def exception_handler(self, exc_class: type[Exception] | list[type[Exception]]):
+    """
+    Decorator to register an exception handler for one or more exception types.
+    
+    Args:
+        exc_class: A single exception type or list of exception types to handle
+        
+    Returns:
+        Decorator function that registers the exception handler
+        
+    Example:
+        @app.exception_handler(ValueError)
+        def handle_value_error(ex: ValueError):
+            return {"message": "Custom error message"}
+    """
+    def register_exception_handler(func: Callable):
+        # Handle single exception type
+        if isinstance(exc_class, type) and issubclass(exc_class, Exception):
+            self._exception_handlers[exc_class] = func
+        # Handle list of exception types
+        elif isinstance(exc_class, list):
+            for exc_type in exc_class:
+                if issubclass(exc_type, Exception):
+                    self._exception_handlers[exc_type] = func
+        return func
+    
+    return register_exception_handler
+```
+
+**Implement the exception lookup method:**
+```python
+def _lookup_exception_handler(self, exp_type: type) -> Callable | None:
+    """
+    Look up the registered exception handler for the given exception type.
+    
+    This method checks for exact matches first, then looks for handlers
+    registered for base classes of the exception.
+    
+    Args:
+        exp_type: The exception type to look up
+        
+    Returns:
+        Registered exception handler function if found, None otherwise
+    """
+    # Check for exact match first
+    if exp_type in self._exception_handlers:
+        return self._exception_handlers[exp_type]
+    
+    # Check for base class handlers
+    for handler_type, handler_func in self._exception_handlers.items():
+        if issubclass(exp_type, handler_type):
+            return handler_func
+    
+    return None
+```
+
+**Modify the resolver execution logic to use exception handlers:**
+```python
+def resolve(self, event: dict, context: Any) -> dict:
+    """
+    Resolve the AppSync event with exception handling support.
+    
+    This method should wrap the existing resolver execution logic
+    with try-catch blocks that utilize the registered exception handlers.
+    """
+    try:
+        # Existing resolver logic here
+        return self._resolve_event(event, context)
+    except Exception as e:
+        # Look up exception handler
+        handler = self._lookup_exception_handler(type(e))
+        if handler:
+            return handler(e)
+        # Re-raise if no handler found
+        raise
+```
+
+### 2. Example Implementation
+
+#### File: `examples/event_handler_graphql/src/exception_handling_graphql.py`
+
+```python
+from aws_lambda_powertools.event_handler import AppSyncResolver
+
+app = AppSyncResolver()
+
+@app.exception_handler(ValueError)
+def handle_value_error(ex: ValueError):
+    """Handle ValueError exceptions in AppSync resolvers."""
+    return {
+        "message": f"Validation error: {str(ex)}",
+        "errorType": "VALIDATION_ERROR"
+    }
+
+@app.exception_handler([KeyError, AttributeError])
+def handle_key_attribute_error(ex: Exception):
+    """Handle both KeyError and AttributeError exceptions."""
+    return {
+        "message": f"Data access error: {str(ex)}",
+        "errorType": "DATA_ACCESS_ERROR"
+    }
+
+@app.resolver(field_name="createSomething")
+def create_something(id: str):
+    """Example resolver that may raise exceptions."""
+    if not id:
+        raise ValueError("ID cannot be empty")
+    
+    # Business logic that might raise other exceptions
+    data_store = {"required_key": "value"}
+    return data_store[id]  # This might raise KeyError
+
+def lambda_handler(event, context):
+    """Lambda handler entry point."""
+    return app.resolve(event, context)
+```
+
+### 3. Testing Strategy
+
+#### File: `tests/functional/event_handler/test_appsync_exception_handling.py`
+
+```python
+import pytest
+from aws_lambda_powertools.event_handler import AppSyncResolver
+from aws_lambda_powertools.event_handler.exceptions import BadRequestError
+
+
+class TestAppSyncExceptionHandling:
+    def setup_method(self):
+        self.app = AppSyncResolver()
+    
+    def test_exception_handler_registration(self):
+        """Test that exception handlers can be registered."""
+        @self.app.exception_handler(ValueError)
+        def handle_value_error(ex):
+            return {"handled": True}
+        
+        assert ValueError in self.app._exception_handlers
+    
+    def test_exception_handler_execution(self):
+        """Test that registered exception handlers are executed."""
+        @self.app.exception_handler(ValueError)
+        def handle_value_error(ex):
+            return {"message": "Handled ValueError"}
+        
+        @self.app.resolver(field_name="testField")
+        def test_resolver():
+            raise ValueError("Test error")
+        
+        # Mock AppSync event
+        event = {
+            "fieldName": "testField",
+            "arguments": {}
+        }
+        
+        result = self.app.resolve(event, {})
+        assert result == {"message": "Handled ValueError"}
+    
+    def test_multiple_exception_types(self):
+        """Test handling multiple exception types with one handler."""
+        @self.app.exception_handler([ValueError, TypeError])
+        def handle_errors(ex):
+            return {"message": f"Handled {type(ex).__name__}"}
+        
+        @self.app.resolver(field_name="testField")
+        def test_resolver():
+            raise ValueError("Test error")
+        
+        event = {"fieldName": "testField", "arguments": {}}
+        result = self.app.resolve(event, {})
+        assert "Handled ValueError" in result["message"]
+    
+    def test_no_handler_found(self):
+        """Test that unhandled exceptions are re-raised."""
+        @self.app.resolver(field_name="testField")
+        def test_resolver():
+            raise ValueError("Unhandled error")
+        
+        event = {"fieldName": "testField", "arguments": {}}
+        
+        with pytest.raises(ValueError):
+            self.app.resolve(event, {})
+    
+    def test_inheritance_handling(self):
+        """Test that handlers for base classes catch derived exceptions."""
+        class CustomError(ValueError):
+            pass
+        
+        @self.app.exception_handler(ValueError)
+        def handle_value_error(ex):
+            return {"message": "Base handler called"}
+        
+        @self.app.resolver(field_name="testField")
+        def test_resolver():
+            raise CustomError("Derived error")
+        
+        event = {"fieldName": "testField", "arguments": {}}
+        result = self.app.resolve(event, {})
+        assert result == {"message": "Base handler called"}
+```
+
+### 4. Documentation Updates
+
+#### Update API documentation in relevant `.md` files:
+
+Add a section for exception handling in the AppSync resolver documentation:
+
+```markdown
+## Exception Handling
+
+The `AppSyncResolver` supports custom exception handling through the `@app.exception_handler` decorator.
+
+### Basic Usage
+
+```python
+from aws_lambda_powertools.event_handler import AppSyncResolver
+
+app = AppSyncResolver()
+
+@app.exception_handler(ValueError)
+def handle_value_error(ex: ValueError):
+    return {"message": "A validation error occurred"}
+
+@app.resolver(field_name="createItem")
+def create_item():
+    raise ValueError("Invalid input")
+```
+
+### Handling Multiple Exception Types
+
+```python
+@app.exception_handler([ValueError, TypeError])
+def handle_multiple_errors(ex: Exception):
+    return {"message": f"Error: {str(ex)}"}
+```
+
+### Important Notes
+
+- Exception handlers are only supported for synchronous resolvers
+- If no handler is found for an exception, it will be re-raised
+- Handlers registered for base exception classes will also handle derived exceptions
+```
+
+### 5. Integration Points
+
+**Ensure compatibility with existing features:**
+- The exception handling should work with existing resolver decorators (`@app.resolver`, `@app.resolver_type`)
+- Maintain backward compatibility - existing code should continue to work unchanged
+- Exception handlers should not interfere with the existing error response format when no handler is registered
+
+### 6. Code Style Guidelines
+
+**Follow the existing codebase patterns:**
+- Use type hints for all new methods and parameters
+- Follow PEP 8 naming conventions
+- Include comprehensive docstrings with examples
+- Use the existing logging patterns from the codebase
+- Maintain consistency with the existing `AppSyncResolver` class structure
+
+### 7. Implementation Steps
+
+1. **Add class attribute** for storing exception handlers in `AppSyncResolver.__init__()`
+2. **Implement the `exception_handler` decorator** method
+3. **Implement the `_lookup_exception_handler`** helper method
+4. **Modify the resolver execution logic** to wrap calls in try-catch blocks
+5. **Write comprehensive tests** covering all edge cases
+6. **Update documentation** with usage examples and limitations
+7. **Add example code** demonstrating the feature
+
+### 8. Validation Checklist
+
+- [ ] Exception handlers can be registered for single exception types
+- [ ] Exception handlers can be registered for multiple exception types
+- [ ] Handlers are properly executed when matching exceptions occur
+- [ ] Unhandled exceptions are re-raised as before
+- [ ] Base class handlers catch derived exceptions
+- [ ] Existing functionality remains unchanged
+- [ ] Tests cover all scenarios including edge cases
+- [ ] Documentation is clear and comprehensive
+- [ ] Code follows existing style guidelines
+
+This implementation provides a robust exception handling mechanism for AppSync resolvers that integrates seamlessly with the existing Powertools architecture while maintaining backward compatibility and following the library's design patterns.

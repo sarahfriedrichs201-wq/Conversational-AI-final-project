@@ -1,0 +1,346 @@
+# Implementation Guide: Saving and Loading State Hooks for 🤗 Accelerate
+
+## Overview
+
+This document provides a detailed implementation guide for adding save/load state hooks to the 🤗 Accelerate library. These hooks will enable users to customize model saving and loading behavior, particularly useful for frameworks like `diffusers` that require special handling for certain model types.
+
+## Repository Context
+
+The 🤗 Accelerate library simplifies running PyTorch training scripts on various hardware configurations (multi-GPU, TPU, fp16) by abstracting boilerplate code. The new hooks will integrate with the existing `Accelerator` class's state management system.
+
+## Implementation Plan
+
+### 1. Core Hook System Implementation
+
+#### File: `src/accelerate/accelerator.py`
+
+**Add hook management attributes to the `Accelerator` class:**
+
+```python
+class Accelerator:
+    def __init__(self, ...):
+        # Existing initialization code...
+        
+        # Add hook management
+        self._save_state_pre_hooks: Dict[int, Callable] = {}
+        self._load_state_pre_hooks: Dict[int, Callable] = {}
+        self._hook_id = 0  # Counter for generating unique hook IDs
+```
+
+**Implement `register_save_state_pre_hook` method:**
+
+```python
+def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
+    """
+    Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
+    
+    Args:
+        hook (`Callable`):
+            A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
+            
+    The hook should have the following signature:
+    `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], input_dir: str) -> None`
+    
+    Returns:
+        `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook
+    """
+    hook_id = self._hook_id
+    self._save_state_pre_hooks[hook_id] = hook
+    self._hook_id += 1
+    
+    def remove():
+        if hook_id in self._save_state_pre_hooks:
+            del self._save_state_pre_hooks[hook_id]
+    
+    return hooks.RemovableHandle(remove)
+```
+
+**Implement `register_load_state_pre_hook` method:**
+
+```python
+def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
+    """
+    Registers a pre hook to be run before `load_checkpoint` is called in [`Accelerator.load_state`].
+    
+    Args:
+        hook (`Callable`):
+            A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
+            
+    The hook should have the following signature:
+    `hook(models: List[torch.nn.Module], input_dir: str) -> None`
+    
+    Returns:
+        `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook
+    """
+    hook_id = self._hook_id
+    self._load_state_pre_hooks[hook_id] = hook
+    self._hook_id += 1
+    
+    def remove():
+        if hook_id in self._load_state_pre_hooks:
+            del self._load_state_pre_hooks[hook_id]
+    
+    return hooks.RemovableHandle(remove)
+```
+
+### 2. Integrate Hooks with Existing State Management
+
+**Modify the `save_state` method in `Accelerator`:**
+
+```python
+def save_state(self, output_dir: str = None, **save_model_func_kwargs):
+    """
+    Saves the current states of the model, optimizer, scaler, RNG generators, and registered objects.
+    """
+    # Existing setup code...
+    
+    # Get models and weights
+    models = []
+    weights = []
+    for i, model in enumerate(self._models):
+        if self.state.use_fsdp:
+            # Handle FSDP case
+            weights.append(model.state_dict())
+            models.append(model)
+        else:
+            weights.append(self.get_state_dict(model, unwrap=False))
+            models.append(model)
+    
+    # Execute save state pre hooks
+    for hook in self._save_state_pre_hooks.values():
+        hook(models, weights, output_dir)
+    
+    # Remove models that were handled by hooks (models that are no longer in the list)
+    # and their corresponding weights
+    models_to_remove = []
+    for i, model in enumerate(self._models):
+        if model not in models:
+            models_to_remove.append(i)
+    
+    # Remove in reverse order to maintain indices
+    for i in sorted(models_to_remove, reverse=True):
+        if i < len(weights):
+            weights.pop(i)
+    
+    # Continue with existing save logic using the potentially modified models and weights
+    # ... existing save_checkpoint calls and other logic
+```
+
+**Modify the `load_state` method in `Accelerator`:**
+
+```python
+def load_state(self, input_dir: str, **load_model_func_kwargs):
+    """
+    Loads the current states of the model, optimizer, scaler, RNG generators, and registered objects.
+    """
+    # Existing setup code...
+    
+    # Get models
+    models = list(self._models)
+    
+    # Execute load state pre hooks
+    for hook in self._load_state_pre_hooks.values():
+        hook(models, input_dir)
+    
+    # Remove models that were handled by hooks (models that are no longer in the list)
+    models_to_remove = []
+    for i, model in enumerate(self._models):
+        if model not in models:
+            models_to_remove.append(i)
+    
+    # Remove in reverse order to maintain indices
+    for i in sorted(models_to_remove, reverse=True):
+        self._models.pop(i)
+    
+    # Continue with existing load logic using the potentially modified models list
+    # ... existing load_checkpoint calls and other logic
+```
+
+### 3. Import Required Dependencies
+
+**Add import at the top of `src/accelerate/accelerator.py`:**
+
+```python
+from torch.utils import hooks
+from typing import Callable, Dict, List
+```
+
+### 4. Usage Example
+
+**Create example usage documentation:**
+
+```python
+# Example: Custom hook for diffusers UNet models
+def unet_save_hook(models: List[torch.nn.Module], weights: List[Dict], output_dir: str):
+    """
+    Custom save hook that handles UNet models separately using save_pretrained.
+    """
+    for i, model in enumerate(models):
+        if hasattr(model, 'config') and getattr(model.config, '_name_or_path', '').endswith('UNet'):
+            # Save using diffusers' save_pretrained method
+            model.save_pretrained(output_dir)
+            # Remove from lists to prevent default saving
+            models[i] = None
+            if i < len(weights):
+                weights[i] = None
+    
+    # Clean up None entries
+    models[:] = [m for m in models if m is not None]
+    weights[:] = [w for w in weights if w is not None]
+
+def unet_load_hook(models: List[torch.nn.Module], input_dir: str):
+    """
+    Custom load hook that handles UNet models separately using from_pretrained.
+    """
+    for i, model in enumerate(models):
+        if hasattr(model, 'config') and getattr(model.config, '_name_or_path', '').endswith('UNet'):
+            # Load using diffusers' from_pretrained method
+            loaded_model = type(model).from_pretrained(input_dir)
+            # Replace the model in the list
+            models[i] = loaded_model
+
+# Register hooks
+accelerator = Accelerator()
+save_handle = accelerator.register_save_state_pre_hook(unet_save_hook)
+load_handle = accelerator.register_load_state_pre_hook(unet_load_hook)
+
+# Later, to remove hooks:
+# save_handle.remove()
+# load_handle.remove()
+```
+
+## Testing Strategy
+
+### 1. Unit Tests
+
+Create tests in `tests/test_hooks.py`:
+
+```python
+import torch
+import torch.nn as nn
+from accelerate import Accelerator
+import tempfile
+import os
+
+class TestModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(10, 10)
+    
+    def forward(self, x):
+        return self.linear(x)
+
+def test_save_state_hook():
+    accelerator = Accelerator()
+    model = TestModel()
+    
+    save_called = False
+    def save_hook(models, weights, output_dir):
+        nonlocal save_called
+        save_called = True
+        assert len(models) == 1
+        assert len(weights) == 1
+        assert isinstance(output_dir, str)
+    
+    handle = accelerator.register_save_state_pre_hook(save_hook)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        accelerator.save_state(tmpdir)
+    
+    assert save_called
+    handle.remove()
+
+def test_load_state_hook():
+    accelerator = Accelerator()
+    model = TestModel()
+    
+    load_called = False
+    def load_hook(models, input_dir):
+        nonlocal load_called
+        load_called = True
+        assert len(models) == 1
+        assert isinstance(input_dir, str)
+    
+    handle = accelerator.register_load_state_pre_hook(load_hook)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # First save state to load from
+        accelerator.save_state(tmpdir)
+        accelerator.load_state(tmpdir)
+    
+    assert load_called
+    handle.remove()
+```
+
+### 2. Integration Tests
+
+Test with actual model manipulation:
+
+```python
+def test_hook_model_removal():
+    accelerator = Accelerator()
+    model1 = TestModel()
+    model2 = TestModel()
+    
+    def save_hook(models, weights, output_dir):
+        # Remove first model from saving
+        models.pop(0)
+        weights.pop(0)
+    
+    accelerator.register_save_state_pre_hook(save_hook)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        accelerator.save_state(tmpdir)
+        # Verify only one model was saved
+        saved_files = os.listdir(tmpdir)
+        # Check appropriate files based on actual save implementation
+    
+    def load_hook(models, input_dir):
+        # Remove first model from loading
+        models.pop(0)
+    
+    accelerator.register_load_state_pre_hook(load_hook)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        accelerator.load_state(tmpdir)
+        # Verify loading behavior
+```
+
+## Documentation Updates
+
+### 1. Add to API Documentation
+
+Update the API documentation to include the new methods with detailed examples.
+
+### 2. Create Usage Guide
+
+Add a section in the documentation explaining:
+- When to use these hooks
+- Common use cases (diffusers integration, custom serialization)
+- Best practices for hook implementation
+- Performance considerations
+
+## Code Style Guidelines
+
+1. **Type Hints**: Use comprehensive type hints as shown in the implementation
+2. **Docstrings**: Follow existing docstring format with Args/Returns sections
+3. **Naming**: Use descriptive names following existing conventions
+4. **Error Handling**: Maintain existing error handling patterns
+5. **Imports**: Group imports (standard library, third-party, local) with clear separation
+
+## Implementation Notes
+
+1. The hook system is designed to be non-intrusive - it doesn't change existing behavior unless hooks are registered
+2. Hooks are executed in registration order (Python dict iteration order)
+3. The `RemovableHandle` pattern follows PyTorch's established convention for hook management
+4. The implementation allows hooks to modify the models/weights lists in-place, enabling flexible customization
+
+## Next Steps
+
+After implementing the core functionality:
+1. Write comprehensive tests covering edge cases
+2. Update documentation with detailed examples
+3. Consider adding post-hooks if needed by the community
+4. Potentially add hook ordering controls (priority system)
+
+This implementation provides the foundation for flexible model state management while maintaining backward compatibility with existing 🤗 Accelerate usage patterns.

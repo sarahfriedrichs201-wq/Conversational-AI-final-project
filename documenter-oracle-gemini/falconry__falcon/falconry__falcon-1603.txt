@@ -1,0 +1,411 @@
+The goal is to change Falcon's error handling mechanism to select the most specific error handler available for a given exception, rather than using a Last-In, First-Out (LIFO) approach based on registration order. This will be achieved by leveraging the Method Resolution Order (`__mro__`) of exception types.
+
+## Repository Overview
+
+Falcon is a high-performance Python framework for building cloud APIs. Key characteristics relevant to this task include:
+
+*   **Core Logic:** The central application logic, including error handling, resides within the `falcon/app.py` module, specifically in the `App` class.
+*   **Error Handling:** Falcon provides mechanisms to register custom error handlers for different exception types. Currently, these handlers are likely stored in a list and iterated in reverse order.
+*   **Testing:** Falcon uses `pytest` for its test suite, as indicated by `CHANGES.rst` and `.travis.yml`. New tests should follow this style.
+*   **Documentation:** Documentation is written in reStructuredText and processed by Sphinx, located in the `docs/` directory.
+*   **News Fragments:** Changes, especially breaking ones, require a news fragment using `towncrier` under `docs/_newsfragments/`.
+
+## Implementation Plan
+
+The implementation will involve modifying the `falcon.App` class to change how error handlers are stored and looked up.
+
+### 1. Modify `falcon.App.__init__`
+
+The internal storage for error handlers needs to change from a list to a dictionary to enable direct lookup by exception type. Furthermore, Falcon's default error handlers (e.g., for `HTTPError` and `Exception`) should be pre-registered in this dictionary to ensure they participate in the specificity-based lookup.
+
+**File:** `falcon/app.py`
+
+**Changes:**
+
+```python
+# falcon/app.py
+
+# ... (imports)
+
+class App(object):
+    # ...
+
+    def __init__(self,
+                 # ... existing parameters
+                 ):
+        # ... existing initialization
+
+        # NOTE(kgriffs): Change _error_handlers from a list to a dict
+        # to enable O(1) lookup and specificity-based selection.
+        self._error_handlers = {}
+
+        # NOTE(kgriffs): Register Falcon's default error handlers.
+        # These can be overridden by user-defined handlers via add_error_handler.
+        # The _handle_http_error and _handle_internal_error methods will be
+        # used as the default handlers for HTTPError and generic Exception, respectively.
+        # Ensure these methods conform to the handler signature (ex, req, resp, method_name).
+        self.add_error_handler(HTTPError, self._handle_http_error)
+        self.add_error_handler(Exception, self._handle_internal_error)
+
+        # ... existing initialization
+```
+
+### 2. Modify `falcon.App.add_error_handler`
+
+This method will now store handlers directly in the `_error_handlers` dictionary, using the exception type as the key. This inherently handles the breaking change where registering a handler for the exact same type overrides previous ones.
+
+**File:** `falcon/app.py`
+
+**Changes:**
+
+```python
+# falcon/app.py
+
+# ... (imports)
+
+class App(object):
+    # ...
+
+    def add_error_handler(self, exception, handler):
+        """Register a handler for a given exception type.
+
+        Args:
+            exception (type): Exception type to be handled.
+            handler (callable): A callable of the form ``func(ex, req, resp, params)``,
+                where ``ex`` is the exception instance, ``req`` and ``resp``
+                are the request and response objects, respectively, and
+                ``params`` is a dict of URI template field names and their
+                values.
+
+        Note:
+            Starting with Falcon 1.x, error handlers are selected based on the
+            most specific exception type in the exception's Method Resolution
+            Order (MRO). This means a handler registered for a base exception
+            (e.g., ``Exception``) will not override a more specific handler
+            (either custom or default, e.g., for ``HTTPError``) if a derived
+            exception is raised. Registration order now only matters when
+            multiple handlers are registered for the *exact same* exception type,
+            in which case the last one registered takes precedence.
+        """
+        # NOTE(kgriffs): Store handlers in a dict for O(1) lookup
+        # and to allow specific overriding.
+        self._error_handlers[exception] = handler
+```
+
+### 3. Implement `falcon.App._find_error_handler`
+
+This new method will implement the core logic for finding the most specific error handler using the exception's Method Resolution Order (`__mro__`).
+
+**File:** `falcon/app.py`
+
+**Changes:**
+
+```python
+# falcon/app.py
+
+# ... (imports)
+
+class App(object):
+    # ...
+
+    def _find_error_handler(self, ex):
+        """Finds the most specific error handler for a given exception.
+
+        Args:
+            ex: The exception instance that was raised.
+
+        Returns:
+            The handler callable, or None if no custom or default handler is found.
+            (Note: In a properly initialized App, a handler for Exception should
+            always be present, so None should ideally not be returned.)
+        """
+        exception_type = type(ex)
+
+        # NOTE(kgriffs): Iterate through the Method Resolution Order (MRO)
+        # of the exception type. The MRO lists classes in the order Python
+        # searches for methods, from most specific to most general.
+        for cls in exception_type.__mro__:
+            # Check if a handler is registered for this class (custom or default)
+            if cls in self._error_handlers:
+                return self._error_handlers[cls]
+
+        # NOTE(kgriffs): This point should ideally not be reached if a default
+        # handler for Exception is always registered during App initialization.
+        # If it is reached, it indicates an internal framework error.
+        return None
+```
+
+### 4. Modify `falcon.App._handle_exception`
+
+This method will be simplified, as it will now always rely on `_find_error_handler` to return the appropriate handler (either custom or one of Falcon's defaults). The explicit `isinstance(ex, HTTPError)` check can be removed.
+
+**File:** `falcon/app.py`
+
+**Changes:**
+
+```python
+# falcon/app.py
+
+# ... (imports)
+
+class App(object):
+    # ...
+
+    def _handle_exception(self, req, resp, ex, method_name):
+        # NOTE(kgriffs): Find the most specific handler, which could be
+        # a custom one or one of Falcon's defaults (HTTPError or generic Exception).
+        handler = self._find_error_handler(ex)
+
+        # A handler should always be found because Falcon registers
+        # a default handler for Exception during App initialization.
+        if handler is None:
+            # NOTE(kgriffs): This indicates an internal framework error.
+            # Re-raise to make the bug apparent.
+            raise RuntimeError(
+                'No error handler found for exception: ' + str(type(ex)) +
+                '. This indicates an internal framework error in Falcon.'
+            )
+
+        handler(ex, req, resp, method_name)
+
+    # NOTE(kgriffs): Ensure _handle_http_error and _handle_internal_error
+    # methods have the signature (ex, req, resp, method_name) to be
+    # compatible with the new handler dispatch mechanism.
+    # If they currently don't, they will need to be adjusted.
+    def _handle_http_error(self, ex, req, resp, method_name):
+        # Existing logic for handling HTTPError
+        # ...
+        pass
+
+    def _handle_internal_error(self, ex, req, resp, method_name):
+        # Existing logic for handling generic exceptions (e.g., 500)
+        # ...
+        pass
+```
+
+### 5. Add Unit Tests
+
+New unit tests are crucial to verify the new behavior and ensure no regressions. These should be added to `tests/test_app.py`.
+
+**File:** `tests/test_app.py`
+
+**Test Cases (Pseudo-code):**
+
+```python
+# tests/test_app.py
+
+import pytest
+import falcon
+from falcon import HTTPError, HTTPForbidden, HTTPNotFound
+from falcon.testing import TestClient
+
+# Define custom exceptions for testing inheritance
+class CustomBaseError(Exception):
+    pass
+
+class CustomHTTPError(HTTPError):
+    pass
+
+class SpecificCustomHTTPError(CustomHTTPError):
+    pass
+
+class AnotherCustomError(CustomBaseError):
+    pass
+
+# Mock handler functions
+def mock_exception_handler(ex, req, resp, params):
+    resp.status = falcon.HTTP_500
+    resp.media = {'message': 'Handled by Exception'}
+
+def mock_http_error_handler(ex, req, resp, params):
+    resp.status = falcon.HTTP_400
+    resp.media = {'message': 'Handled by HTTPError'}
+
+def mock_custom_http_error_handler(ex, req, resp, params):
+    resp.status = falcon.HTTP_401
+    resp.media = {'message': 'Handled by CustomHTTPError'}
+
+def mock_specific_custom_http_error_handler(ex, req, resp, params):
+    resp.status = falcon.HTTP_402
+    resp.media = {'message': 'Handled by SpecificCustomHTTPError'}
+
+def mock_custom_base_error_handler(ex, req, resp, params):
+    resp.status = falcon.HTTP_501
+    resp.media = {'message': 'Handled by CustomBaseError'}
+
+def mock_another_custom_error_handler(ex, req, resp, params):
+    resp.status = falcon.HTTP_502
+    resp.media = {'message': 'Handled by AnotherCustomError'}
+
+class TestAppErrorHandlingSpecificity:
+
+    @pytest.fixture
+    def client(self):
+        app = falcon.App()
+        # NOTE(kgriffs): Default handlers for HTTPError and Exception are
+        # automatically registered in App.__init__ now.
+        return TestClient(app)
+
+    def test_default_http_error_handler_precedence(self, client):
+        # Register a general Exception handler
+        client.app.add_error_handler(Exception, mock_exception_handler)
+
+        # Raise a specific HTTPError (e.g., HTTPForbidden)
+        class MyResource:
+            def on_get(self, req, resp):
+                raise HTTPForbidden()
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        # Expect Falcon's default HTTPError handler, not the custom Exception handler
+        # The default HTTPError handler sets status based on the HTTPError instance
+        assert result.status == falcon.HTTP_403 # HTTPForbidden default status
+        assert 'title' in result.json # Default HTTPError response structure
+
+    def test_custom_handler_for_specific_type(self, client):
+        client.app.add_error_handler(SpecificCustomHTTPError, mock_specific_custom_http_error_handler)
+        client.app.add_error_handler(CustomHTTPError, mock_custom_http_error_handler)
+        client.app.add_error_handler(HTTPError, mock_http_error_handler)
+        client.app.add_error_handler(Exception, mock_exception_handler)
+
+        class MyResource:
+            def on_get(self, req, resp):
+                raise SpecificCustomHTTPError()
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        assert result.status == falcon.HTTP_402
+        assert result.json == {'message': 'Handled by SpecificCustomHTTPError'}
+
+    def test_custom_handler_for_intermediate_type(self, client):
+        client.app.add_error_handler(CustomHTTPError, mock_custom_http_error_handler)
+        client.app.add_error_handler(HTTPError, mock_http_error_handler)
+        client.app.add_error_handler(Exception, mock_exception_handler)
+
+        class MyResource:
+            def on_get(self, req, resp):
+                raise SpecificCustomHTTPError() # No handler for this exact type
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        assert result.status == falcon.HTTP_401
+        assert result.json == {'message': 'Handled by CustomHTTPError'}
+
+    def test_custom_handler_for_base_type(self, client):
+        client.app.add_error_handler(HTTPError, mock_http_error_handler)
+        client.app.add_error_handler(Exception, mock_exception_handler)
+
+        class MyResource:
+            def on_get(self, req, resp):
+                raise SpecificCustomHTTPError() # No handler for this or CustomHTTPError
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        assert result.status == falcon.HTTP_400
+        assert result.json == {'message': 'Handled by HTTPError'}
+
+    def test_custom_handler_for_general_exception(self, client):
+        client.app.add_error_handler(Exception, mock_exception_handler)
+
+        class MyResource:
+            def on_get(self, req, resp):
+                raise ValueError('Something went wrong') # Not an HTTPError
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        assert result.status == falcon.HTTP_500
+        assert result.json == {'message': 'Handled by Exception'}
+
+    def test_registration_order_for_same_type(self, client):
+        # Register handler1, then handler2 for the same type
+        client.app.add_error_handler(CustomBaseError, mock_custom_base_error_handler)
+        client.app.add_error_handler(CustomBaseError, mock_another_custom_error_handler) # This should override
+
+        class MyResource:
+            def on_get(self, req, resp):
+                raise CustomBaseError()
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        # Expect the last registered handler for CustomBaseError
+        assert result.status == falcon.HTTP_502
+        assert result.json == {'message': 'Handled by AnotherCustomError'}
+
+    def test_no_custom_handler_falls_back_to_default_http_error(self, client):
+        # No custom handlers registered for HTTPError or its subclasses
+        class MyResource:
+            def on_get(self, req, resp):
+                raise HTTPNotFound()
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        # Expect Falcon's default HTTPNotFound handler
+        assert result.status == falcon.HTTP_404
+        assert 'title' in result.json
+
+    def test_no_custom_handler_falls_back_to_default_exception(self, client):
+        # No custom handlers registered for any specific exception
+        class MyResource:
+            def on_get(self, req, resp):
+                raise RuntimeError('Generic error')
+
+        client.app.add_route('/test', MyResource())
+        result = client.simulate_get('/test')
+
+        # Expect Falcon's default Exception handler (internal error)
+        assert result.status == falcon.HTTP_500
+        assert 'title' in result.json # Default internal error response structure
+```
+
+### 6. Update Documentation
+
+The documentation needs to reflect the new behavior of error handler selection.
+
+**Files:**
+
+*   `docs/api/app.rst`
+*   `docs/user/errors.rst`
+
+**Changes:**
+
+*   **`docs/api/app.rst`**: Update the docstring for `add_error_handler` (as shown in step 2) and add a `.. versionchanged::` directive.
+*   **`docs/user/errors.rst`**:
+    *   Revise the section on "Custom Error Handling" to clearly explain the new specificity rules.
+    *   Emphasize that handlers are now selected based on the exception's MRO, from most specific to most general.
+    *   Clarify that registration order only matters for handlers of the *exact same* exception type.
+    *   Provide examples demonstrating how a more general custom handler (e.g., for `Exception`) will *not* override a more specific default handler (e.g., for `HTTPError`).
+    *   Add a `.. versionchanged::` directive to the relevant section.
+
+### 7. Create News Fragment
+
+A news fragment is required to document the breaking change and the new feature.
+
+**File:** `docs/_newsfragments/NNNN.breaking` (replace `NNNN` with a unique number)
+
+**Content:**
+
+```
+Error handlers are now selected based on the most specific exception type
+in the exception's Method Resolution Order (MRO), rather than LIFO order
+of registration. This means a handler for a base exception (e.g., `Exception`)
+will no longer override a more specific default handler (e.g., for `HTTPError`)
+if a derived exception is raised. Registration order now only matters when
+multiple handlers are registered for the *exact same* exception type, in
+which case the last one registered takes precedence.
+```
+
+## General Coding Style Guidelines
+
+*   **PEP 8 Compliance:** Ensure all new and modified code adheres to PEP 8.
+*   **Docstrings:** Maintain the existing reStructuredText docstring style for any new or modified functions/methods.
+*   **Comments:** Prefix comments with your GitHub username and an appropriate prefix (e.g., `# NOTE(your_github_nick): ...`).
+*   **Imports:** Organize imports according to PEP 8 (standard library, third-party, local Falcon modules).
+*   **Type Hinting:** While not explicitly requested, if the existing codebase uses type hints, follow that convention. Otherwise, stick to clear variable names and docstrings.
+*   **`six` Compatibility:** Ensure compatibility with Python 2.6-2.7 and 3.3-3.5, as indicated by `.travis.yml`. For dictionary operations and `__mro__`, standard Python 2/3 syntax is generally compatible.

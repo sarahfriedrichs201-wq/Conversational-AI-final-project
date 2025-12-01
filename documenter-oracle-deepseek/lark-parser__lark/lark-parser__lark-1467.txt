@@ -1,0 +1,183 @@
+# Implementation Guide: Adding `Tree.find_token()` Method
+
+## Overview
+
+This document provides a detailed implementation guide for adding the `find_token()` method to the `Tree` class in Lark's `lark/tree.py` file. The method will recursively search through the parse tree and return all tokens matching a specified token type.
+
+## Repository Context
+
+- **File**: `lark/tree.py`
+- **Class**: `Tree`
+- **Method**: `find_token(token_type: str) -> Iterator[_Leaf_T]`
+- **Purpose**: Recursively find all tokens with the specified token type in the tree and its subtrees
+
+## Implementation Plan
+
+### 1. Understand the Tree Structure
+
+First, examine the existing `Tree` class in `lark/tree.py` to understand:
+- How nodes and leaves are structured
+- The difference between `Tree` nodes and token leaves
+- Existing iteration patterns and helper methods
+
+### 2. Implementation Strategy
+
+The method should:
+- Use recursion to traverse all subtrees
+- Yield tokens that match the specified type
+- Handle both `Tree` nodes and token leaves appropriately
+- Follow the existing code style and patterns
+
+### 3. Code Implementation
+
+#### File: `lark/tree.py`
+
+Add the following method to the `Tree` class:
+
+```python
+def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
+    """
+    Returns all tokens whose type equals the given token_type.
+    
+    This is a recursive function that will find tokens in all the subtrees.
+    
+    Example:
+        >>> term_tokens = tree.find_token('TERM')
+    
+    Args:
+        token_type: The type of token to search for
+        
+    Yields:
+        Tokens matching the specified token_type
+    """
+    # Iterate through all children of the current tree node
+    for child in self.children:
+        if isinstance(child, Tree):
+            # If child is a Tree, recursively search its subtrees
+            yield from child.find_token(token_type)
+        else:
+            # If child is a token, check if it matches the token_type
+            if hasattr(child, 'type') and child.type == token_type:
+                yield child
+```
+
+### 4. Type Hints and Imports
+
+Ensure the necessary imports are present. The method uses:
+- `Iterator` from `typing` module
+- `_Leaf_T` type variable (should already be defined in the file)
+
+If `Iterator` is not imported, add:
+```python
+from typing import Iterator
+```
+
+### 5. Testing the Implementation
+
+Create comprehensive tests to verify the functionality:
+
+#### Test Cases to Cover:
+
+1. **Basic functionality**: Simple tree with matching tokens
+2. **Nested trees**: Tokens in deeply nested subtrees
+3. **No matches**: Tree with no tokens of the specified type
+4. **Mixed types**: Tree with multiple token types
+5. **Edge cases**: Empty trees, single node trees
+
+#### Example Test:
+
+```python
+def test_find_token():
+    from lark import Lark, Token
+    
+    # Create a simple grammar and parse tree
+    parser = Lark('''
+        start: expr+
+        expr: NUMBER OP NUMBER
+        NUMBER: /\\d+/
+        OP: "+" | "-"
+        %ignore " "
+    ''')
+    
+    tree = parser.parse("1 + 2 3 - 4")
+    
+    # Test finding NUMBER tokens
+    number_tokens = list(tree.find_token('NUMBER'))
+    assert len(number_tokens) == 4
+    assert all(t.type == 'NUMBER' for t in number_tokens)
+    assert [t.value for t in number_tokens] == ['1', '2', '3', '4']
+    
+    # Test finding OP tokens
+    op_tokens = list(tree.find_token('OP'))
+    assert len(op_tokens) == 2
+    assert all(t.type == 'OP' for t in op_tokens)
+    assert [t.value for t in op_tokens] == ['+', '-']
+    
+    # Test finding non-existent token type
+    empty_result = list(tree.find_token('NONEXISTENT'))
+    assert len(empty_result) == 0
+```
+
+### 6. Integration with Existing Code
+
+Ensure the method follows existing patterns:
+- Use the same docstring format as other methods
+- Follow the same naming conventions
+- Maintain consistency with type hints
+- Use the same error handling approach (if any)
+
+### 7. Documentation Updates
+
+Update relevant documentation to mention the new method:
+- Add to the class documentation for `Tree`
+- Consider adding to the main documentation if this is a significant feature
+
+## Step-by-Step Implementation
+
+1. **Open the file**: Navigate to `lark/tree.py`
+
+2. **Locate the Tree class**: Find the `Tree` class definition
+
+3. **Add the method**: Insert the `find_token` method in a logical location (alphabetically or grouped with similar methods)
+
+4. **Verify imports**: Ensure `Iterator` is imported from `typing`
+
+5. **Run existing tests**: Make sure no existing functionality is broken
+   ```bash
+   python -m pytest tests/ -xvs
+   ```
+
+6. **Add new tests**: Create tests specifically for the new functionality
+
+7. **Test the example**: Verify the provided example works correctly
+   ```python
+   term_tokens = tree.find_token('TERM')
+   ```
+
+## Code Style Guidelines
+
+- Follow PEP 8 conventions
+- Use descriptive variable names
+- Include comprehensive docstrings
+- Maintain consistency with surrounding code
+- Use type hints as shown in the existing codebase
+
+## Potential Edge Cases
+
+- **Empty trees**: Should return empty iterator
+- **Trees with only tokens**: Should work correctly
+- **Trees with only subtrees**: Should recursively search all levels
+- **Case sensitivity**: Token type matching should be exact (case-sensitive)
+- **Performance**: Should handle large trees efficiently using generators
+
+## Verification Checklist
+
+- [ ] Method compiles without syntax errors
+- [ ] Type hints are correct and consistent
+- [ ] All test cases pass
+- [ ] Example from problem description works
+- [ ] No existing functionality is broken
+- [ ] Documentation is clear and accurate
+- [ ] Code follows project style guidelines
+
+This implementation provides a clean, recursive solution that leverages Python's generator functionality for efficient memory usage, making it suitable for large parse trees. The method integrates seamlessly with the existing `Tree` class architecture and follows the established patterns in the Lark codebase.

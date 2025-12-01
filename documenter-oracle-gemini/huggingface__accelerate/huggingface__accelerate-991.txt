@@ -1,0 +1,504 @@
+The goal is to introduce pre-hooks for `Accelerator.save_state` and `Accelerator.load_state` methods. These hooks will allow users to customize how specific models are saved or loaded, for instance, by using `from_pretrained` or `save_pretrained` methods for certain model types (like `UNet` in `diffusers`). The hooks should be able to modify the list of models/weights that the default `save_checkpoint` and `load_checkpoint` mechanisms will then process.
+
+The design is inspired by PyTorch's `torch.nn.Module` hooks, utilizing `torch.utils.hooks.RemovableHandle` for managing hook lifecycles.
+
+## Repository Overview
+
+The `accelerate` library aims to simplify the process of running PyTorch training scripts on various hardware setups (multi-GPU, TPU, FP16) by abstracting away the boilerplate code. The core component is the `Accelerator` class, which manages models, optimizers, and data loaders, preparing them for distributed training.
+
+Key methods relevant to this feature are:
+*   `Accelerator.save_state(output_dir: str, **kwargs)`: Saves the entire state of the accelerator, including models, optimizers, schedulers, and RNG states, to a specified directory. Internally calls `self.save_checkpoint`.
+*   `Accelerator.load_state(input_dir: str, **kwargs)`: Loads the entire state from a specified directory. Internally calls `self.load_checkpoint`.
+*   `Accelerator.save_checkpoint(output_dir: str, **kwargs)`: The internal method responsible for iterating through `self._models`, `self._optimizers`, etc., and saving their states.
+*   `Accelerator.load_checkpoint(input_dir: str, **kwargs)`: The internal method responsible for iterating through `self._models`, `self._optimizers`, etc., and loading their states.
+
+The proposed hooks will run *before* `save_checkpoint` and `load_checkpoint` are invoked within `save_state` and `load_state`, respectively. They will receive mutable copies of the models and weights lists, allowing them to handle specific items and remove them from the lists, preventing the default checkpointing mechanism from processing them.
+
+## Feature Description
+
+Two new methods will be added to the `Accelerator` class:
+
+1.  `register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle`:
+    *   Registers a function to be called before the default `save_checkpoint` logic in `Accelerator.save_state`.
+    *   The hook signature is `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str) -> None`.
+    *   `models`: A mutable list of `torch.nn.Module` instances currently managed by the `Accelerator`.
+    *   `weights`: A mutable list of state dictionaries corresponding to the `models` list.
+    *   `output_dir`: The directory where the state is being saved.
+    *   Hooks can modify `models` and `weights` lists (e.g., remove items) to prevent the default saving mechanism from processing them.
+
+2.  `register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle`:
+    *   Registers a function to be called before the default `load_checkpoint` logic in `Accelerator.load_state`.
+    *   The hook signature is `hook(models: List[torch.nn.Module], input_dir: str) -> None`.
+    *   `models`: A mutable list of `torch.nn.Module` instances currently managed by the `Accelerator`.
+    *   `input_dir`: The directory from which the state is being loaded.
+    *   Hooks can modify the `models` list (e.g., remove items) to prevent the default loading mechanism from processing them.
+
+Both methods will return a `torch.utils.hooks.RemovableHandle` object, allowing the registered hook to be removed later.
+
+## Implementation Plan
+
+The implementation will involve modifying `src/accelerate/accelerator.py`.
+
+### Step 1: Add Imports and Hook Management Infrastructure
+
+1.  **Add necessary imports**:
+    At the top of `src/accelerate/accelerator.py`, add:
+    ```python
+    from collections import OrderedDict
+    from typing import Callable, Dict, List, Optional, Any
+    from torch.utils import hooks
+    import torch.nn as nn
+    import torch
+    ```
+    (Ensure `torch.nn` and `torch` are already there, if not, add them for type hints).
+
+2.  **Initialize hook storage in `Accelerator.__init__`**:
+    Inside the `__init__` method of the `Accelerator` class, add the following attributes:
+    ```python
+    class Accelerator:
+        def __init__(self, ...):
+            # ... existing initializations ...
+            self._save_state_pre_hooks: OrderedDict[int, Callable] = OrderedDict()
+            self._load_state_pre_hooks: OrderedDict[int, Callable] = OrderedDict()
+            self._hook_counter: int = 0
+    ```
+
+3.  **Add a private helper method for hook registration**:
+    This method will encapsulate the common logic for registering hooks and returning a `RemovableHandle`, similar to PyTorch's internal hook management. Add this method within the `Accelerator` class:
+    ```python
+    class Accelerator:
+        # ... existing methods ...
+
+        def _register_state_hook(self, hook_dict: OrderedDict[int, Callable], hook: Callable) -> hooks.RemovableHandle:
+            """Helper to register a hook and return a RemovableHandle."""
+            self._hook_counter += 1
+            handle = hooks.RemovableHandle(hook_dict, self._hook_counter)
+            hook_dict[self._hook_counter] = hook
+            return handle
+    ```
+
+### Step 2: Implement `register_save_state_pre_hook`
+
+Add the `register_save_state_pre_hook` method to the `Accelerator` class:
+
+```python
+class Accelerator:
+    # ... existing methods ...
+
+    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
+        """
+        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
+
+        Args:
+            hook (`Callable`):
+                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
+
+        The hook should have the following signature:
+
+        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str) -> None`
+
+        The `models` argument is a mutable list of the models as saved in the accelerator state under
+        `accelerator._models`. The `weights` argument is a mutable list of the state dicts of the `models`,
+        and the `output_dir` argument is the `output_dir` argument passed to [`Accelerator.save_state`].
+
+        <Tip>
+
+        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
+        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
+        method. In this case, make sure to remove already saved models and their corresponding weights from the
+        `models` and `weights` lists, respectively, to prevent them from being processed by the default saving
+        mechanism.
+
+        </Tip>
+
+        Returns:
+            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
+            `handle.remove()`
+        """
+        return self._register_state_hook(self._save_state_pre_hooks, hook)
+```
+
+### Step 3: Implement `register_load_state_pre_hook`
+
+Add the `register_load_state_pre_hook` method to the `Accelerator` class:
+
+```python
+class Accelerator:
+    # ... existing methods ...
+
+    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
+        """
+        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
+
+        Args:
+            hook (`Callable`):
+                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
+
+        The hook should have the following signature:
+
+        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
+
+        The `models` argument is a mutable list of the models as saved in the accelerator state under
+        `accelerator._models`, and the `input_dir` argument is the `input_dir` argument passed to
+        [`Accelerator.load_state`].
+
+        <Tip>
+
+        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
+        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
+        method. In this case, make sure to remove already loaded models from the `models` list to prevent them
+        from being processed by the default loading mechanism.
+
+        </Tip>
+
+        Returns:
+            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
+            `handle.remove()`
+        """
+        return self._register_state_hook(self._load_state_pre_hooks, hook)
+```
+
+### Step 4: Modify `Accelerator.save_state` to Integrate Hooks
+
+Locate the `save_state` method in `src/accelerate/accelerator.py` and modify it as follows:
+
+```python
+class Accelerator:
+    # ... existing methods ...
+
+    def save_state(self, output_dir: str, **kwargs):
+        """
+        Saves the current state of the Accelerator to an `output_dir`.
+
+        Args:
+            output_dir (`str`):
+                The directory to save the state to.
+            kwargs (`Dict[str, Any]`, *optional*):
+                Additional keyword arguments passed to the `save_checkpoint` method.
+        """
+        # ... existing code for creating output_dir and saving accelerator_state.json ...
+        output_dir = Path(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Prepare mutable lists for hooks and default saving
+        models_to_save = list(self._models)
+        # Ensure weights are gathered in the same order as models
+        weights_to_save = [model.state_dict() for model in self._models]
+
+        # Call pre-save hooks
+        for hook in self._save_state_pre_hooks.values():
+            hook(models_to_save, weights_to_save, output_dir)
+
+        # Pass the potentially modified lists to save_checkpoint
+        self.save_checkpoint(output_dir, models=models_to_save, weights=weights_to_save, **kwargs)
+
+        # ... existing code for saving accelerator_state.json ...
+        if self.is_main_process:
+            state = {"distributed_type": self.distributed_type.value}
+            # ... (existing code to populate state dict) ...
+            with open(os.path.join(output_dir, "accelerator_state.json"), "w") as f:
+                json.dump(state, f)
+```
+
+### Step 5: Modify `Accelerator.load_state` to Integrate Hooks
+
+Locate the `load_state` method in `src/accelerate/accelerator.py` and modify it as follows:
+
+```python
+class Accelerator:
+    # ... existing methods ...
+
+    def load_state(self, input_dir: str, **kwargs):
+        """
+        Loads the full accelerator state from an `input_dir`.
+
+        Args:
+            input_dir (`str`):
+                The directory to load the state from.
+            kwargs (`Dict[str, Any]`, *optional*):
+                Additional keyword arguments passed to the `load_checkpoint` method.
+        """
+        # ... existing code for loading accelerator_state.json ...
+        input_dir = Path(input_dir)
+        if not input_dir.is_dir():
+            raise ValueError(f"The input directory {input_dir} does not exist or is not a directory.")
+
+        # Prepare mutable list for hooks and default loading
+        models_to_load = list(self._models)
+
+        # Call pre-load hooks
+        for hook in self._load_state_pre_hooks.values():
+            hook(models_to_load, input_dir)
+
+        # Pass the potentially modified list to load_checkpoint
+        self.load_checkpoint(input_dir, models=models_to_load, **kwargs)
+
+        # ... existing code for loading accelerator_state.json ...
+        if self.is_main_process:
+            with open(os.path.join(input_dir, "accelerator_state.json"), "r") as f:
+                state = json.load(f)
+            # ... (existing code to load state dict) ...
+```
+
+### Step 6: Modify `Accelerator.save_checkpoint` to Accept Hook-Modified Lists
+
+Locate the `save_checkpoint` method and update its signature and internal logic to use the `models` and `weights` arguments if provided.
+
+```python
+class Accelerator:
+    # ... existing methods ...
+
+    def save_checkpoint(
+        self,
+        output_dir: str,
+        models: Optional[List[nn.Module]] = None,
+        weights: Optional[List[Dict[str, torch.Tensor]]] = None,
+        **kwargs
+    ):
+        """
+        Saves the current state of the Accelerator to an `output_dir`. This method is called by `save_state`.
+
+        Args:
+            output_dir (`str`):
+                The directory to save the state to.
+            models (`List[torch.nn.Module]`, *optional*):
+                A list of models to save. If provided, these models will be saved instead of `self._models`.
+                This is primarily used by pre-save hooks to modify the list of models to be saved.
+            weights (`List[Dict[str, torch.Tensor]]`, *optional*):
+                A list of state dictionaries corresponding to the `models` list. If provided, these weights will be
+                saved instead of generating them from the `models`. This is primarily used by pre-save hooks.
+            kwargs (`Dict[str, Any]`, *optional*):
+                Additional keyword arguments.
+        """
+        output_dir = Path(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Determine which models and weights to process
+        models_to_process = models if models is not None else self._models
+        weights_to_process = weights if weights is not None else [model.state_dict() for model in self._models]
+
+        if len(models_to_process) != len(weights_to_process):
+            raise ValueError(
+                "The number of models and weights to process must be the same. "
+                "This indicates an issue with a pre-save hook."
+            )
+
+        if self.is_main_process:
+            # Save models
+            for i, model in enumerate(models_to_process):
+                # Use the provided weights_to_process[i] if available, otherwise generate from model
+                current_weights = weights_to_process[i]
+
+                # ... (existing logic for saving model state dicts) ...
+                # Example:
+                # if self.state.use_fsdp:
+                #     # FSDP specific saving
+                # else:
+                #     # Default saving
+                #     torch.save(current_weights, os.path.join(output_dir, f"model_{i}.bin"))
+                #
+                # You will need to adapt the existing saving logic to use `current_weights`
+                # instead of `model.state_dict()` where appropriate.
+                # For example, if `save_model_state` is an internal helper, it should accept `current_weights`.
+                # The `save_model_state` function (or similar logic) should be updated to accept `state_dict` directly.
+                self._save_model_state(model, output_dir, index=i, state_dict=current_weights)
+
+            # ... (existing code for saving optimizers, schedulers, rng, etc. - these are not affected by model hooks) ...
+            for i, optimizer in enumerate(self._optimizers):
+                # ... save optimizer state dict ...
+                self._save_optimizer_state(optimizer, output_dir, index=i)
+
+            for i, scheduler in enumerate(self._schedulers):
+                # ... save scheduler state dict ...
+                self._save_scheduler_state(scheduler, output_dir, index=i)
+
+            # ... (save rng states) ...
+            self._save_rng_state(output_dir)
+```
+**Note on `_save_model_state`**: You might have an internal helper function like `_save_model_state` that currently takes `model` and calls `model.state_dict()`. This helper should be updated to accept an optional `state_dict` argument. If `state_dict` is provided, it uses that; otherwise, it calls `model.state_dict()`.
+
+### Step 7: Modify `Accelerator.load_checkpoint` to Accept Hook-Modified Lists
+
+Locate the `load_checkpoint` method and update its signature and internal logic to use the `models` argument if provided.
+
+```python
+class Accelerator:
+    # ... existing methods ...
+
+    def load_checkpoint(
+        self,
+        input_dir: str,
+        models: Optional[List[nn.Module]] = None,
+        **kwargs
+    ):
+        """
+        Loads the full accelerator state from an `input_dir`. This method is called by `load_state`.
+
+        Args:
+            input_dir (`str`):
+                The directory to load the state from.
+            models (`List[torch.nn.Module]`, *optional*):
+                A list of models to load weights into. If provided, weights will be loaded into these models
+                instead of `self._models`. This is primarily used by pre-load hooks to modify the list of models
+                to be loaded.
+            kwargs (`Dict[str, Any]`, *optional*):
+                Additional keyword arguments.
+        """
+        input_dir = Path(input_dir)
+        if not input_dir.is_dir():
+            raise ValueError(f"The input directory {input_dir} does not exist or is not a directory.")
+
+        # Determine which models to process
+        models_to_process = models if models is not None else self._models
+
+        if self.is_main_process:
+            # Load models
+            for i, model in enumerate(models_to_process):
+                # ... (existing logic for loading model state dicts) ...
+                # Example:
+                # if self.state.use_fsdp:
+                #     # FSDP specific loading
+                # else:
+                #     # Default loading
+                #     state_dict = torch.load(os.path.join(input_dir, f"model_{i}.bin"), map_location="cpu")
+                #     model.load_state_dict(state_dict)
+                #
+                # You will need to adapt the existing loading logic to use `model` from `models_to_process`.
+                self._load_model_state(model, input_dir, index=i)
+
+            # ... (existing code for loading optimizers, schedulers, rng, etc. - these are not affected by model hooks) ...
+            for i, optimizer in enumerate(self._optimizers):
+                # ... load optimizer state dict ...
+                self._load_optimizer_state(optimizer, input_dir, index=i)
+
+            for i, scheduler in enumerate(self._schedulers):
+                # ... load scheduler state dict ...
+                self._load_scheduler_state(scheduler, input_dir, index=i)
+
+            # ... (load rng states) ...
+            self._load_rng_state(input_dir)
+```
+**Note on `_load_model_state`**: Similar to `_save_model_state`, if there's an internal helper `_load_model_state`, ensure it correctly uses the `model` passed from `models_to_process`.
+
+## Pseudo-code Example for a Hook
+
+Here's an example of how a user might define and register a hook for a `UNet` model:
+
+```python
+# In user's training script
+from accelerate import Accelerator
+import torch.nn as nn
+import torch
+from typing import List, Dict
+
+class UNet(nn.Module):
+    # ... UNet definition with from_pretrained and save_pretrained methods ...
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        print(f"Loading UNet from {pretrained_model_name_or_path}")
+        # Simulate loading
+        model = cls()
+        # ... actual loading logic ...
+        return model
+
+    def save_pretrained(self, save_directory, **kwargs):
+        print(f"Saving UNet to {save_directory}")
+        # Simulate saving
+        # ... actual saving logic ...
+
+# Initialize Accelerator
+accelerator = Accelerator()
+
+# Assume model_0 is a UNet instance
+model_0 = UNet()
+model_1 = nn.Linear(10, 10)
+accelerator.prepare(model_0, model_1)
+
+# Define a pre-save hook
+def unet_save_pre_hook(models: List[nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str):
+    print("Running pre-save hook...")
+    models_to_remove = []
+    weights_to_remove = []
+    for i, model in enumerate(models):
+        if isinstance(model, UNet):
+            print(f"Hook: Saving UNet model {i} with save_pretrained to {output_dir}/unet_model_{i}")
+            model.save_pretrained(f"{output_dir}/unet_model_{i}")
+            models_to_remove.append(model)
+            weights_to_remove.append(weights[i])
+    
+    # Remove handled models and their weights from the lists
+    for model in models_to_remove:
+        idx = models.index(model)
+        models.pop(idx)
+        weights.pop(idx)
+    print(f"Hook: Remaining models to save by default: {[type(m).__name__ for m in models]}")
+
+# Define a pre-load hook
+def unet_load_pre_hook(models: List[nn.Module], input_dir: str):
+    print("Running pre-load hook...")
+    models_to_remove = []
+    for i, model in enumerate(models):
+        if isinstance(model, UNet):
+            print(f"Hook: Loading UNet model {i} with from_pretrained from {input_dir}/unet_model_{i}")
+            # In a real scenario, you might need to re-assign the loaded model
+            # For simplicity, here we just call from_pretrained, assuming it updates the model in place or
+            # the user handles the assignment. For `from_pretrained`, it typically returns a new instance.
+            # A more robust hook might need to replace the model in `accelerator._models` directly,
+            # or the `models` list passed here should be `self._models` itself.
+            # Given the problem statement "remove it from the list so it's not called after",
+            # the expectation is that the hook *handles* the loading for that specific model.
+            # So, we simulate loading and then remove it from the list.
+            UNet.from_pretrained(f"{input_dir}/unet_model_{i}")
+            models_to_remove.append(model)
+    
+    # Remove handled models from the list
+    for model in models_to_remove:
+        models.remove(model)
+    print(f"Hook: Remaining models to load by default: {[type(m).__name__ for m in models]}")
+
+# Register the hooks
+save_handle = accelerator.register_save_state_pre_hook(unet_save_pre_hook)
+load_handle = accelerator.register_load_state_pre_hook(unet_load_pre_hook)
+
+# Save and load state
+output_dir = "my_accelerator_state"
+accelerator.save_state(output_dir)
+accelerator.load_state(output_dir)
+
+# Remove hooks if no longer needed
+save_handle.remove()
+load_handle.remove()
+```
+
+## Testing Considerations
+
+*   **Unit Tests**:
+    *   Test `register_save_state_pre_hook` and `register_load_state_pre_hook` methods: ensure hooks are registered, `RemovableHandle` works, and hooks can be removed.
+    *   Test `save_state` with a registered pre-save hook:
+        *   Verify the hook is called.
+        *   Verify the hook receives mutable `models` and `weights` lists.
+        *   Verify that if the hook removes a model/weights, `save_checkpoint` does *not* save that model/weights using its default mechanism.
+        *   Verify that models/weights not handled by the hook are still saved correctly by `save_checkpoint`.
+    *   Test `load_state` with a registered pre-load hook:
+        *   Verify the hook is called.
+        *   Verify the hook receives a mutable `models` list.
+        *   Verify that if the hook removes a model, `load_checkpoint` does *not* attempt to load weights into that model using its default mechanism.
+        *   Verify that models not handled by the hook are still loaded correctly by `load_checkpoint`.
+    *   Test with multiple hooks registered.
+    *   Test edge cases: empty `_models` list, hook raising an exception.
+
+*   **Integration Tests**:
+    *   Create a dummy `UNet` model with `from_pretrained` and `save_pretrained` methods.
+    *   Use the `Accelerator` to prepare a mix of `UNet` and standard `nn.Module` models.
+    *   Register hooks that specifically handle the `UNet` models using their custom methods.
+    *   Save and load the state, verifying that `UNet` models are handled by the hooks and other models by the default mechanism.
+    *   Verify that the loaded state is correct for all models.
+
+## Coding Style Guidelines
+
+*   **Type Hints**: Use type hints for all function arguments and return values, and for class attributes, consistent with existing `accelerate` codebase.
+*   **Docstrings**: Write clear and concise docstrings for new methods, following the existing `accelerate` style (reStructuredText format, including `Args`, `Returns`, and `Tip` sections as provided in the problem description).
+*   **Variable Naming**: Use descriptive variable names (e.g., `models_to_save`, `weights_to_process`).
+*   **Imports**: Keep imports organized and minimal.
+*   **Black/isort**: Ensure the code adheres to `black` formatting and `isort` ordering. Run `make quality` or `black .` and `isort .` before submitting.
+*   **Error Handling**: Add appropriate error handling (e.g., `ValueError` for mismatched `models` and `weights` lists in `save_checkpoint`).

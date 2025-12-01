@@ -1,0 +1,245 @@
+# Implementation Guide: Adding `discretize` Function to pgmpy
+
+## Repository Overview
+
+pgmpy is a Python package for working with Bayesian Networks and related probabilistic models. The codebase follows a modular structure with utilities organized in the `pgmpy/utils/` directory. The project uses pandas for data manipulation and follows standard Python packaging conventions.
+
+## Implementation Plan
+
+### 1. File Location and Structure
+
+**File:** `pgmpy/utils/utils.py`
+
+Add the `discretize` function to this file, which contains various utility functions for the pgmpy package.
+
+### 2. Function Implementation
+
+```python
+def discretize(data, cardinality, labels=dict(), method="rounding"):
+    """
+    Discretizes a given continuous dataset.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        The dataset to discretize. All columns must have continuous values.
+    
+    cardinality : dict
+        A dictionary of the form (str: int) representing the number of bins
+        to create for each of the variables.
+    
+    labels : dict (default: {})
+        A dictionary of the form (str: list) representing the label names for
+        each variable in the discretized dataframe.
+    
+    method : str (default: "rounding")
+        If "rounding", equal width bins are created and data is discretized into these bins.
+        If "quantile", creates bins such that each bin has an equal number of datapoints.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A discretized dataframe.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> from pgmpy.utils import discretize
+    >>> rng = np.random.default_rng(42)
+    >>> X = rng.standard_normal(1000)
+    >>> Y = 0.2 * X + rng.standard_normal(1000)
+    >>> Z = 0.4 * X + 0.5 * Y + rng.standard_normal(1000)
+    >>> df = pd.DataFrame({"X": X, "Y": Y, "Z": Z})
+    >>> df_disc = discretize(df, cardinality={'X': 3, 'Y': 3, 'Z': 3}, 
+    ...                      labels={'X': ['low', 'mid', 'high'], 
+    ...                              'Y': ['low', 'mid', 'high'], 
+    ...                              'Z': ['low', 'mid', 'high']})
+    >>> df_disc.head()
+         X    Y    Z
+    0   mid  mid  mid
+    1   mid  mid  low
+    2   mid  mid  mid
+    3  high  mid  mid
+    4   low  mid  low
+    """
+    import pandas as pd
+    import numpy as np
+    
+    # Input validation
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError("data must be a pandas DataFrame")
+    
+    if not isinstance(cardinality, dict):
+        raise TypeError("cardinality must be a dictionary")
+    
+    if not isinstance(labels, dict):
+        raise TypeError("labels must be a dictionary")
+    
+    if method not in ["rounding", "quantile"]:
+        raise ValueError("method must be either 'rounding' or 'quantile'")
+    
+    # Check if all variables in cardinality exist in data
+    missing_vars = set(cardinality.keys()) - set(data.columns)
+    if missing_vars:
+        raise ValueError(f"Variables {missing_vars} in cardinality not found in data")
+    
+    # Check if all variables in labels exist in data
+    missing_label_vars = set(labels.keys()) - set(data.columns)
+    if missing_label_vars:
+        raise ValueError(f"Variables {missing_label_vars} in labels not found in data")
+    
+    # Create a copy of the data to avoid modifying the original
+    discretized_data = data.copy()
+    
+    for var in cardinality.keys():
+        n_bins = cardinality[var]
+        
+        # Get custom labels if provided, otherwise use default integer labels
+        custom_labels = labels.get(var, None)
+        
+        if method == "rounding":
+            # Equal width bins using pandas.cut
+            discretized_data[var] = pd.cut(
+                data[var], 
+                bins=n_bins, 
+                labels=custom_labels,
+                include_lowest=True
+            )
+        elif method == "quantile":
+            # Equal frequency bins using pandas.qcut
+            discretized_data[var] = pd.qcut(
+                data[var], 
+                q=n_bins, 
+                labels=custom_labels,
+                duplicates='drop'  # Handle cases where quantiles are not unique
+            )
+    
+    return discretized_data
+```
+
+### 3. Required Imports
+
+Ensure the function has access to necessary imports. Since this is a utility function, import pandas and numpy within the function to avoid namespace pollution.
+
+### 4. Error Handling and Validation
+
+The implementation includes comprehensive error checking:
+
+- **Type validation**: Ensures all inputs are of correct types
+- **Value validation**: Checks method parameter and variable existence
+- **Edge cases**: Handles duplicate quantiles in quantile method
+
+### 5. Testing Strategy
+
+Create comprehensive tests in `tests/test_utils/test_utils.py`:
+
+```python
+import pytest
+import pandas as pd
+import numpy as np
+from pgmpy.utils import discretize
+
+class TestDiscretize:
+    def test_discretize_rounding_method(self):
+        """Test discretization with rounding method"""
+        rng = np.random.default_rng(42)
+        data = pd.DataFrame({
+            'X': rng.standard_normal(100),
+            'Y': rng.standard_normal(100)
+        })
+        
+        result = discretize(data, cardinality={'X': 3, 'Y': 2}, method="rounding")
+        
+        assert isinstance(result, pd.DataFrame)
+        assert set(result['X'].unique()) <= {0, 1, 2}
+        assert set(result['Y'].unique()) <= {0, 1}
+    
+    def test_discretize_quantile_method(self):
+        """Test discretization with quantile method"""
+        data = pd.DataFrame({
+            'X': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'Y': [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+        })
+        
+        result = discretize(data, cardinality={'X': 2, 'Y': 2}, method="quantile")
+        
+        # Should have equal number of points in each bin
+        assert (result['X'].value_counts() == 5).all()
+    
+    def test_discretize_with_labels(self):
+        """Test discretization with custom labels"""
+        data = pd.DataFrame({'X': [1, 2, 3, 4, 5]})
+        
+        result = discretize(
+            data, 
+            cardinality={'X': 3}, 
+            labels={'X': ['low', 'mid', 'high']},
+            method="rounding"
+        )
+        
+        assert set(result['X'].unique()) <= {'low', 'mid', 'high'}
+    
+    def test_input_validation(self):
+        """Test input validation errors"""
+        data = pd.DataFrame({'X': [1, 2, 3]})
+        
+        # Test invalid data type
+        with pytest.raises(TypeError):
+            discretize("not_a_dataframe", cardinality={'X': 2})
+        
+        # Test invalid method
+        with pytest.raises(ValueError):
+            discretize(data, cardinality={'X': 2}, method="invalid_method")
+        
+        # Test missing variable
+        with pytest.raises(ValueError):
+            discretize(data, cardinality={'Y': 2})
+```
+
+### 6. Documentation Updates
+
+Update the following documentation files:
+
+**In `CHANGELOG.md` under the appropriate version:**
+```markdown
+### Added
+1. Adds a simple discretization method: `pgmpy.utils.discretize`.
+```
+
+**In the main documentation**, add a section about data preprocessing utilities that includes the `discretize` function.
+
+### 7. Code Style Guidelines
+
+- Follow existing pgmpy coding conventions
+- Use descriptive variable names
+- Include comprehensive docstrings with examples
+- Add type hints in comments (the codebase doesn't use full type annotations yet)
+- Follow pandas API conventions for parameter names and return types
+
+### 8. Integration Points
+
+The `discretize` function will be useful for:
+- Preprocessing continuous data for discrete Bayesian Networks
+- Data preparation for structure learning algorithms
+- Feature engineering in causal inference pipelines
+
+### 9. Performance Considerations
+
+- The function operates column-wise, which is efficient for pandas
+- No unnecessary copies of data are created
+- Uses pandas' optimized binning functions internally
+
+### 10. Backward Compatibility
+
+This is a new function, so no backward compatibility issues exist. The function uses sensible defaults and follows the established pgmpy API patterns.
+
+## Implementation Steps
+
+1. **Add the function** to `pgmpy/utils/utils.py`
+2. **Write comprehensive tests** in `tests/test_utils/test_utils.py`
+3. **Update documentation** in `CHANGELOG.md`
+4. **Run tests** to ensure functionality works correctly
+5. **Create examples** showing usage in Jupyter notebooks (optional but recommended)
+
+This implementation provides a robust, well-tested discretization utility that follows pgmpy's established patterns and will be valuable for users working with continuous data in discrete Bayesian Networks.

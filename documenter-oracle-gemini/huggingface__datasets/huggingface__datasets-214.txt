@@ -1,0 +1,280 @@
+This document outlines the implementation plan for adding a `.filter()` method to the `Dataset` class in `src/nlp/arrow_dataset.py`. The `.filter()` method will allow users to select examples from a dataset based on a boolean function, similar in spirit and functionality to the existing `.map()` method, including support for caching and batch processing.
+
+## Repository Overview
+
+The `huggingface/datasets` library provides efficient tools for loading and processing datasets. Key components relevant to this task include:
+
+*   **`src/nlp/arrow_dataset.py`**: This file defines the `Dataset` class, which is the core abstraction for handling datasets. It includes methods for transformations like `map()`, `select()`, and `flatten()`. These methods often leverage Apache Arrow tables for efficient in-memory and on-disk storage and processing.
+*   **Caching Mechanism**: The library heavily relies on caching intermediate processing steps to speed up subsequent runs. This involves generating unique "fingerprints" for datasets and transformations, and storing results in cache files.
+*   **Batch Processing**: Operations like `map()` can process data in batches, which is generally more efficient than processing examples one by one, especially when dealing with large datasets or operations that benefit from vectorized computation.
+*   **`_map_with_cache`**: An internal method within `Dataset` that orchestrates the application of a function, handling caching, batching, and writing to new Arrow tables. The `.filter()` method will likely leverage this existing infrastructure.
+
+## Implementation Plan
+
+The implementation of `Dataset.filter()` will closely mirror the structure and logic of `Dataset.map()`, adapting it to the specific requirements of filtering.
+
+### 1. Add `filter` method to `Dataset` class (`src/nlp/arrow_dataset.py`)
+
+Locate the `Dataset` class in `src/nlp/arrow_dataset.py`. Add the `filter` method with the specified signature and docstring.
+
+```python
+# src/nlp/arrow_dataset.py
+
+import copy
+import inspect
+import os
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Union
+
+import pyarrow as pa
+import pyarrow.compute as pc
+from fsspec.core import get_fs_token_paths
+
+from . import config
+from .arrow_writer import ArrowWriter, ParquetWriter
+from .fingerprint import generate_fingerprint, get_temporary_cache_files_directory
+from .info import DatasetInfo
+from .splits import Split
+from .table import Table
+from .utils.logging import get_logger
+from .utils.version import Version
+
+logger = get_logger(__name__)
+
+# ... (existing Dataset class definition)
+
+class Dataset:
+    # ... (existing methods)
+
+    def filter(
+        self,
+        function: Callable,
+        with_indices: bool = False,
+        batch_size: Optional[int] = 1000,
+        remove_columns: Optional[List[str]] = None,
+        keep_in_memory: bool = False,
+        load_from_cache_file: bool = True,
+        cache_file_name: Optional[str] = None,
+        writer_batch_size: int = 1000,
+        disable_nullable: bool = True,
+        **kwargs,
+    ) -> "Dataset":
+        """Apply a filter function to all the elements in the table in batches
+        and update the table so that the dataset only includes examples according to the filter function.
+
+        Args:
+            `function` (`callable`): with one of the following signature:
+                - `function(example: Dict) -> bool` if `with_indices=False`
+                - `function(example: Dict, indices: int) -> bool` if `with_indices=True`
+            `with_indices` (`bool`, default: `False`): Provide example indices to `function`. Note that in this case the signature of `function` should be `def function(example, idx): ...`.
+            `batch_size` (`Optional[int]`, default: `1000`): Number of examples per batch provided to `function` if `batched=True`
+                `batch_size <= 0` or `batch_size == None`: Provide the full dataset as a single batch to `function`
+            `remove_columns` (`Optional[List[str]]`, default: `None`): Remove a selection of columns while doing the mapping.
+                Columns will be removed after filtering, i.e. if `function` is adding
+                columns with names in `remove_columns`, these columns will be kept.
+            `keep_in_memory` (`bool`, default: `False`): Keep the dataset in memory instead of writing it to a cache file.
+            `load_from_cache_file` (`bool`, default: `True`): If a cache file storing the current computation from `function`
+                can be identified, use it instead of recomputing.
+            `cache_file_name` (`Optional[str]`, default: `None`): Provide the name of a cache file to use to store the
+                results of the computation instead of the automatically generated cache file name.
+            `writer_batch_size` (`int`, default: `1000`): Number of rows per write operation for the cache file writer.
+                Higher value gives smaller cache files, lower value consume less temporary memory while running `.map()`.
+            `disable_nullable` (`bool`, default: `True`): Allow null values in the table.
+        """
+        # 1. Input Validation and Preparation
+        if not callable(function):
+            raise TypeError("`function` must be a callable.")
+
+        # The `filter` method will internally use `_map_with_cache`.
+        # We need to wrap the user's `function` into an internal `_filter_map_function`
+        # that `_map_with_cache` can understand.
+        # The `_filter_map_function` will receive a batch (dict of lists) and indices,
+        # apply the user's `function` to each example, and return a batch
+        # containing only the examples for which the user's function returned True.
+
+        # 2. Fingerprinting for Caching
+        # Generate a unique fingerprint for this filter operation.
+        # This fingerprint will be used to check for existing cache files.
+        # It should include the dataset's current fingerprint, the filter function's source,
+        # and all relevant parameters.
+        new_fingerprint = generate_fingerprint(
+            self.fingerprint,
+            function=function,
+            with_indices=with_indices,
+            batch_size=batch_size,
+            remove_columns=remove_columns,
+            disable_nullable=disable_nullable,
+            # kwargs are passed to the user's function, so they should be part of the fingerprint
+            **kwargs,
+        )
+
+        # 3. Handle Caching
+        # Check if a cache file already exists for this fingerprint.
+        # If `load_from_cache_file` is True and a cache exists, load it and return.
+        if cache_file_name is None:
+            cache_file_name = os.path.join(
+                get_temporary_cache_files_directory(), new_fingerprint + ".arrow"
+            )
+
+        if load_from_cache_file and os.path.exists(cache_file_name):
+            try:
+                logger.info(f"Loading cached filtered dataset from {cache_file_name}")
+                # Assuming Dataset.from_file is the way to load a cached dataset
+                # This might need adjustment based on actual internal API for loading
+                # a dataset from a cache file.
+                return Dataset.from_file(
+                    cache_file_name,
+                    info=self.info.copy(),
+                    split=self.split,
+                    fingerprint=new_fingerprint,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load cached filtered dataset from {cache_file_name} due to {e}. Recomputing."
+                )
+
+        # 4. Define the internal `_filter_map_function` wrapper
+        # This function will be passed to `_map_with_cache`.
+        # It takes a batch (dict of lists) and indices, applies the user's `function`,
+        # and returns a new batch containing only the filtered examples.
+        def _filter_map_function(batch: Dict[str, List[Any]], indices: List[int]) -> Dict[str, List[Any]]:
+            num_examples_in_batch = len(next(iter(batch.values())))
+            
+            kept_indices_in_batch = []
+            
+            if with_indices:
+                for i in range(num_examples_in_batch):
+                    example = {col: batch[col][i] for col in batch}
+                    # Pass kwargs to the user's function
+                    if function(example, indices[i], **kwargs):
+                        kept_indices_in_batch.append(i)
+            else:
+                for i in range(num_examples_in_batch):
+                    example = {col: batch[col][i] for col in batch}
+                    # Pass kwargs to the user's function
+                    if function(example, **kwargs):
+                        kept_indices_in_batch.append(i)
+            
+            # Construct the filtered batch (dict of lists)
+            # This ensures the output schema remains the same as the input, just with fewer rows.
+            filtered_batch = {col: [batch[col][i] for i in kept_indices_in_batch] for col in batch}
+            return filtered_batch
+
+        # 5. Call `_map_with_cache`
+        # `_map_with_cache` is the internal method that handles the actual iteration,
+        # applying the function, and writing to the cache.
+        # The `filter` method will call `_map_with_cache` with our `_filter_map_function` wrapper.
+        
+        # `_map_with_cache` expects `batched=True` for batch processing.
+        # The `batch_size` parameter for `filter` directly maps to `_map_with_cache`'s `batch_size`.
+        # `remove_columns` should be applied *after* filtering, so it can be passed directly.
+        
+        # Note: The `_map_with_cache` method might need to be adjusted or a new internal
+        # method created if its current implementation cannot directly handle the `filter`
+        # use case without modification. However, the design goal is to reuse as much as possible.
+        
+        # The `_map_with_cache` method typically returns a new Dataset object.
+        return self._map_with_cache(
+            _filter_map_function,
+            with_indices=True,  # Our wrapper always needs indices to reconstruct the batch correctly
+            batched=True,       # Our wrapper always processes batches
+            batch_size=batch_size,
+            remove_columns=remove_columns,
+            keep_in_memory=keep_in_memory,
+            cache_file_name=cache_file_name,
+            writer_batch_size=writer_batch_size,
+            disable_nullable=disable_nullable,
+            fingerprint=new_fingerprint,
+            # kwargs are already passed to the user's function inside _filter_map_function
+            # so they are not passed again to _map_with_cache
+        )
+
+```
+
+### 2. Internal `_filter_map_function` (already included in the above pseudo-code)
+
+The `_filter_map_function` is a crucial internal helper that adapts the user's filter logic to the batch-processing mechanism of `_map_with_cache`.
+
+**Pseudo-code for `_filter_map_function`:**
+
+```python
+# This function is defined *inside* the `filter` method to capture `function`, `with_indices`, and `kwargs` from its scope.
+def _filter_map_function(batch: Dict[str, List[Any]], indices: List[int]) -> Dict[str, List[Any]]:
+    """
+    Wrapper function for the user's filter function, designed to be passed to _map_with_cache.
+    It processes a batch of examples, applies the user's filter function, and returns
+    a new batch containing only the examples that passed the filter.
+    """
+    num_examples_in_batch = len(next(iter(batch.values()))) # Get number of examples in batch
+
+    kept_indices_in_batch = []
+    
+    # Iterate through each example in the batch
+    for i in range(num_examples_in_batch):
+        example = {col: batch[col][i] for col in batch} # Reconstruct single example from batch dict
+
+        # Apply the user's filter function
+        if with_indices:
+            # Pass kwargs to the user's function
+            if function(example, indices[i], **kwargs):
+                kept_indices_in_batch.append(i)
+        else:
+            # Pass kwargs to the user's function
+            if function(example, **kwargs):
+                kept_indices_in_batch.append(i)
+    
+    # Construct the filtered batch (dict of lists) using only the kept indices
+    filtered_batch = {col: [batch[col][i] for i in kept_indices_in_batch] for col in batch}
+    return filtered_batch
+```
+
+### 3. Update `_map_with_cache` (if necessary)
+
+The `_map_with_cache` method (or its equivalent) in `src/nlp/arrow_dataset.py` is responsible for the core logic of applying a function, managing cache files, and writing the output. Ensure it can handle the `_filter_map_function`'s output correctly.
+
+*   **Schema Handling**: `_filter_map_function` returns a batch with the *same schema* as the input, just potentially fewer rows. `_map_with_cache` should correctly infer that the output schema is identical to the input schema (minus `remove_columns`).
+*   **`remove_columns`**: The `remove_columns` parameter for `filter` should be applied *after* the filtering operation, to the resulting filtered dataset. `_map_with_cache` should handle this by dropping the specified columns from the output table.
+
+### 4. Add/Update Fingerprinting Logic
+
+The `generate_fingerprint` function (likely in `src/nlp/fingerprint.py` or an internal helper) needs to correctly incorporate all parameters relevant to the `filter` operation to ensure cache invalidation when parameters change.
+
+*   **`function`**: The source code of the user-provided `function` is critical for fingerprinting.
+*   **`with_indices`**: This boolean flag affects the function's behavior and must be part of the fingerprint.
+*   **`batch_size`, `remove_columns`, `disable_nullable`, `kwargs`**: These parameters also influence the output and should be included in the fingerprint.
+
+The pseudo-code for `filter` already includes a call to `generate_fingerprint` with these parameters. Ensure `generate_fingerprint` can handle `function` (e.g., by hashing its source code) and `kwargs` (e.g., by sorting and hashing key-value pairs).
+
+### 5. Testing
+
+Thorough testing is crucial.
+
+*   **Unit Tests**:
+    *   Test with `with_indices=False` (e.g., filtering based on a column value).
+    *   Test with `with_indices=True` (e.g., filtering based on example index).
+    *   Test with `batch_size` set to different values (e.g., `1`, `100`, `None` for full dataset).
+    *   Test `load_from_cache_file=True` and `False`.
+    *   Test `keep_in_memory=True` and `False`.
+    *   Test `remove_columns` functionality.
+    *   Test edge cases: empty dataset, function always returns `True`, function always returns `False`.
+    *   Test with `kwargs` passed to the filter function.
+*   **Integration Tests**:
+    *   Use the provided sample code from the problem description to verify its functionality.
+    *   Ensure `filter` can be chained with other dataset operations like `map`.
+*   **Performance Benchmarks**:
+    *   The `dvc.yaml` mentions `benchmark_map_filter`. This benchmark should be updated or a new one created to specifically measure the performance of the `filter` method, especially comparing cached vs. uncached runs and different `batch_size` values.
+
+### 6. Documentation
+
+*   The docstring for `Dataset.filter` is already provided in the problem description and should be used as is.
+*   Consider adding an example to the official documentation (e.g., in the `notebooks/README.md` or a new notebook) demonstrating the usage of `.filter()`, similar to how `.map()` is showcased. The sample code provided in the problem description is a good starting point.
+
+### Coding Style
+
+*   Adhere to the existing Black formatting and flake8 linting rules used in the repository.
+*   Use type hints consistently for function signatures and variable declarations.
+*   Follow the existing naming conventions (e.g., `_private_methods`).
+*   Ensure clear and concise comments where complex logic is involved.
+*   Imports should be grouped and ordered according to PEP 8.
+
+By following this plan, the `.filter()` method can be efficiently integrated into the `Dataset` class, providing a powerful and familiar API for data manipulation while leveraging the library's existing performance optimizations.

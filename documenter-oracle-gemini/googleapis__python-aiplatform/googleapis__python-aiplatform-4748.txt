@@ -1,0 +1,321 @@
+The goal is to add two new sample functions, `vector_search_find_neighbors_hybrid_queries` and `vector_search_find_neighbors_filtering_crowding`, to the `samples/model-builder/vector_search/vector_search_find_neighbors_sample.py` file. These functions will demonstrate how to perform vector search queries with hybrid mode, and with filtering and crowding, respectively, using the Vertex AI SDK for Python.
+
+## Repository Overview
+
+The `python-aiplatform` repository contains the Vertex AI SDK for Python.
+*   **`samples/`**: This directory holds various code samples demonstrating how to use the SDK for different Vertex AI features.
+*   **`samples/model-builder/vector_search/`**: This specific subdirectory contains samples related to Vertex AI Vector Search (formerly Matching Engine).
+*   **`google.cloud.aiplatform`**: This is the main Python client library for Vertex AI.
+*   **`aiplatform.matching_engine.matching_engine_index_endpoint`**: This module contains classes and methods for interacting with Vector Search index endpoints, including `MatchingEngineIndexEndpoint`, `MatchNeighbor`, `Namespace`, `NumericNamespace`, and `QueryMode`.
+*   **`README.rst`**: The main project README.
+*   **`CHANGELOG.md`**: Records changes made to the library.
+
+The new functions will extend the existing `vector_search_find_neighbors_sample.py` file, following its established structure and coding style.
+
+## Implementation Plan
+
+### 1. Prerequisites
+
+Before implementing, ensure the following are set up:
+*   A Google Cloud Project with the Vertex AI API enabled.
+*   Authentication configured (e.g., `gcloud auth application-default login`).
+*   The `google-cloud-aiplatform` SDK installed in your environment: `pip install google-cloud-aiplatform`.
+*   An existing Vector Search Index and a DeployedIndex on an IndexEndpoint to query against. The sample will require `index_endpoint_name` and `deployed_index_id` as inputs.
+
+### 2. File Modification
+
+The changes will be made in `samples/model-builder/vector_search/vector_search_find_neighbors_sample.py`.
+
+### 3. Detailed Steps
+
+#### Step 3.1: Add Necessary Imports
+
+At the top of `vector_search_find_neighbors_sample.py`, add the following imports if they are not already present. Ensure they are grouped logically with existing imports.
+
+```python
+import logging
+from typing import List
+
+from google.cloud import aiplatform
+from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import (
+    MatchNeighbor,
+    Namespace,
+    NumericNamespace,
+    QueryMode, # Required for HYBRID query mode
+)
+
+# Configure logging for better visibility during sample execution
+logging.basicConfig(level=logging.INFO)
+_LOGGER = logging.getLogger(__name__)
+```
+
+#### Step 3.2: Implement `vector_search_find_neighbors_hybrid_queries`
+
+This function will demonstrate querying a Vector Search index using the `HYBRID` query mode. It will define example queries internally.
+
+```python
+# [START aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
+def vector_search_find_neighbors_hybrid_queries(
+    project: str,
+    location: str,
+    index_endpoint_name: str,
+    deployed_index_id: str,
+    num_neighbors: int,
+) -> List[List[MatchNeighbor]]:
+    """Query the vector search index using example hybrid queries.
+
+    Args:
+        project (str): Required. Project ID
+        location (str): Required. The region name
+        index_endpoint_name (str): Required. Index endpoint to run the query
+            against.
+        deployed_index_id (str): Required. The ID of the DeployedIndex to run
+            the queries against.
+        num_neighbors (int): Required. The number of neighbors to return.
+
+    Returns:
+        List[List[aiplatform.matching_engine.matching_engine_index_endpoint.MatchNeighbor]] - A list of nearest neighbors for each query.
+    """
+    aiplatform.init(project=project, location=location)
+
+    _LOGGER.info(
+        f"Finding neighbors with hybrid queries for index endpoint: {index_endpoint_name}, "
+        f"deployed index ID: {deployed_index_id}, num_neighbors: {num_neighbors}"
+    )
+
+    index_endpoint = aiplatform.MatchingEngineIndexEndpoint(
+        index_endpoint_name=index_endpoint_name
+    )
+
+    # Define example queries. These should be representative vectors
+    # matching the dimensionality of your index.
+    # For a real scenario, these would come from an embedding model.
+    queries = [
+        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],  # Example query 1
+        [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1],  # Example query 2
+    ]
+    # NOTE: Adjust the dimensionality of these example queries to match your actual index.
+    # If your index has a different dimensionality (e.g., 768 for common embeddings),
+    # these example vectors must be adjusted accordingly.
+
+    response = index_endpoint.find_neighbors(
+        deployed_index_id=deployed_index_id,
+        queries=queries,
+        num_neighbors=num_neighbors,
+        query_mode=QueryMode.HYBRID,
+    )
+
+    _LOGGER.info("Hybrid query results:")
+    for i, query_results in enumerate(response):
+        _LOGGER.info(f"  Query {i+1} results:")
+        for neighbor in query_results:
+            _LOGGER.info(f"    ID: {neighbor.id}, Distance: {neighbor.distance}")
+
+    return response
+# [END aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
+```
+
+#### Step 3.3: Implement `vector_search_find_neighbors_filtering_crowding`
+
+This function will demonstrate querying a Vector Search index with filtering and crowding parameters.
+
+```python
+# [START aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
+def vector_search_find_neighbors_filtering_crowding(
+    project: str,
+    location: str,
+    index_endpoint_name: str,
+    deployed_index_id: str,
+    queries: List[List[float]],
+    num_neighbors: int,
+    filter: List[Namespace],
+    numeric_filter: List[NumericNamespace],
+    per_crowding_attribute_neighbor_count: int,
+) -> List[List[MatchNeighbor]]:
+    """Query the vector search index with filtering and crowding.
+
+    Args:
+        project (str): Required. Project ID
+        location (str): Required. The region name
+        index_endpoint_name (str): Required. Index endpoint to run the query
+            against.
+        deployed_index_id (str): Required. The ID of the DeployedIndex to run
+            the queries against.
+        queries (List[List[float]]): Required. A list of queries. Each query is
+            a list of floats, representing a single embedding.
+        num_neighbors (int): Required. The number of neighbors to return.
+        filter (List[Namespace]): Required. A list of Namespaces for filtering
+            the matching results. For example,
+            [Namespace("color", ["red"], []), Namespace("shape", [], ["square"])]
+            will match datapoints that satisfy "red color" but not include
+            datapoints with "square shape".
+        numeric_filter (List[NumericNamespace]): Required. A list of
+            NumericNamespaces for filtering the matching results. For example,
+            [NumericNamespace(name="cost", value_int=5, op="GREATER")] will limit
+            the matching results to datapoints with cost greater than 5.
+        per_crowding_attribute_neighbor_count (int): Required. The maximum
+            number of returned matches with the same crowding tag.
+
+    Returns:
+        List[List[aiplatform.matching_engine.matching_engine_index_endpoint.MatchNeighbor]] - A list of nearest neighbors for each query.
+    """
+    aiplatform.init(project=project, location=location)
+
+    _LOGGER.info(
+        f"Finding neighbors with filtering and crowding for index endpoint: {index_endpoint_name}, "
+        f"deployed index ID: {deployed_index_id}, num_neighbors: {num_neighbors}, "
+        f"per_crowding_attribute_neighbor_count: {per_crowding_attribute_neighbor_count}"
+    )
+    _LOGGER.info(f"  Filters: {filter}")
+    _LOGGER.info(f"  Numeric Filters: {numeric_filter}")
+
+    index_endpoint = aiplatform.MatchingEngineIndexEndpoint(
+        index_endpoint_name=index_endpoint_name
+    )
+
+    response = index_endpoint.find_neighbors(
+        deployed_index_id=deployed_index_id,
+        queries=queries,
+        num_neighbors=num_neighbors,
+        filter=filter,
+        numeric_filter=numeric_filter,
+        per_crowding_attribute_neighbor_count=per_crowding_attribute_neighbor_count,
+    )
+
+    _LOGGER.info("Filtering and crowding query results:")
+    for i, query_results in enumerate(response):
+        _LOGGER.info(f"  Query {i+1} results:")
+        for neighbor in query_results:
+            _LOGGER.info(f"    ID: {neighbor.id}, Distance: {neighbor.distance}")
+
+    return response
+# [END aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
+```
+
+#### Step 3.4: Update `if __name__ == "__main__":` block
+
+Modify the `if __name__ == "__main__":` block to include argument parsing for the new functions and example calls. This will allow the samples to be run directly from the command line.
+
+```python
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Vector Search find neighbors samples."
+    )
+    parser.add_argument("--project", type=str, help="Your Google Cloud project ID.")
+    parser.add_argument("--location", type=str, help="The region name (e.g., us-central1).")
+    parser.add_argument(
+        "--index_endpoint_name",
+        type=str,
+        help="The resource name of the IndexEndpoint (e.g., projects/PROJECT_ID/locations/LOCATION/indexEndpoints/ENDPOINT_ID).",
+    )
+    parser.add_argument(
+        "--deployed_index_id",
+        type=str,
+        help="The ID of the DeployedIndex to query against.",
+    )
+    parser.add_argument(
+        "--num_neighbors",
+        type=int,
+        default=5,
+        help="The number of neighbors to return for each query.",
+    )
+    # Add arguments for filtering and crowding if needed for CLI,
+    # but for complex objects like Namespace, it's often better to hardcode examples
+    # in the __main__ block for simplicity in samples.
+
+    args = parser.parse_args()
+
+    # Example usage for vector_search_find_neighbors_hybrid_queries
+    _LOGGER.info("\n--- Running vector_search_find_neighbors_hybrid_queries ---")
+    vector_search_find_neighbors_hybrid_queries(
+        project=args.project,
+        location=args.location,
+        index_endpoint_name=args.index_endpoint_name,
+        deployed_index_id=args.deployed_index_id,
+        num_neighbors=args.num_neighbors,
+    )
+
+    # Example usage for vector_search_find_neighbors_filtering_crowding
+    _LOGGER.info("\n--- Running vector_search_find_neighbors_filtering_crowding ---")
+
+    # Define example queries for filtering and crowding.
+    # Adjust dimensionality to match your index.
+    example_queries_fc = [
+        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+        [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+    ]
+
+    # Define example filters.
+    # These assume your index has attributes 'color', 'shape', and 'cost'.
+    # Adjust attribute names and values to match your index configuration.
+    example_filters = [
+        Namespace(name="color", allow_tokens=["red", "blue"], deny_tokens=[]),
+        Namespace(name="shape", allow_tokens=[], deny_tokens=["square"]),
+    ]
+    example_numeric_filters = [
+        NumericNamespace(name="cost", value_int=5, op="GREATER_EQUAL"),
+        NumericNamespace(name="rating", value_float=4.0, op="GREATER"),
+    ]
+    example_per_crowding_attribute_neighbor_count = 2 # Example value
+
+    vector_search_find_neighbors_filtering_crowding(
+        project=args.project,
+        location=args.location,
+        index_endpoint_name=args.index_endpoint_name,
+        deployed_index_id=args.deployed_index_id,
+        queries=example_queries_fc,
+        num_neighbors=args.num_neighbors,
+        filter=example_filters,
+        numeric_filter=example_numeric_filters,
+        per_crowding_attribute_neighbor_count=example_per_crowding_attribute_neighbor_count,
+    )
+```
+
+### 4. Code Style Guidelines
+
+*   **PEP 8 Compliance**: Ensure all code adheres to PEP 8. Use `black` and `isort` for formatting.
+*   **Type Hinting**: All function signatures should include type hints as demonstrated in the provided function definitions.
+*   **Docstrings**: Follow the existing docstring style (Google style) for functions, including `Args` and `Returns` sections.
+*   **Logging**: Use the `logging` module for informational messages, similar to `_LOGGER.info()`.
+*   **Variable Naming**: Use `snake_case` for variable and function names.
+*   **Imports**: Group imports logically (standard library, third-party, local).
+*   **Region Tags**: Ensure the `[START ...]` and `[END ...]` comments are correctly placed around the function definitions as specified in the PR summary.
+
+### 5. Testing
+
+#### 5.1. Manual Testing
+
+1.  Save the modified `vector_search_find_neighbors_sample.py`.
+2.  Run the script from your terminal, providing your project details:
+    ```bash
+    python samples/model-builder/vector_search/vector_search_find_neighbors_sample.py \
+        --project your-gcp-project-id \
+        --location us-central1 \
+        --index_endpoint_name projects/your-gcp-project-id/locations/us-central1/indexEndpoints/your-index-endpoint-id \
+        --deployed_index_id your-deployed-index-id \
+        --num_neighbors 3
+    ```
+3.  Verify that the output logs show the nearest neighbors for both hybrid and filtering/crowding queries.
+4.  Ensure that the `example_queries_fc`, `example_filters`, and `example_numeric_filters` in the `if __name__ == "__main__":` block are adjusted to match your actual deployed index's vector dimensionality and metadata schema for successful execution.
+
+#### 5.2. System Tests (if applicable)
+
+For samples, system tests are typically run to ensure they work against live GCP resources. If there's an existing system test framework for `vector_search` samples, ensure these new functions are integrated into it. This usually involves:
+*   Creating a temporary IndexEndpoint and DeployedIndex.
+*   Populating it with sample data that includes metadata for filtering and crowding.
+*   Calling the sample functions with the temporary resource names.
+*   Asserting the expected results.
+
+### 6. Documentation and Changelog
+
+*   **Changelog**: Add an entry to `CHANGELOG.md` under the `### Chores` or `### Documentation` section for the next release, describing the addition of these new samples. For example:
+    ```markdown
+    ## [Unreleased]
+
+    ### Chores
+
+    * chore: Add vector search samples for filtering, crowding, and hybrid queries ([#XXXX](https://github.com/googleapis/python-aiplatform/issues/XXXX))
+    ```
+    Replace `XXXX` with the actual PR number.
+
+*   **README.rst**: No direct update to the main `README.rst` is typically needed for individual samples unless they are highlighted as major new features. The `snippet-bot` will handle linking the region tags to the samples.

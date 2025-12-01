@@ -1,0 +1,273 @@
+# Falcon Error Handler Enhancement Implementation Guide
+
+## Overview
+
+This document provides detailed implementation instructions for enhancing Falcon's error handling system to select the most specific error handler available based on the exception's inheritance hierarchy, rather than using LIFO registration order.
+
+## Repository Context
+
+Falcon is a high-performance Python web framework for building REST APIs. The current error handling system registers error handlers in a list and processes them in LIFO (Last-In-First-Out) order. This enhancement changes the system to use a dictionary-based approach that leverages Python's Method Resolution Order (MRO) to find the most specific handler for any given exception.
+
+## Breaking Change Notice
+
+**IMPORTANT**: This implementation introduces a breaking change:
+- Registration order no longer matters except when multiple handlers are registered for the exact same exception type
+- Previously registered handlers for subclasses are no longer overridden by registering a handler for a parent class
+
+## Implementation Plan
+
+### 1. Modify Error Handler Storage
+
+**File**: `falcon/app.py`
+
+Replace the list-based error handler storage with a dictionary-based approach:
+
+```python
+class App(object):
+    def __init__(self, ...):
+        # Change from list to dict
+        self._error_handlers = {}  # Was: self._error_handlers = []
+        
+    def add_error_handler(self, exception, handler=None):
+        """
+        Register a handler for a given exception type.
+        
+        Args:
+            exception: Exception type to handle
+            handler: Function to call when exception is raised
+        
+        Note: Registration order no longer matters for inheritance hierarchy.
+        Only the most specific handler for a given exception type will be used.
+        """
+        if handler is None:
+            # Support decorator syntax
+            return lambda handler: self.add_error_handler(exception, handler)
+        
+        # Store in dict with exception type as key
+        self._error_handlers[exception] = handler
+```
+
+### 2. Implement MRO-Based Handler Lookup
+
+**File**: `falcon/app.py`
+
+Implement the `_find_error_handler` method to use MRO for finding the most specific handler:
+
+```python
+def _find_error_handler(self, ex):
+    """
+    Find the most specific error handler for the given exception.
+    
+    This method uses the exception's MRO (Method Resolution Order) to
+    find the closest matching error handler in the inheritance hierarchy.
+    
+    Args:
+        ex: The exception instance that was raised
+        
+    Returns:
+        The most specific error handler function, or None if no handler found
+    """
+    ex_type = type(ex)
+    
+    # Check for exact match first (fast path)
+    handler = self._error_handlers.get(ex_type)
+    if handler is not None:
+        return handler
+    
+    # Traverse MRO to find the most specific handler
+    # Skip the first element (the exception type itself) since we already checked it
+    for base_type in ex_type.__mro__[1:]:
+        handler = self._error_handlers.get(base_type)
+        if handler is not None:
+            return handler
+    
+    # No handler found
+    return None
+```
+
+### 3. Update Error Handling Logic
+
+**File**: `falcon/app.py`
+
+Modify the main error handling logic to use the new lookup method:
+
+```python
+def _handle_exception(self, req, resp, ex, params):
+    """
+    Handle an exception raised while processing a request.
+    """
+    handler = self._find_error_handler(ex)
+    
+    if handler is not None:
+        try:
+            # Call the error handler
+            handler(ex, req, resp, params)
+        except Exception as handler_ex:
+            # If the error handler itself raises an exception,
+            # log it and fall back to default handling
+            LOGGER.error('Error handler raised %s', handler_ex, exc_info=True)
+            self._compose_error_response(req, resp, ex)
+    else:
+        # No specific handler found, use default handling
+        self._compose_error_response(req, resp, ex)
+```
+
+### 4. Update Documentation
+
+**File**: Update relevant RST documentation files under `docs/`
+
+Add documentation explaining the new behavior:
+
+```rst
+Error Handling
+==============
+
+Falcon now uses the most specific error handler available based on the
+exception's inheritance hierarchy, rather than the registration order.
+
+Example:
+--------
+
+.. code-block:: python
+
+    app = falcon.App()
+    
+    # Register handler for general Exception
+    @app.add_error_handler(Exception)
+    def handle_general_exception(ex, req, resp, params):
+        # This will NOT handle HTTPError or its subclasses
+        # if more specific handlers are available
+        pass
+    
+    # Register handler for HTTPError
+    @app.add_error_handler(falcon.HTTPError) 
+    def handle_http_error(ex, req, resp, params):
+        # This will handle HTTPError and its subclasses
+        # unless an even more specific handler is registered
+        pass
+    
+    # Register handler for HTTPForbidden (subclass of HTTPError)
+    @app.add_error_handler(falcon.HTTPForbidden)
+    def handle_forbidden(ex, req, resp, params):
+        # This is the most specific handler for HTTPForbidden exceptions
+        pass
+
+In this example:
+- HTTPForbidden exceptions will use ``handle_forbidden``
+- Other HTTPError subclasses will use ``handle_http_error``  
+- All other exceptions will use ``handle_general_exception``
+
+Breaking Change:
+----------------
+
+Registration order no longer matters for the inheritance hierarchy.
+Only when multiple handlers are registered for the exact same exception
+type will the most recently registered handler be used.
+```
+
+### 5. Add Comprehensive Tests
+
+**File**: Create/update test files (e.g., `tests/test_app.py`)
+
+Add tests to verify the new behavior:
+
+```python
+def test_error_handler_specificity():
+    """Test that the most specific error handler is selected."""
+    app = falcon.App()
+    
+    call_log = []
+    
+    @app.add_error_handler(Exception)
+    def handle_general(ex, req, resp, params):
+        call_log.append('general')
+    
+    @app.add_error_handler(falcon.HTTPError)
+    def handle_http_error(ex, req, resp, params):
+        call_log.append('http_error')
+    
+    @app.add_error_handler(falcon.HTTPForbidden)
+    def handle_forbidden(ex, req, resp, params):
+        call_log.append('forbidden')
+    
+    # Test that HTTPForbidden uses the most specific handler
+    with pytest.raises(falcon.HTTPForbidden):
+        app._handle_exception(None, None, falcon.HTTPForbidden(), {})
+    
+    assert call_log == ['forbidden']
+    
+    # Test that other HTTPError uses the intermediate handler
+    call_log.clear()
+    with pytest.raises(falcon.HTTPBadRequest):
+        app._handle_exception(None, None, falcon.HTTPBadRequest(), {})
+    
+    assert call_log == ['http_error']
+    
+    # Test that non-HTTP exceptions use the general handler
+    call_log.clear()
+    with pytest.raises(ValueError):
+        app._handle_exception(None, None, ValueError(), {})
+    
+    assert call_log == ['general']
+
+def test_error_handler_registration_order():
+    """Test that registration order only matters for same exception type."""
+    app = falcon.App()
+    
+    call_log = []
+    
+    @app.add_error_handler(falcon.HTTPError)
+    def handler1(ex, req, resp, params):
+        call_log.append('first')
+    
+    @app.add_error_handler(falcon.HTTPError)  
+    def handler2(ex, req, resp, params):
+        call_log.append('second')
+    
+    # The most recently registered handler for the exact same type should be used
+    with pytest.raises(falcon.HTTPError):
+        app._handle_exception(None, None, falcon.HTTPError(), {})
+    
+    assert call_log == ['second']
+```
+
+### 6. Add News Fragment
+
+**File**: Create news fragment in `docs/_newsfragments/`
+
+Create a file like `1514.feature.rst`:
+
+```rst
+Error handlers are now selected based on exception inheritance hierarchy
+rather than registration order. When an exception is raised, Falcon will
+look for the most specific handler available by traversing the exception's
+MRO (Method Resolution Order).
+
+This is a breaking change: registration order no longer matters for the
+inheritance hierarchy, only when multiple handlers are registered for the
+exact same exception type.
+```
+
+## Code Style Guidelines
+
+- Follow existing Falcon naming conventions (snake_case for methods/variables)
+- Maintain the same docstring format as existing code
+- Use type hints if they exist in the codebase
+- Follow the existing error handling patterns
+- Ensure compatibility with Python 2.7, 3.3+ as indicated in Travis config
+
+## Testing Requirements
+
+- Test all Python versions supported by Falcon (2.6-2.7, 3.3-3.5, PyPy, Jython)
+- Test edge cases (no handlers, multiple inheritance, etc.)
+- Verify backward compatibility where possible
+- Ensure performance is not significantly impacted
+
+## Migration Notes for Users
+
+Users should be aware that:
+1. Existing code that relies on LIFO ordering for error handler precedence will need to be updated
+2. Handlers for parent classes no longer override handlers for child classes
+3. The most specific available handler will always be used based on the exception's inheritance hierarchy
+
+This implementation provides a more intuitive and maintainable error handling system that aligns with Python's object-oriented principles.

@@ -1,0 +1,247 @@
+This document outlines the implementation plan for enabling Boto3 resource references with JMESPath queries to automatically load their data from a parent resource. This feature will allow accessing attributes of a referenced resource (e.g., `ni.association.public_ip`) without explicitly calling `load()` on the reference itself, provided the parent resource's data is available or can be loaded.
+
+## 1. Repository Overview
+
+Boto3 is the AWS SDK for Python. It provides a high-level, object-oriented API for interacting with AWS services, built on top of `botocore`. Key components relevant to this feature include:
+
+*   **Resources:** High-level objects representing AWS entities (e.g., `ec2.NetworkInterface`). These are dynamically generated from service models.
+*   **Resource Models:** Define the structure, actions, and relationships (references) between resources.
+*   **`boto3.resources.base.Resource`:** The base class for all Boto3 resource objects. It manages the resource's metadata and data.
+*   **`boto3.resources.base.ResourceMeta`:** A helper class (often an attribute `meta` on `Resource` instances) that holds the raw data (`_data`) for a resource and provides properties for accessing it.
+*   **`boto3.resources.model.Reference`:** A descriptor that defines how one resource relates to another (e.g., `NetworkInterface` has an `Association`). It's responsible for instantiating the referenced resource.
+*   **JMESPath:** A query language for JSON, used in resource models to define how data for a referenced resource can be extracted from its parent's data.
+*   **`botocore.exceptions.ResourceLoadException`:** An exception raised when a resource's data cannot be loaded.
+
+The core idea is to enhance the data access mechanism for referenced resources so that they can intelligently derive their data from their parent, triggering the parent's `load()` method if necessary.
+
+## 2. Implementation Plan
+
+The implementation will involve modifying how referenced resources are instantiated and how their data is accessed. The primary changes will be in `boto3/resources/base.py` (for data loading logic) and `boto3/resources/model.py` (for passing context during instantiation).
+
+### 2.1. Modify `boto3/resources/base.py`
+
+This file contains the base `Resource` class and its associated `ResourceMeta` class, which manages the resource's data.
+
+#### 2.1.1. Update `ResourceMeta.__init__`
+
+The `ResourceMeta` object needs to be aware of its parent resource and the JMESPath expression (`resource_path`) if it's a sub-resource whose data is derived from a parent.
+
+**Pseudo-code for `boto3/resources/base.py`:**
+
+```python
+import jmespath
+from botocore.exceptions import ResourceLoadException
+
+class ResourceMeta(object):
+    def __init__(self, data=None, parent=None, resource_path=None, resource_name=None):
+        """
+        Initializes the ResourceMeta object.
+
+        :param data: Initial data for the resource.
+        :param parent: The parent Resource instance, if this is a sub-resource.
+        :param resource_path: The JMESPath expression to extract this resource's
+                              data from the parent's data.
+        :param resource_name: The name of the resource, used for error messages.
+        """
+        self._data = data
+        self._parent = parent
+        self._resource_path = resource_path
+        self._resource_name = resource_name
+
+    # ... (rest of the class)
+```
+
+#### 2.1.2. Update `ResourceMeta.data` Property
+
+The `data` property's getter is the central point for accessing a resource's raw data. It will be modified to implement the intelligent loading logic.
+
+**Pseudo-code for `boto3/resources/base.py` (within `ResourceMeta` class):**
+
+```python
+    @property
+    def data(self):
+        """
+        Returns the raw data for the resource.
+        If data is not yet loaded, it attempts to load it.
+        For sub-resources with a resource_path, it attempts to load from the parent.
+        """
+        if self._data is None:
+            # If this resource is a sub-resource with a defined path from its parent,
+            # attempt to load its data from the parent.
+            if self._parent is not None and self._resource_path is not None:
+                self._load_from_parent()
+            else:
+                # If it's a top-level resource or a sub-resource without a resource_path,
+                # and its data is still None, it means it hasn't been loaded.
+                # For resources that don't have their own 'load' method (like
+                # NetworkInterfaceAssociation in the problem description), this is
+                # where the ResourceLoadException would typically be raised.
+                raise ResourceLoadException(
+                    "%s has no load method and no data to load." % self._resource_name
+                )
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        self._data = value
+```
+
+#### 2.1.3. Add `_load_from_parent` Method to `ResourceMeta`
+
+This new private method will encapsulate the logic for extracting data from the parent resource.
+
+**Pseudo-code for `boto3/resources/base.py` (within `ResourceMeta` class):**
+
+```python
+    def _load_from_parent(self):
+        """
+        Attempts to load this resource's data by extracting it from its parent's data.
+        If the parent's data is not yet loaded, it will trigger the parent's load method
+        (via accessing `self._parent.meta.data`).
+        """
+        # Accessing parent.meta.data will recursively trigger the parent's
+        # data loading logic if its data is also None. This handles the case
+        # where the parent itself needs to be loaded first.
+        parent_data = self._parent.meta.data
+
+        if parent_data is None:
+            # This scenario should ideally be prevented by the parent's own
+            # data property, but as a safeguard:
+            raise ResourceLoadException(
+                "Parent resource (%s) has no data and could not be loaded "
+                "to provide data for %s." %
+                (self._parent.__class__.__name__, self._resource_name)
+            )
+
+        extracted_data = jmespath.search(self._resource_path, parent_data)
+
+        if extracted_data is None:
+            # JMESPath query returned None, meaning the path didn't exist or matched nothing.
+            # This could indicate missing data or an invalid path.
+            raise ResourceLoadException(
+                "Could not extract data for %s from parent using JMESPath: '%s'. "
+                "Parent data: %s" %
+                (self._resource_name, self._resource_path, parent_data)
+            )
+        self._data = extracted_data
+```
+
+#### 2.1.4. Update `Resource.__init__`
+
+The `Resource` class's `__init__` method needs to pass the `parent`, `resource_path`, and `resource_name` arguments to its `ResourceMeta` instance.
+
+**Pseudo-code for `boto3/resources/base.py` (within `Resource` class):**
+
+```python
+class Resource(object):
+    def __init__(self, *args, **kwargs):
+        # ... existing initialization logic ...
+
+        # Pop 'data', 'parent', 'resource_path' from kwargs if they exist.
+        # These are passed by the Reference descriptor when creating sub-resources.
+        self.meta = ResourceMeta(
+            data=kwargs.pop('data', None),
+            parent=kwargs.pop('parent', None),
+            resource_path=kwargs.pop('resource_path', None),
+            resource_name=self.__class__.__name__ # Pass the resource's name for error messages
+        )
+        # ... rest of init logic ...
+```
+
+### 2.2. Modify `boto3/resources/model.py`
+
+This file likely contains the `Reference` descriptor, which is responsible for creating instances of referenced resources.
+
+#### 2.2.1. Update `Reference.__get__`
+
+The `__get__` method of the `Reference` descriptor needs to retrieve the `resource_path` from its model definition and pass it, along with the parent instance, to the child resource's `__init__`.
+
+**Pseudo-code for `boto3/resources/model.py` (within `Reference` class):**
+
+```python
+class Reference(object):
+    # Assuming __init__ already sets up self._resource_model
+    # which contains the definition of the reference, including resource_path.
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+
+        # Get the target resource class (e.g., NetworkInterfaceAssociation)
+        target_resource_class = self._service_context.get_resource_class(
+            self._resource_model.target.name
+        )
+
+        # Get identifiers for the target resource from the parent instance.
+        # This logic already exists to map parent attributes to child identifiers.
+        identifiers = self._get_identifiers_from_parent(instance)
+
+        # Retrieve the resource_path from the reference model.
+        # This attribute is part of the resource model definition for references.
+        resource_path = self._resource_model.resource_path
+
+        # Create the child resource instance, passing the parent and resource_path
+        child_resource = target_resource_class(
+            *identifiers,
+            parent=instance, # The 'instance' is the parent resource (e.g., ni)
+            resource_path=resource_path
+        )
+        return child_resource
+
+    # ... other methods like _get_identifiers_from_parent ...
+```
+
+### 2.3. Coding Style
+
+*   Adhere to PEP 8 for all new and modified code.
+*   Maintain existing docstring styles and ensure new methods/parameters are well-documented.
+*   Use existing variable naming conventions (e.g., `_private_attribute`).
+*   Ensure necessary imports (`jmespath`, `ResourceLoadException`) are added at the top of the respective files.
+
+## 3. Testing
+
+A comprehensive test suite is crucial to ensure the feature works as expected and does not introduce regressions.
+
+### 3.1. New Test Cases
+
+Add new test cases to an appropriate test file (e.g., `tests/unit/resources/test_base.py` or `tests/unit/resources/test_ec2.py` if specific to EC2 resources). These tests should use `mock` to simulate AWS service responses and resource states.
+
+#### Test Case 1: Parent has data, child extracts successfully.
+
+1.  Create a mock `ParentResource` instance.
+2.  Populate `parent_resource.meta.data` with sample data that includes the structure expected by the child's `resource_path`.
+3.  Create a mock `ChildResource` class with a defined `resource_path`.
+4.  Instantiate `ChildResource` passing `parent=parent_resource` and `resource_path='path.to.child.data'`.
+5.  Access an attribute of the `child_resource` that triggers its `meta.data` property (e.g., `child_resource.some_attribute`).
+6.  Assert that the `child_resource`'s `meta.data` is populated correctly with the extracted data.
+7.  Assert that `parent_resource.load()` was *not* called.
+
+#### Test Case 2: Parent has no data, parent is loadable, child triggers parent load.
+
+1.  Create a mock `ParentResource` instance *without* initial `meta.data`.
+2.  Mock `parent_resource.load()` to populate `parent_resource.meta.data` with sample data when called.
+3.  Create a mock `ChildResource` class with a defined `resource_path`.
+4.  Instantiate `ChildResource` passing `parent=parent_resource` and `resource_path='path.to.child.data'`.
+5.  Access an attribute of the `child_resource` that triggers its `meta.data` property.
+6.  Assert that `parent_resource.load()` was called exactly once.
+7.  Assert that the `child_resource`'s `meta.data` is populated correctly after the parent load.
+
+#### Test Case 3: Parent has no data, parent is NOT loadable, `ResourceLoadException` is raised.
+
+1.  Create a mock `ParentResource` instance *without* initial `meta.data`.
+2.  Ensure `parent_resource` does *not* have a `load()` method, or mock it to raise an exception.
+3.  Create a mock `ChildResource` class with a defined `resource_path`.
+4.  Instantiate `ChildResource` passing `parent=parent_resource` and `resource_path='path.to.child.data'`.
+5.  Attempt to access an attribute of the `child_resource`.
+6.  Assert that `ResourceLoadException` is raised with an appropriate message indicating the parent could not be loaded.
+
+#### Test Case 4: JMESPath query returns `None` (no matching data).
+
+1.  Create a mock `ParentResource` instance.
+2.  Populate `parent_resource.meta.data` with sample data, but ensure the `resource_path` for the child would return `None` (e.g., path does not exist, or matches an empty list/null).
+3.  Create a mock `ChildResource` class with the problematic `resource_path`.
+4.  Instantiate `ChildResource` passing `parent=parent_resource` and `resource_path='non.existent.path'`.
+5.  Attempt to access an attribute of the `child_resource`.
+6.  Assert that `ResourceLoadException` is raised with a message indicating that data could not be extracted using the JMESPath.
+
+By following these steps, the feature will be robustly implemented and thoroughly tested, ensuring it meets the requirements outlined in the problem description.
