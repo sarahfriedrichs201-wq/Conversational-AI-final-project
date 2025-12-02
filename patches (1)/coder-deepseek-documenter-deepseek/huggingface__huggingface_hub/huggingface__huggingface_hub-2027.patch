@@ -1,0 +1,120 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -1,6 +1,7 @@
+ """
+ Hugging Face Hub filesystem implementation.
+ """
++import urllib.parse
+ from contextlib import contextmanager
+ from dataclasses import dataclass
+ from datetime import datetime
+@@ -102,6 +102,24 @@ class HfFileSystem(fsspec.AbstractFileSystem):
+         """
+         return self._repo_and_revision_from_path(path)
+ 
++    def url(self, path: str) -> str:
++        """
++        Get the HTTP URL of the given path.
++        
++        Args:
++            path (str): The Hugging Face Hub path in the format 
++                       "hf://[repo_id][@revision]/path/to/file"
++        
++        Returns:
++            str: The HTTP URL to access the file
++        """
++        parsed_path = self._parse_path(path)
++        base_url = "https://huggingface.co"
++        repo_id = parsed_path.repo_id
++        revision = parsed_path.revision or "main"
++        file_path = parsed_path.path_in_repo.lstrip('/')
++        return f"{base_url}/{repo_id}/resolve/{revision}/{file_path}"
++
+     def _open(
+         self,
+         path: str,
+@@ -249,6 +267,15 @@ class HfFileSystemFile(fsspec.spec.AbstractBufferedFile):
+         """
+         return self.fs.info(self.path)
+ 
++    def url(self) -> str:
++        """
++        Get the HTTP URL for this file.
++        
++        Returns:
++            str: The HTTP URL to access this file
++        """
++        return self.fs.url(self.path)
++
+ 
+ class HfFileSystemStreamFile(fsspec.spec.AbstractBufferedFile):
+     """A file-like object for streaming files from the Hugging Face Hub."""
+@@ -324,6 +351,15 @@ class HfFileSystemStreamFile(fsspec.spec.AbstractBufferedFile):
+         """
+         return self.fs.info(self.path)
+ 
++    def url(self) -> str:
++        """
++        Get the HTTP URL for this streamed file.
++        
++        Returns:
++            str: The HTTP URL to access this file
++        """
++        return self.fs.url(self.path)
++
+ 
+ def safe_join(directory: str, filename: str) -> str:
+     """Safely join directory and filename, preventing directory traversal."""
+diff --git a/tests/test_hf_file_system.py b/tests/test_hf_file_system.py
+--- a/tests/test_hf_file_system.py
++++ b/tests/test_hf_file_system.py
+@@ -1,6 +1,7 @@
+ import json
+ import os
+ import tempfile
++import pytest
+ from pathlib import Path
+ from unittest.mock import Mock, patch
+ 
+@@ -8,6 +9,7 @@ import fsspec
+ import pytest
+ 
+ from huggingface_hub.hf_file_system import HfFileSystem, HfFileSystemFile, safe_join
++from huggingface_hub import HfFileSystem
+ 
+ 
+ @pytest.fixture
+@@ -15,6 +17,32 @@ def hffs():
+     return HfFileSystem()
+ 
+ 
++def test_hf_filesystem_url(hffs):
++    # Test basic URL construction
++    url = hffs.url("hf://bert-base-uncased/pytorch_model.bin")
++    assert url == "https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin"
++    
++    # Test with revision
++    url = hffs.url("hf://bert-base-uncased@v1.0/pytorch_model.bin")
++    assert url == "https://huggingface.co/bert-base-uncased/resolve/v1.0/pytorch_model.bin"
++    
++    # Test with nested paths
++    url = hffs.url("hf://bert-base-uncased/config.json")
++    assert url == "https://huggingface.co/bert-base-uncased/resolve/main/config.json"
++
++    # Test with deep nested path
++    url = hffs.url("hf://bert-base-uncased/some/deep/path/file.txt")
++    assert url == "https://huggingface.co/bert-base-uncased/resolve/main/some/deep/path/file.txt"
++
++
++def test_hf_filesystem_file_url(hffs):
++    with patch.object(hffs, '_open', return_value=Mock(spec=HfFileSystemFile)):
++        file_obj = hffs.open("hf://bert-base-uncased/pytorch_model.bin")
++        file_obj.fs = hffs
++        file_obj.path = "hf://bert-base-uncased/pytorch_model.bin"
++        url = file_obj.url()
++        assert url == "https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin"
++
+ def test_safe_join():
+     # Normal cases
+     assert safe_join("repo", "file.txt") == "repo/file.txt"

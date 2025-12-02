@@ -1,0 +1,128 @@
+diff --git a/src/nlp/arrow_dataset.py b/src/nlp/arrow_dataset.py
+index 1056557..392b957 100644
+--- a/src/nlp/arrow_dataset.py
++++ b/src/nlp/arrow_dataset.py
+@@ -370,6 +370,103 @@
+         else:
+             return self
+ 
++    def filter(
++        self,
++        function,
++        with_indices: bool = False,
++        batched: bool = False,
++        batch_size: Optional[int] = 1000,
++        keep_in_memory: bool = False,
++        load_from_cache_file: bool = True,
++        cache_file_name: Optional[str] = None,
++        writer_batch_size: Optional[int] = 1000,
++        disable_nullable: bool = True,
++    ):
++        """ Apply a filter function to all the elements in the table (individually or in batches)
++            and update the table so that the dataset only includes examples according to the filter function.
++
++            Args:
++                `function` (`callable`): with one of the following signature:
++                    - `function(example: Dict) -> bool` if `batched=False` and `with_indices=False`
++                    - `function(example: Dict, indices: int) -> bool` if `batched=False` and `with_indices=True`
++                    - `function(batch: Dict[List]) -> List[bool]` if `batched=True` and `with_indices=False`
++                    - `function(batch: Dict[List], indices: List[int]) -> List[bool]` if `batched=True` and `with_indices=True`
++                `with_indices` (`bool`, default: `False`): Provide example indices to `function`.
++                `batched` (`bool`, default: `False`): Provide batch of examples to `function`.
++                `batch_size` (`Optional[int]`, default: `1000`): Number of examples per batch provided to `function` if `batched=True`
++                    `batch_size <= 0` or `batch_size == None`: Provide the full dataset as a single batch to `function`
++                `keep_in_memory` (`bool`, default: `False`): Keep the dataset in memory instead of writing it to a cache file.
++                `load_from_cache_file` (`bool`, default: `True`): If a cache file storing the current computation from `function`
++                    can be identified, use it instead of recomputing.
++                `cache_file_name` (`Optional[str]`, default: `None`): Provide the name of a cache file to use to store the
++                    results of the computation instead of the automatically generated cache file name.
++                `writer_batch_size` (`int`, default: `1000`): Number of rows per write operation for the cache file writer.
++                    Higher value gives smaller cache files, lower value consume less temporary memory while running `.map()`.
++                `disable_nullable` (`bool`, default: `True`): Allow null values in the table.
++        """
++        # If the array is empty we do nothing
++        if len(self) == 0:
++            return self
++
++        # If we do batch computation but no batch size is provided, default to the full dataset
++        if batched and (batch_size is None or batch_size <= 0):
++            batch_size = self._data.num_rows
++        elif not batched:
++            batch_size = 1  # For non-batched, process one example at a time
++
++        # Test the function signature and return type
++        test_inputs = self[:batch_size] if batched else self[0]
++        test_indices = list(range(batch_size)) if batched else 0
++        test_output = function(test_inputs, test_indices) if with_indices else function(test_inputs)
++
++        if batched:
++            if not isinstance(test_output, list) or not all(isinstance(x, bool) for x in test_output):
++                raise TypeError(
++                    "Provided `function` which is applied to all elements of table returns a variable of type {}. When using `batched=True`, make sure provided `function` returns a `list` of `bool`.".format(
++                        type(test_output)
++                    )
++                )
++        else:
++            if not isinstance(test_output, bool):
++                raise TypeError(
++                    "Provided `function` which is applied to all elements of table returns a variable of type {}. Make sure provided `function` returns a `bool`.".format(
++                        type(test_output)
++                    )
++                )
++
++        # Check if we've already cached this computation (indexed by a hash)
++        if self._data_files:
++            if cache_file_name is None:
++                # we create a unique hash from the function, current dataset file and the mapping args
++                cache_kwargs = {
++                    "with_indices": with_indices,
++                    "batched": batched,
++                    "batch_size": batch_size,
++                    "keep_in_memory": keep_in_memory,
++                    "load_from_cache_file": load_from_cache_file,
++                    "cache_file_name": cache_file_name,
++                    "writer_batch_size": writer_batch_size,
++                    "disable_nullable": disable_nullable,
++                }
++                cache_file_name = self._get_cache_file_path(function, cache_kwargs)
++            if os.path.exists(cache_file_name) and load_from_cache_file:
++                logger.info("Loading cached filtered dataset at %s", cache_file_name)
++                return Dataset.from_file(cache_file_name)
++
++        # Prepare output buffer and batched writer in memory or on file
++        output_schema = self._data.schema
++        if disable_nullable:
++            output_schema = pa.schema(pa.field(field.name, field.type, nullable=False) for field in output_schema)
++
++        if keep_in_memory or not self._data_files:
++            buf_writer = pa.BufferOutputStream()
++            writer = ArrowWriter(schema=output_schema, stream=buf_writer, writer_batch_size=writer_batch_size)
++        else:
++            buf_writer = None
++            logger.info("Caching filtered dataset at %s", cache_file_name)
++            writer = ArrowWriter(schema=output_schema, path=cache_file_name, writer_batch_size=writer_batch_size)
++
++        # Loop over single examples or batches and write to buffer/file
++        for i in tqdm(range(0, len(self), batch_size)):
++            batch = self[i : i + batch_size]
++            indices = list(range(*(slice(i, i + batch_size).indices(self._data.num_rows))))
++
++            filter_mask = function(batch, indices) if with_indices else function(batch)
++
++            if not batched:  # single example case, batch_size is 1
++                if filter_mask:  # filter_mask is a single bool
++                    writer.write(batch)  # batch here is a single example dict
++            else:  # batched case
++                # Filter the batch based on the mask
++                filtered_batch = {col: [val for j, val in enumerate(batch[col]) if filter_mask[j]] for col in batch}
++                if filtered_batch and any(len(v) > 0 for v in filtered_batch.values()):  # Check if filtered_batch is not empty
++                    writer.write_batch(filtered_batch)
++
++        writer.finalize()
++
++        # Create new Dataset from buffer or file
++        if buf_writer is None:
++            return Dataset.from_file(cache_file_name)
++        else:
++            return Dataset.from_buffer(buf_writer.getvalue())
+```

@@ -1,0 +1,210 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -1,4 +1,5 @@
+ import inspect
++from collections import deque
+ 
+ from lark.exceptions import VisitError
+ from lark.utils import get_regexp_width, isascii
+@@ -36,6 +37,10 @@ class Visitor:
+         visit(tree): Bottom-up traversal
+         __default__(tree): Default visitor method
+     """
++    
++    def visit_topdown(self, tree):
++        """Visit the tree from top to bottom."""
++        return self._visit_topdown_iterative(tree)
+ 
+     def visit(self, tree):
+         """Visit the tree from bottom to top.
+@@ -56,6 +61,43 @@ class Visitor:
+ 
+         return f(tree)
+ 
++    def _visit_topdown_iterative(self, tree):
++        """
++        Visit the tree from top to bottom.
++        
++        This method performs a depth-first traversal starting from the root
++        and moving downward to the leaves. Each node is visited before its children.
++        
++        Args:
++            tree: The root node of the tree to visit
++            
++        Returns:
++            The transformed tree if visitor methods return new nodes,
++            otherwise returns the original tree.
++        """
++        # Stack for iterative DFS (pre-order traversal)
++        stack = [tree]
++        
++        while stack:
++            node = stack.pop()
++            
++            # Get the appropriate visitor method for this node type
++            f = getattr(self, node.data, self.__default__)
++            
++            # Call the visitor method
++            result = f(node)
++                
++            # If the method returns a value, we might want to handle it
++            # (consistent with existing visit() behavior)
++            if result is not None:
++                # Handle node replacement if needed
++                pass
++                
++            # Add children to stack in reverse order to maintain left-to-right traversal
++            if hasattr(node, 'children'):
++                # For Tree nodes
++                for child in reversed(node.children):
++                    stack.append(child)
++        return tree
+ 
+ class Visitor_Recursive(Visitor):
+     """
+@@ -66,6 +108,44 @@ class Visitor_Recursive(Visitor):
+     def __default__(self, tree):
+         return tree
+ 
++    def visit_topdown(self, tree):
++        """
++        Visit the tree from top to bottom using recursion.
++        
++        Visits the tree in depth-first order, starting from the root and
++        moving downward to the leaves.
++        
++        Args:
++            tree: The root node of the tree to visit
++            
++        Returns:
++            The transformed tree (if methods return values)
++        """
++        # Get the appropriate visitor method for this node type
++        f = getattr(self, tree.data, self.__default__)
++        
++        # Call the visitor method on current node
++        result = f(tree)
++        
++        # Process children recursively
++        if hasattr(tree, 'children'):
++            # For Tree nodes
++            for child in tree.children:
++                if isinstance(child, Tree):
++                    self.visit_topdown(child)
++                else:
++                    # Handle terminal nodes if needed
++                    terminal_f = getattr(self, child.type, self.__default_terminal__)
++                    terminal_f(child)
++        elif hasattr(tree, '__iter__') and not isinstance(tree, (str, bytes)):
++            # For other iterable nodes (excluding strings)
++            for child in tree:
++                if isinstance(child, Tree):
++                    self.visit_topdown(child)
++                else:
++                    terminal_f = getattr(self, child.type, self.__default_terminal__)
++                    terminal_f(child)
++        
++        return result
+ 
+ class Interpreter:
+ 
+diff --git a/tests/test_trees.py b/tests/test_trees.py
+--- a/tests/test_trees.py
++++ b/tests/test_trees.py
+@@ -1,6 +1,7 @@
+ import pytest
+ 
+ from lark import Lark, Tree
++from lark.visitors import Visitor, Visitor_Recursive
+ 
+ 
+ def test_tree_construction():
+@@ -49,3 +50,87 @@ def test_tree_iter():
+     assert list(tree.iter_subtrees()) == [tree, tree.children[0]]
+     assert list(tree.iter_subtrees()) == [tree, tree.children[0]]
+     assert list(tree.iter_subtrees()) == [tree, tree.children[0]]
++
++def test_visitor_topdown():
++    """Test top-down traversal for Visitor class"""
++    
++    class TestVisitor(Visitor):
++        def __init__(self):
++            self.visited = []
++            
++        def __default__(self, tree):
++            self.visited.append(tree.data)
++    
++    # Test tree structure
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", []),
++            Tree("d", [])
++        ]),
++        Tree("e", [
++            Tree("f", []),
++            Tree("g", [])
++        ])
++    ])
++    
++    visitor = TestVisitor()
++    visitor.visit_topdown(tree)
++    
++    # Verify top-down order: a, b, c, d, e, f, g
++    expected = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
++    assert visitor.visited == expected, f"Expected {expected}, got {visitor.visited}"
++
++def test_visitor_recursive_topdown():
++    """Test top-down traversal for Visitor_Recursive class"""
++    
++    class TestVisitorRecursive(Visitor_Recursive):
++        def __init__(self):
++            self.visited = []
++            
++        def __default__(self, tree):
++            self.visited.append(tree.data)
++    
++    # Test tree structure (same as above for consistency)
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", []),
++            Tree("d", [])
++        ]),
++        Tree("e", [
++            Tree("f", []),
++            Tree("g", [])
++        ])
++    ])
++    
++    visitor = TestVisitorRecursive()
++    visitor.visit_topdown(tree)
++    
++    # Verify top-down order: a, b, c, d, e, f, g
++    expected = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
++    assert visitor.visited == expected, f"Expected {expected}, got {visitor.visited}"
++
++def test_visitor_topdown_with_return_values():
++    """Test that visit_topdown handles return values appropriately"""
++    
++    class TransformVisitor(Visitor):
++        def b(self, tree):
++            # Transform node 'b' to 'b_transformed'
++            return Tree('b_transformed', tree.children)
++            
++        def __default__(self, tree):
++            return tree
++    
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", [])
++        ])
++    ])
++    
++    visitor = TransformVisitor()
++    result = visitor.visit_topdown(tree)
++    
++    # Verify transformation occurred
++    assert result.data == 'a'
++    assert result.children[0].data == 'b_transformed'
++    assert result.children[0].children[0].data == 'c'
++

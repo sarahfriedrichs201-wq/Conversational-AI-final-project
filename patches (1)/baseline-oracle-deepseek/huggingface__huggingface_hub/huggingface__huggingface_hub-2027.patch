@@ -1,0 +1,336 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -1,6 +1,7 @@
+ import io
+ import os
+ import re
++import warnings
+ from contextlib import contextmanager
+ from dataclasses import dataclass
+ from datetime import datetime
+@@ -17,6 +18,7 @@
+     hf_hub_download,
+     hf_hub_url,
+     try_to_load_from_cache,
++    url_to_filename,
+ )
+ from huggingface_hub.utils import (
+     EntryNotFoundError,
+@@ -25,6 +27,7 @@
+     RepositoryNotFoundError,
+     RevisionNotFoundError,
+     build_hf_headers,
++    get_session,
+     validate_hf_hub_args,
+ )
+ 
+@@ -103,6 +106,7 @@
+         self,
+         path: str,
+         mode: str = "rb",
++        block_size: Optional[int] = None,
+         autocommit: bool = True,
+         cache_options: Optional[Dict] = None,
+         **kwargs,
+@@ -110,6 +114,7 @@
+         return HfFileSystemFile(
+             self,
+             path,
++            block_size=block_size,
+             mode=mode,
+             autocommit=autocommit,
+             cache_options=cache_options,
+@@ -121,6 +126,7 @@
+         self,
+         path: str,
+         mode: str = "rb",
++        block_size: Optional[int] = None,
+         autocommit: bool = True,
+         cache_options: Optional[Dict] = None,
+         **kwargs,
+@@ -128,6 +134,7 @@
+         return HfFileSystemStreamFile(
+             self,
+             path,
++            block_size=block_size,
+             mode=mode,
+             autocommit=autocommit,
+             cache_options=cache_options,
+@@ -135,6 +142,7 @@
+         )
+ 
+     def _open(
++        self,
+         path: str,
+         mode: str = "rb",
+         block_size: Optional[int] = None,
+@@ -142,6 +150,7 @@
+         cache_options: Optional[Dict] = None,
+         **kwargs,
+     ) -> "HfFileSystemFile":
++        warnings.warn("_open is deprecated, use open instead", DeprecationWarning)
+         return self.open(
+             path,
+             mode=mode,
+@@ -151,6 +160,7 @@
+         )
+ 
+     def _rm(self, path: str) -> None:
++        warnings.warn("_rm is deprecated, use rm instead", DeprecationWarning)
+         self.rm(path)
+ 
+     def rm(self, path: str, recursive: bool = False, maxdepth: Optional[int] = None) -> None:
+@@ -165,6 +175,7 @@
+         self._api.delete_file(path, repo_type=repo_type, revision=revision)
+ 
+     def _cp_file(self, path1: str, path2: str, **kwargs) -> None:
++        warnings.warn("_cp_file is deprecated, use cp_file instead", DeprecationWarning)
+         self.cp_file(path1, path2, **kwargs)
+ 
+     def cp_file(self, path1: str, path2: str, **kwargs) -> None:
+@@ -195,6 +206,7 @@
+         self._api.upload_file(path, path_or_fileobj=file, repo_type=repo_type, revision=revision)
+ 
+     def _modified(self, path: str) -> datetime:
++        warnings.warn("_modified is deprecated, use modified instead", DeprecationWarning)
+         return self.modified(path)
+ 
+     def modified(self, path: str) -> datetime:
+@@ -213,6 +225,7 @@
+         return datetime.fromisoformat(commit_info["date"].replace("Z", "+00:00"))
+ 
+     def _info(self, path: str, **kwargs) -> Dict[str, Any]:
++        warnings.warn("_info is deprecated, use info instead", DeprecationWarning)
+         return self.info(path, **kwargs)
+ 
+     def info(self, path: str, **kwargs) -> Dict[str, Any]:
+@@ -294,6 +307,7 @@
+         return info
+ 
+     def _ls(self, path: str, detail: bool = True, refresh: bool = False, **kwargs) -> List[Dict[str, Any]]:
++        warnings.warn("_ls is deprecated, use ls instead", DeprecationWarning)
+         return self.ls(path, detail=detail, refresh=refresh, **kwargs)
+ 
+     def ls(self, path: str, detail: bool = True, refresh: bool = False, **kwargs) -> List[Dict[str, Any]]:
+@@ -348,6 +362,7 @@
+         return files_info
+ 
+     def _walk(self, path: str, **kwargs):
++        warnings.warn("_walk is deprecated, use walk instead", DeprecationWarning)
+         return self.walk(path, **kwargs)
+ 
+     def walk(self, path: str, **kwargs):
+@@ -365,6 +380,7 @@
+         return super().walk(path, **kwargs)
+ 
+     def _exists(self, path: str, **kwargs) -> bool:
++        warnings.warn("_exists is deprecated, use exists instead", DeprecationWarning)
+         return self.exists(path, **kwargs)
+ 
+     def exists(self, path: str, **kwargs) -> bool:
+@@ -383,6 +399,7 @@
+             return False
+ 
+     def _isdir(self, path: str) -> bool:
++        warnings.warn("_isdir is deprecated, use isdir instead", DeprecationWarning)
+         return self.isdir(path)
+ 
+     def isdir(self, path: str) -> bool:
+@@ -394,6 +411,7 @@
+         return self.info(path)["type"] == "directory"
+ 
+     def _isfile(self, path: str) -> bool:
++        warnings.warn("_isfile is deprecated, use isfile instead", DeprecationWarning)
+         return self.isfile(path)
+ 
+     def isfile(self, path: str) -> bool:
+@@ -405,6 +423,7 @@
+         return self.info(path)["type"] == "file"
+ 
+     def _cat_file(self, path: str, start: Optional[int] = None, end: Optional[int] = None, **kwargs) -> bytes:
++        warnings.warn("_cat_file is deprecated, use cat_file instead", DeprecationWarning)
+         return self.cat_file(path, start=start, end=end, **kwargs)
+ 
+     def cat_file(self, path: str, start: Optional[int] = None, end: Optional[int] = None, **kwargs) -> bytes:
+@@ -424,6 +443,7 @@
+         return self._api.hf_hub_download(repo_id, filename, repo_type=repo_type, revision=revision)
+ 
+     def _pipe_file(self, path: str, value: bytes, **kwargs) -> None:
++        warnings.warn("_pipe_file is deprecated, use pipe_file instead", DeprecationWarning)
+         self.pipe_file(path, value, **kwargs)
+ 
+     def pipe_file(self, path: str, value: bytes, **kwargs) -> None:
+@@ -433,6 +453,7 @@
+         self._api.upload_file(path, path_or_fileobj=io.BytesIO(value), repo_type=repo_type, revision=revision)
+ 
+     def _touch(self, path: str, truncate: bool = True, **kwargs) -> None:
++        warnings.warn("_touch is deprecated, use touch instead", DeprecationWarning)
+         self.touch(path, truncate=truncate, **kwargs)
+ 
+     def touch(self, path: str, truncate: bool = True, **kwargs) -> None:
+@@ -442,6 +463,7 @@
+         self._api.upload_file(path, path_or_fileobj=io.BytesIO(b""), repo_type=repo_type, revision=revision)
+ 
+     def _mkdir(self, path: str, create_parents: bool = True, **kwargs) -> None:
++        warnings.warn("_mkdir is deprecated, use mkdir instead", DeprecationWarning)
+         self.mkdir(path, create_parents=create_parents, **kwargs)
+ 
+     def mkdir(self, path: str, create_parents: bool = True, **kwargs) -> None:
+@@ -452,6 +474,7 @@
+         self._api.create_repo(repo_id, repo_type=repo_type, exist_ok=True)
+ 
+     def _makedirs(self, path: str, exist_ok: bool = False) -> None:
++        warnings.warn("_makedirs is deprecated, use makedirs instead", DeprecationWarning)
+         self.makedirs(path, exist_ok=exist_ok)
+ 
+     def makedirs(self, path: str, exist_ok: bool = False) -> None:
+@@ -462,6 +485,7 @@
+         self._api.create_repo(repo_id, repo_type=repo_type, exist_ok=exist_ok)
+ 
+     def _rmdir(self, path: str) -> None:
++        warnings.warn("_rmdir is deprecated, use rmdir instead", DeprecationWarning)
+         self.rmdir(path)
+ 
+     def rmdir(self, path: str) -> None:
+@@ -472,6 +496,7 @@
+         self._api.delete_repo(repo_id, repo_type=repo_type)
+ 
+     def _mv(self, path1: str, path2: str, recursive: bool = False, maxdepth: Optional[int] = None, **kwargs) -> None:
++        warnings.warn("_mv is deprecated, use mv instead", DeprecationWarning)
+         self.mv(path1, path2, recursive=recursive, maxdepth=maxdepth, **kwargs)
+ 
+     def mv(self, path1: str, path2: str, recursive: bool = False, maxdepth: Optional[int] = None, **kwargs) -> None:
+@@ -485,6 +510,7 @@
+         self._api.move_repo(from_id=repo_id1, to_id=repo_id2, repo_type=repo_type)
+ 
+     def _created(self, path: str) -> datetime:
++        warnings.warn("_created is deprecated, use created instead", DeprecationWarning)
+         return self.created(path)
+ 
+     def created(self, path: str) -> datetime:
+@@ -503,6 +529,7 @@
+         return datetime.fromisoformat(commit_info["date"].replace("Z", "+00:00"))
+ 
+     def _checksum(self, path: str) -> str:
++        warnings.warn("_checksum is deprecated, use checksum instead", DeprecationWarning)
+         return self.checksum(path)
+ 
+     def checksum(self, path: str) -> str:
+@@ -511,6 +538,7 @@
+         return self.info(path)["blob_id"]
+ 
+     def _size(self, path: str) -> int:
++        warnings.warn("_size is deprecated, use size instead", DeprecationWarning)
+         return self.size(path)
+ 
+     def size(self, path: str) -> int:
+@@ -519,6 +547,7 @@
+         return self.info(path)["size"]
+ 
+     def _du(self, path: str, total: bool = True, maxdepth: Optional[int] = None, **kwargs) -> Union[int, Dict[str, int]]:
++        warnings.warn("_du is deprecated, use du instead", DeprecationWarning)
+         return self.du(path, total=total, maxdepth=maxdepth, **kwargs)
+ 
+     def du(self, path: str, total: bool = True, maxdepth: Optional[int] = None, **kwargs) -> Union[int, Dict[str, int]]:
+@@ -537,6 +566,7 @@
+         return total_size if total else sizes
+ 
+     def _get_file(self, rpath: str, lpath: str, **kwargs) -> None:
++        warnings.warn("_get_file is deprecated, use get_file instead", DeprecationWarning)
+         self.get_file(rpath, lpath, **kwargs)
+ 
+     def get_file(self, rpath: str, lpath: str, **kwargs) -> None:
+@@ -546,6 +576,7 @@
+         self._api.hf_hub_download(repo_id, filename, repo_type=repo_type, revision=revision, local_dir=os.path.dirname(lpath), local_dir_use_symlinks=False)
+ 
+     def _put_file(self, lpath: str, rpath: str, **kwargs) -> None:
++        warnings.warn("_put_file is deprecated, use put_file instead", DeprecationWarning)
+         self.put_file(lpath, rpath, **kwargs)
+ 
+     def put_file(self, lpath: str, rpath: str, **kwargs) -> None:
+@@ -555,6 +586,7 @@
+         self._api.upload_file(rpath, path_or_fileobj=lpath, repo_type=repo_type, revision=revision)
+ 
+     def _head(self, path: str, size: int = 1024) -> bytes:
++        warnings.warn("_head is deprecated, use head instead", DeprecationWarning)
+         return self.head(path, size=size)
+ 
+     def head(self, path: str, size: int = 1024) -> bytes:
+@@ -562,6 +594,7 @@
+         return self.cat_file(path, end=size)
+ 
+     def _tail(self, path: str, size: int = 1024) -> bytes:
++        warnings.warn("_tail is deprecated, use tail instead", DeprecationWarning)
+         return self.tail(path, size=size)
+ 
+     def tail(self, path: str, size: int = 1024) -> bytes:
+@@ -569,6 +602,7 @@
+         return self.cat_file(path, start=-size)
+ 
+     def _merge(self, path: str, paths: List[str], **kwargs) -> None:
++        warnings.warn("_merge is deprecated, use merge instead", DeprecationWarning)
+         self.merge(path, paths, **kwargs)
+ 
+     def merge(self, path: str, paths: List[str], **kwargs) -> None:
+@@ -578,6 +612,7 @@
+         self._api.upload_file(path, path_or_fileobj=io.BytesIO(b"".join(contents)), repo_type=repo_type, revision=revision)
+ 
+     def _expand_path(self, path: Union[str, List[str]], recursive: bool = False, maxdepth: Optional[int] = None) -> List[str]:
++        warnings.warn("_expand_path is deprecated, use expand_path instead", DeprecationWarning)
+         return self.expand_path(path, recursive=recursive, maxdepth=maxdepth)
+ 
+     def expand_path(self, path: Union[str, List[str]], recursive: bool = False, maxdepth: Optional[int] = None) -> List[str]:
+@@ -585,6 +620,7 @@
+         return super().expand_path(path, recursive=recursive, maxdepth=maxdepth)
+ 
+     def _glob(self, path: str, **kwargs) -> List[str]:
++        warnings.warn("_glob is deprecated, use glob instead", DeprecationWarning)
+         return self.glob(path, **kwargs)
+ 
+     def glob(self, path: str, **kwargs) -> List[str]:
+@@ -592,6 +628,7 @@
+         return super().glob(path, **kwargs)
+ 
+     def _find(self, path: str, maxdepth: Optional[int] = None, withdirs: bool = False, **kwargs) -> List[str]:
++        warnings.warn("_find is deprecated, use find instead", DeprecationWarning)
+         return self.find(path, maxdepth=maxdepth, withdirs=withdirs, **kwargs)
+ 
+     def find(self, path: str, maxdepth: Optional[int] = None, withdirs: bool = False, **kwargs) -> List[str]:
+@@ -599,6 +636,7 @@
+         return super().find(path, maxdepth=maxdepth, withdirs=withdirs, **kwargs)
+ 
+     def _ukey(self, path: str) -> str:
++        warnings.warn("_ukey is deprecated, use ukey instead", DeprecationWarning)
+         return self.ukey(path)
+ 
+     def ukey(self, path: str) -> str:
+@@ -607,6 +645,7 @@
+         return self.info(path)["blob_id"]
+ 
+     def _cat(self, path: str, recursive: bool = False, on_error: str = "raise", **kwargs) -> Union[bytes, Dict[str, bytes]]:
++        warnings.warn("_cat is deprecated, use cat instead", DeprecationWarning)
+         return self.cat(path, recursive=recursive, on_error=on_error, **kwargs)
+ 
+     def cat(self, path: str, recursive: bool = False, on_error: str = "raise", **kwargs) -> Union[bytes, Dict[str, bytes]]:
+@@ -614,6 +653,7 @@
+         return super().cat(path, recursive=recursive, on_error=on_error, **kwargs)
+ 
+     def _cat_ranges(self, paths: List[str], starts: List[int], ends: List[int], **kwargs) -> List[bytes]:
++        warnings.warn("_cat_ranges is deprecated, use cat_ranges instead", DeprecationWarning)
+         return self.cat_ranges(paths, starts, ends, **kwargs)
+ 
+     def cat_ranges(self, paths: List[str], starts: List[int], ends: List[int], **kwargs) -> List[bytes]:
+@@ -621,6 +661,7 @@
+         return super().cat_ranges(paths, starts, ends, **kwargs)
+ 
+     def _pipe(self, path: str, value: bytes, **kwargs) -> None:
++        warnings.warn("_pipe is deprecated, use pipe instead", DeprecationWarning)
+         self.pipe(path, value, **kwargs)
+ 
+     def pipe(self, path: str, value: bytes, **kwargs) -> None:
+@@ -628,6 +669,7 @@
+         return super().pipe(path, value, **kwargs)
+ 
+     def _put(self, lpath: Union[str, List[str]], rpath: Union[str, List[str]], recursive: bool = False, **kwargs) -> None:
++        warnings.warn("_put is deprecated, use put

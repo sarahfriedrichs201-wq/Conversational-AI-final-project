@@ -1,0 +1,201 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -1,4 +1,5 @@
+ # Copyright (c) Microsoft Corporation and Fairlearn contributors.
++# Licensed under the MIT License.
+ 
+ import pandas as pd
+ from typing import Callable, Optional, Union
+@@ -6,6 +7,7 @@
+ from ._annotated_metric_function import AnnotatedMetricFunction
+ from ._disaggregated_result import DisaggregatedResult
+ 
++
+ class DisaggregatedResult:
+     """
+     A container for disaggregated metric results.
+@@ -13,6 +15,7 @@
+     This class holds metric results that are disaggregated by sensitive features.
+     It provides methods to access overall results and results by group.
+     """
++
+     def __init__(
+         self,
+         overall: pd.Series,
+@@ -20,7 +23,7 @@
+         by_group: Optional[pd.DataFrame] = None,
+     ):
+         """
+-        Initialize a DisaggregatedResult instance.
++        Initialize a DisaggregatedResult.
+ 
+         Parameters
+         ----------
+@@ -28,7 +31,7 @@
+             A pandas Series containing the overall metric results.
+         by_group : pandas DataFrame, optional
+             A pandas DataFrame containing metric results disaggregated by group.
+-            If provided, the index should be the group identifiers.
++            The index should be the group identifiers.
+         """
+         self.overall = overall
+         self.by_group = by_group
+@@ -36,7 +39,7 @@
+     @classmethod
+     def create(
+         cls,
+-        data: pd.DataFrame,
++        *,
+         annotated_functions: dict[str, AnnotatedMetricFunction],
+         grouping_names: Optional[list[str]] = None,
+     ) -> "DisaggregatedResult":
+@@ -44,7 +47,6 @@
+         Create a DisaggregatedResult by applying metric functions to data.
+ 
+         Parameters
+-        ----------
+         data : pandas DataFrame
+             The input data on which the metric functions will be applied.
+         annotated_functions : dict[str, AnnotatedMetricFunction]
+@@ -56,7 +58,6 @@
+ 
+         Returns
+         -------
+-        DisaggregatedResult
+             A DisaggregatedResult instance containing overall and by-group results.
+         """
+         if grouping_names is None:
+@@ -64,7 +65,7 @@
+             by_group = None
+         else:
+             overall = cls._apply_functions(
+-                data=data,
++                data,
+                 annotated_functions=annotated_functions,
+                 grouping_names=None,
+             )
+@@ -72,7 +73,7 @@
+                 data=data,
+                 annotated_functions=annotated_functions,
+                 grouping_names=grouping_names,
+-            ).reset_index()
++            )
+         return cls(overall=overall, by_group=by_group)
+ 
+     @staticmethod
+@@ -80,7 +81,6 @@
+         *,
+         data: pd.DataFrame,
+         annotated_functions: dict[str, AnnotatedMetricFunction],
+-        grouping_names: list[str] | None,
+     ) -> pd.Series | pd.DataFrame:
+         """
+         Apply annotated metric functions to a DataFrame.
+@@ -91,7 +91,6 @@
+             The input data on which the metric functions will be applied.
+         annotated_functions : dict[str, AnnotatedMetricFunction]
+             A dictionary where keys are metric names and values are the corresponding annotated metric functions.
+-        grouping_names : list[str] | None
+             A list of column names to group by before applying the metric functions. If None, the functions are applied to the entire DataFrame.
+ 
+         Returns
+@@ -99,17 +98,7 @@
+         Series or DataFrame
+             A Series or DataFrame with the results of the metric functions applied. If grouping_names is provided, the results are grouped accordingly.
+         """
+-        if grouping_names is None:
+-            result = {}
+-            for name, func in annotated_functions.items():
+-                result[name] = func.function(data)
+-            return pd.Series(result)
+-        else:
+-            grouped = data.groupby(grouping_names)
+-            result = grouped.apply(
+-                lambda df: pd.Series(
+-                    {name: func.function(df) for name, func in annotated_functions.items()}
+-                )
+-            )
+-            result.index.names = grouping_names
+-            return result
++        result = {}
++        for name, func in annotated_functions.items():
++            result[name] = func.function(data)
++        return pd.Series(result)
+diff --git a/test/test_disaggregated_result.py b/test/test_disaggregated_result.py
+--- a/test/test_disaggregated_result.py
++++ b/test/test_disaggregated_result.py
+@@ -0,0 +1,73 @@
++# Copyright (c) Microsoft Corporation and Fairlearn contributors.
++# Licensed under the MIT License.
++
++import pandas as pd
++import pytest
++from fairlearn.metrics import DisaggregatedResult, AnnotatedMetricFunction
++
++
++def test_create_overall():
++    """Test DisaggregatedResult.create without grouping."""
++    data = pd.DataFrame({
++        'y_true': [1, 0, 1, 0],
++        'y_pred': [1, 1, 0, 0],
++        'feature': ['a', 'a', 'b', 'b']
++    })
++
++    def accuracy(df):
++        return (df['y_true'] == df['y_pred']).mean()
++
++    def selection_rate(df):
++        return df['y_pred'].mean()
++
++    annotated_funcs = {
++        'accuracy': AnnotatedMetricFunction(
++            function=accuracy,
++            name='accuracy',
++            positional_argument_names=['y_true', 'y_pred']
++        ),
++        'selection_rate': AnnotatedMetricFunction(
++            function=selection_rate,
++            name='selection_rate',
++            positional_argument_names=['y_true', 'y_pred']
++        )
++    }
++
++    result = DisaggregatedResult.create(
++        data=data,
++        annotated_functions=annotated_funcs,
++        grouping_names=None
++    )
++
++    assert result.overall['accuracy'] == 0.5
++    assert result.overall['selection_rate'] == 0.5
++    assert result.by_group is None
++
++
++def test_create_by_group():
++    """Test DisaggregatedResult.create with grouping."""
++    data = pd.DataFrame({
++        'y_true': [1, 0, 1, 0],
++        'y_pred': [1, 1, 0, 0],
++        'feature': ['a', 'a', 'b', 'b']
++    })
++
++    def accuracy(df):
++        return (df['y_true'] == df['y_pred']).mean()
++
++    annotated_funcs = {
++        'accuracy': AnnotatedMetricFunction(
++            function=accuracy,
++            name='accuracy',
++            positional_argument_names=['y_true', 'y_pred']
++        )
++    }
++
++    result = DisaggregatedResult.create(
++        data=data,
++        annotated_functions=annotated_funcs,
++        grouping_names=['feature']
++    )
++
++    assert result.by_group.loc['a', 'accuracy'] == 0.5
++    assert result.by_group.loc['b', 'accuracy'] == 0.5

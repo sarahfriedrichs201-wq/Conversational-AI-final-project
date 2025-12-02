@@ -1,0 +1,361 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -1,6 +1,7 @@
+ import inspect
+ import json
+ import logging
++import sys
+ from collections import defaultdict
+ from typing import Any, Callable, Dict, List, Optional, Type, Union
+ 
+@@ -8,6 +9,7 @@
+ from aws_lambda_powertools.event_handler.api_gateway import Response
+ from aws_lambda_powertools.event_handler.exceptions import BadRequestError, NotFoundError
+ from aws_lambda_powertools.event_handler.middlewares import BaseMiddleware, NextMiddleware
++from aws_lambda_powertools.event_handler.openapi.exceptions import InternalServerError
+ from aws_lambda_powertools.shared import constants
+ from aws_lambda_powertools.shared.functions import resolve_truthy_env_var_choice
+ from aws_lambda_powertools.utilities.data_classes.appsync_resolver_event import (
+@@ -15,6 +17,7 @@
+     AppSyncResolverEvent,
+ )
+ from aws_lambda_powertools.utilities.typing import LambdaContext
++from aws_lambda_powertools.utilities.validation.exceptions import InvalidSchema
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -35,6 +38,7 @@
+         self._current_event: Optional[AppSyncResolverEvent] = None
+         self._current_context: Optional[LambdaContext] = None
+         self._middlewares: List[BaseMiddleware] = []
++        self._exception_handlers: Dict[Type[Exception], Callable] = {}
+ 
+     @property
+     def context(self) -> LambdaContext:
+@@ -56,6 +60,48 @@
+         """
+         return self._current_event
+ 
++    def exception_handler(
++        self, exc_class: Union[Type[Exception], List[Type[Exception]]]
++    ) -> Callable:
++        """
++        Decorator to register a function as an exception handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class: Union[Type[Exception], List[Type[Exception]]]
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable
++            A decorator function that registers the exception handler.
++        """
++
++        def register_exception_handler(func: Callable) -> Callable:
++            if isinstance(exc_class, list):
++                for exc in exc_class:
++                    self._exception_handlers[exc] = func
++            else:
++                self._exception_handlers[exc_class] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: Type) -> Optional[Callable]:
++        """
++        Looks up the registered exception handler for the given exception type or its base classes.
++
++        Parameters
++        ----------
++        exp_type: Type
++            The exception type to look up the handler for.
++
++        Returns
++        -------
++        Callable | None
++            The registered exception handler function if found, otherwise None.
++        """
++        return self._exception_handlers.get(exp_type)
++
+     def use(self, middleware: BaseMiddleware) -> None:
+         """
+         Add a middleware to the AppSync resolver.
+@@ -172,6 +218,7 @@
+         self,
+         event: Dict[str, Any],
+         context: LambdaContext,
++        include_exception_handling: bool = True,
+     ) -> Dict[str, Any]:
+         """
+         Resolves the AppSync event by invoking the appropriate resolver function.
+@@ -180,6 +227,9 @@
+         ----------
+         event: Dict[str, Any]
+             The AppSync resolver event.
++        context: LambdaContext
++            The Lambda context.
++        include_exception_handling: bool
++            Whether to include exception handling. Defaults to True.
+ 
+         Returns
+         -------
+@@ -187,6 +237,7 @@
+             The response from the resolver function.
+         """
+         self._current_event = AppSyncResolverEvent(event)
++        self._current_context = context
+ 
+         # Determine the field name and type name from the event
+         field_name = self._current_event.field_name
+@@ -195,7 +246,6 @@
+         # Find the resolver function
+         resolver_func = self._get_resolver_func(field_name, type_name)
+ 
+-        self._current_context = context
+         # Execute middlewares
+         next_middleware = NextMiddleware(self._middlewares, resolver_func)
+         result = next_middleware(self._current_event, self._current_context)
+@@ -204,6 +254,7 @@
+         return result
+ 
+     def _get_resolver_func(self, field_name: str, type_name: str) -> Callable:
++        """Get the resolver function for the given field and type."""
+         # Check for a resolver registered for the specific type_name.field_name
+         key = f"{type_name}.{field_name}"
+         if key in self._resolvers:
+@@ -216,6 +267,7 @@
+         raise NotFoundError(f"No resolver found for field '{field_name}'")
+ 
+     def _call_user_function(self, func: Callable) -> Dict[str, Any]:
++        """Call the user function with proper argument extraction."""
+         # Get the signature of the function
+         sig = inspect.signature(func)
+         params = sig.parameters
+@@ -246,6 +298,7 @@
+         return func(**kwargs)
+ 
+     def _resolve_field(self, field_name: str, type_name: str) -> Dict[str, Any]:
++        """Resolve a field by calling the appropriate resolver function."""
+         # Get the resolver function
+         resolver_func = self._get_resolver_func(field_name, type_name)
+ 
+@@ -254,7 +307,31 @@
+             # If the resolver is a method, bind it to the instance
+             resolver_func = resolver_func.__get__(self, type(self))
+ 
+-        return self._call_user_function(resolver_func)
++        try:
++            return self._call_user_function(resolver_func)
++        except Exception as exc:
++            # Look for an exception handler
++            handler = self._lookup_exception_handler(type(exc))
++            if handler is None:
++                # Walk up the MRO to find a base class handler
++                for base in type(exc).__mro__[1:]:  # Skip the exact class
++                    handler = self._lookup_exception_handler(base)
++                    if handler is not None:
++                        break
++
++            if handler is not None:
++                try:
++                    return handler(exc)
++                except Exception as handler_exc:
++                    logger.exception(
++                        f"Exception handler for {type(exc).__name__} raised an exception"
++                    )
++                    raise InternalServerError(
++                        "Internal server error"
++                    ) from handler_exc
++            # No handler found, re-raise the original exception
++            raise
++
+ 
+     def resolver(
+         self,
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,28 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    return {"message": "error"}
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    raise ValueError("Error")
++
++
++def lambda_handler(event, context):
++    return app.resolve(event, context)
++
++
++if __name__ == "__main__":
++    # Example event for testing
++    test_event = {
++        "typeName": "Mutation",
++        "fieldName": "createSomething",
++        "arguments": {"id": "test-id"},
++    }
++    result = lambda_handler(test_event, None)
++    print(result)
+diff --git a/tests/functional/event_handler/test_appsync_exception_handler.py b/tests/functional/event_handler/test_appsync_exception_handler.py
+new file mode 100644
+--- /dev/null
++++ b/tests/functional/event_handler/test_appsync_exception_handler.py
+@@ -0,0 +1,124 @@
++import pytest
++from aws_lambda_powertools.event_handler import AppSyncResolver
++from aws_lambda_powertools.event_handler.exceptions import BadRequestError, NotFoundError
++
++
++@pytest.fixture
++def app():
++    return AppSyncResolver()
++
++
++def test_exception_handler_single_exception(app):
++    """Test that a single exception type can be handled."""
++
++    @app.exception_handler(ValueError)
++    def handle_value_error(ex: ValueError):
++        return {"message": "value error handled", "error": str(ex)}
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise ValueError("Test error")
++
++    event = {"typeName": "Query", "fieldName": "testField", "arguments": {}}
++    result = app.resolve(event, None)
++
++    assert result == {"message": "value error handled", "error": "Test error"}
++
++
++def test_exception_handler_multiple_exceptions(app):
++    """Test that multiple exception types can be handled with a single handler."""
++
++    @app.exception_handler([ValueError, TypeError])
++    def handle_errors(ex: Exception):
++        return {"message": f"{type(ex).__name__} handled", "error": str(ex)}
++
++    @app.resolver(field_name="testValueError")
++    def test_value_error():
++        raise ValueError("Value error")
++
++    @app.resolver(field_name="testTypeError")
++    def test_type_error():
++        raise TypeError("Type error")
++
++    # Test ValueError
++    event = {"typeName": "Query", "fieldName": "testValueError", "arguments": {}}
++    result = app.resolve(event, None)
++    assert result == {"message": "ValueError handled", "error": "Value error"}
++
++    # Test TypeError
++    event = {"typeName": "Query", "fieldName": "testTypeError", "arguments": {}}
++    result = app.resolve(event, None)
++    assert result == {"message": "TypeError handled", "error": "Type error"}
++
++
++def test_exception_handler_inheritance(app):
++    """Test that exception handlers work with inheritance (base class handler catches derived exceptions)."""
++
++    class CustomError(ValueError):
++        pass
++
++    @app.exception_handler(ValueError)
++    def handle_value_error(ex: ValueError):
++        return {"message": "base handler", "error": str(ex)}
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise CustomError("Custom error")
++
++    event = {"typeName": "Query", "fieldName": "testField", "arguments": {}}
++    result = app.resolve(event, None)
++
++    assert result == {"message": "base handler", "error": "Custom error"}
++
++
++def test_exception_handler_specific_overrides_general(app):
++    """Test that a more specific exception handler overrides a general one."""
++
++    class CustomError(ValueError):
++        pass
++
++    @app.exception_handler(ValueError)
++    def handle_value_error(ex: ValueError):
++        return {"message": "general handler", "error": str(ex)}
++
++    @app.exception_handler(CustomError)
++    def handle_custom_error(ex: CustomError):
++        return {"message": "specific handler", "error": str(ex)}
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise CustomError("Custom error")
++
++    event = {"typeName": "Query", "fieldName": "testField", "arguments": {}}
++    result = app.resolve(event, None)
++
++    # Should use the specific handler
++    assert result == {"message": "specific handler", "error": "Custom error"}
++
++
++def test_exception_handler_no_handler(app):
++    """Test that unhandled exceptions are re-raised."""
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise ValueError("Unhandled error")
++
++    event = {"typeName": "Query", "fieldName": "testField", "arguments": {}}
++
++    with pytest.raises(ValueError, match="Unhandled error"):
++        app.resolve(event, None)
++
++
++def test_exception_handler_internal_error(app):
++    """Test that exceptions in the handler itself result in InternalServerError."""
++
++    @app.exception_handler(ValueError)
++    def handle_value_error(ex: ValueError):
++        raise RuntimeError("Handler failed")
++
++    @app.resolver(field_name="testField")
++    def test_resolver():
++        raise ValueError("Original error")
++
++    event = {"typeName": "Query", "fieldName": "testField", "arguments": {}}
++    app.resolve(event, None)
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,6 +1,10 @@
+ <!-- changelog is partially generated, so it doesn't follow headings and required structure, so we disable it. -->
+ <!-- markdownlint-disable -->
+ 
++## Features
++
++* **event_handler:** add exception handling mechanism for AppSyncResolver ([#2184](https://github.com/aws-powertools/powertools-lambda-python/issues/2184))
++
+ <a name="unreleased"></a>
+ # Unreleased
+ 
+@@ -10,6 +14,7 @@
+ 
+ ## Features
+ 
++* **event_handler:** add exception handling mechanism for AppSyncResolver ([#2184](https://github.com/aws-powertools/powertools-lambda-python/issues/2184))
+ * **event_source:** Extend CodePipeline Artifact Capabilities ([#5448](https://github.com/aws-powertools/powertools-lambda-python/issues/5448))
+ 
+ ## Maintenance

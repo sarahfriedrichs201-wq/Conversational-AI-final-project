@@ -1,0 +1,42 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -1,5 +1,5 @@
+ import copy
+-from typing import List, Union, Iterable, Iterator as _Iterator, overload, TYPE_CHECKING
++from typing import List, Union, Iterable, Iterator as _Iterator, overload, TYPE_CHECKING, Iterator
+ 
+ if TYPE_CHECKING:
+     from .lexer import Token
+@@ -179,6 +179,30 @@
+         for child in self.children:
+             yield from child.iter_subtrees()
+ 
++    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
++        """
++        Returns all tokens whose type equals the given token_type.
++        
++        This is a recursive function that will find tokens in all the subtrees.
++        
++        Example:
++            >>> term_tokens = tree.find_token('TERM')
++        
++        Args:
++            token_type: The type of token to search for
++            
++        Yields:
++            Tokens matching the specified token_type
++        """
++        # Iterate through all children of the current tree node
++        for child in self.children:
++            if isinstance(child, Tree):
++                # If child is a Tree, recursively search its subtrees
++                yield from child.find_token(token_type)
++            else:
++                # If child is a token, check if it matches the token_type
++                if hasattr(child, 'type') and child.type == token_type:
++                    yield child
++
+     def __eq__(self, other):
+         if not isinstance(other, Tree):
+             return False

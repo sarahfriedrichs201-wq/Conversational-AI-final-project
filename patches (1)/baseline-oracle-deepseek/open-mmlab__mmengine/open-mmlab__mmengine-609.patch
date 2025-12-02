@@ -1,0 +1,70 @@
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -1,6 +1,8 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
+ import inspect
+ import warnings
++import functools
++from typing import Callable
+ 
+ 
+ def is_method_overridden(method, base_class, derived_class):
+@@ -36,3 +38,56 @@
+         return False
+ 
+     return True
++
++
++def deprecated_function(since: str, removed_in: str,
++                        instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from
++    https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A new function, which will be deprecated soon.
++    """
++
++    def decorator(function):
++
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            warnings.warn(
++                f'"{function.__module__}.{function.__name__}" is deprecated '
++                f'in version {since} and will be removed in '
++                f'{removed_in}. {instructions}',
++                category=FutureWarning,
++                stacklevel=2)
++            return function(*args, **kwargs)
++
++        # Add a deprecation note to the docstring.
++        docstring = function.__doc__ or ''
++
++        # Add a newline before the deprecation warning if the docstring is
++        # not empty.
++        if docstring:
++            docstring += '\n\n'
++
++        deprecation_note = (
++            f'.. deprecated:: {since}\n'
++            f'    This function is deprecated and will be removed in version '
++            f'{removed_in}. {instructions}')
++
++        # Split the docstring into lines and indent the deprecation note
++        # to match the existing docstring indentation.
++        lines = docstring.split('\n')
++        indent = ''
++        if lines:
++            indent = lines[-1][:-len(lines[-1].lstrip())]
++        wrapper.__doc__ = docstring + indent + deprecation_note
++        return wrapper
++
++    return decorator

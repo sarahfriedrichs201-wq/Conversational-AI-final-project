@@ -1,0 +1,92 @@
+diff --git a/haystack/dataclasses/byte_stream.py b/haystack/dataclasses/byte_stream.py
+--- a/haystack/dataclasses/byte_stream.py
++++ b/haystack/dataclasses/byte_stream.py
+@@ -1,4 +1,5 @@
+ # SPDX-FileCopyrightText: 2022-present deepset GmbH <info@deepset.ai>
++# SPDX-FileCopyrightText: 2024-present contributors
+ #
+ # SPDX-License-Identifier: Apache-2.0
+ 
+@@ -73,6 +74,25 @@
+         """
+         return cls(data=string.encode(encoding=encoding), metadata=metadata)
+ 
++    def to_string(self, encoding: str = "utf-8") -> str:
++        """
++        Convert the ByteStream to a string, metadata will not be included.
++
++        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
++        :return: The string representation of the ByteStream.
++        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
++        """
++        try:
++            return self.data.decode(encoding)
++        except UnicodeDecodeError as e:
++            # Re-raise with a more informative message if needed, but the default is fine.
++            raise e
++
++    def __str__(self) -> str:
++        """Return a string representation of the ByteStream using default encoding."""
++        # Use the to_string method with default encoding for convenience
++        return self.to_string()
++
+     def __eq__(self, other: object) -> bool:
+         """
+         Compare two ByteStream objects for equality.
+diff --git a/test/dataclasses/test_byte_stream.py b/test/dataclasses/test_byte_stream.py
+--- a/test/dataclasses/test_byte_stream.py
++++ b/test/dataclasses/test_byte_stream.py
+@@ -1,4 +1,5 @@
+ # SPDX-FileCopyrightText: 2022-present deepset GmbH <info@deepset.ai>
++# SPDX-FileCopyrightText: 2024-present contributors
+ #
+ # SPDX-License-Identifier: Apache-2.0
+ 
+@@ -6,6 +7,7 @@
+ 
+ import pytest
+ 
++from haystack.dataclasses import ByteStream
+ from haystack.dataclasses.byte_stream import ByteStream
+ 
+ 
+@@ -56,3 +58,39 @@
+         bs2 = ByteStream(data=b"test", metadata={"key": "value"})
+ 
+         assert bs1 != bs2
++
++    def test_to_string_default_encoding(self):
++        """Test to_string with default encoding (utf-8)."""
++        text = "hello, world!"
++        bs = ByteStream.from_string(text)
++        result = bs.to_string()
++        assert result == text
++        assert isinstance(result, str)
++
++    def test_to_string_custom_encoding(self):
++        """Test to_string with a custom encoding."""
++        text = "hello, world!"
++        bs = ByteStream.from_string(text, encoding="utf-16")
++        result = bs.to_string(encoding="utf-16")
++        assert result == text
++
++    def test_to_string_invalid_encoding(self):
++        """Test to_string raises UnicodeDecodeError for invalid encoding."""
++        bs = ByteStream(data=b"\xff\xfe")  # Some bytes that are not valid utf-8
++        with pytest.raises(UnicodeDecodeError):
++            bs.to_string(encoding="utf-8")
++
++    def test_to_string_empty_bytes(self):
++        """Test to_string with empty bytes."""
++        bs = ByteStream(data=b"")
++        result = bs.to_string()
++        assert result == ""
++
++    def test_str_method(self):
++        """Test __str__ uses to_string with default encoding."""
++        text = "hello, world!"
++        bs = ByteStream.from_string(text)
++        # __str__ should return the same as to_string()
++        assert str(bs) == bs.to_string()
++        # Ensure it's a string
++        assert isinstance(str(bs), str)

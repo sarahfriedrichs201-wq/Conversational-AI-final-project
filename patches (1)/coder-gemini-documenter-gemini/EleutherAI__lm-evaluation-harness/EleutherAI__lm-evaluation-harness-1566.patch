@@ -1,0 +1,404 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,10 +1,104 @@
+ import argparse
++from pathlib import Path
+ import sys
+ import os
+ import logging
+ from typing import List, Union, Optional
+ 
+ # Assuming these imports exist in the original file
++# from lm_eval.api.registry import get_model, get_task, get_tokenizer
++# from lm_eval.evaluator import simple_evaluate
++# from lm_eval.logger import setup_logging
++# from lm_eval.utils import make_table, get_git_commit_hash, get_version_string
++
++
++def setup_parser() -> argparse.ArgumentParser:
++    """
++    Sets up and configures the argument parser for the lm-evaluation-harness CLI.
++
++    All arguments should explicitly define their 'type' for robust validation.
++    """
++    parser = argparse.ArgumentParser(
++        description="Language Model Evaluation Harness",
++        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
++    )
++
++    # --- Model Arguments ---
++    parser.add_argument(
++        "--model",
++        type=str,
++        required=True,
++        help="String specifying the model to use, e.g., 'hf-causal-lm', 'openai', 'vllm'.",
++    )
++    parser.add_argument(
++        "--model_args",
++        type=str,
++        default="",
++        help="String arguments for model initialization. Format: 'key1=value1,key2=value2'.",
++    )
++    parser.add_argument(
++        "--tokenizer",
++        type=str,
++        default=None,
++        help="String specifying the tokenizer to use. Defaults to --model.",
++    )
++    parser.add_argument(
++        "--tokenizer_args",
++        type=str,
++        default="",
++        help="String arguments for tokenizer initialization. Format: 'key1=value1,key2=value2'.",
++    )
++    parser.add_argument(
++        "--trust_remote_code",
++        action="store_true",
++        help="Trust remote code (e.g., from HuggingFace) when loading models/tokenizers.",
++    )
++
++    # --- Task Arguments ---
++    parser.add_argument(
++        "--tasks",
++        type=str,
++        nargs="+",
++        required=True,
++        help="List of tasks to evaluate. Can be a task name, a group name, or a path to a config file.",
++    )
++    parser.add_argument(
++        "--num_fewshot",
++        type=int,
++        default=0,
++        help="Number of examples in few-shot context.",
++    )
++    parser.add_argument(
++        "--limit",
++        type=float,
++        default=None,
++        help="Limit the number of examples per task. Can be a float (fraction) or int (count).",
++    )
++    parser.add_argument(
++        "--description_dict",
++        type=str,
++        default=None,
++        help="Path to a JSON file containing task descriptions.",
++    )
++
++    # --- General Arguments ---
++    parser.add_argument(
++        "--device",
++        type=str,
++        default="cuda",
++        help="Device to use for model inference (e.g., 'cuda', 'cpu', 'mps').",
++    )
++    parser.add_argument(
++        "--batch_size",
++        type=int,
++        default=1,
++        help="Batch size for model inference.",
++    )
++    parser.add_argument(
++        "--output_path",
++        type=str,
++        default=None,
++        help="Path to save the results JSON.",
++    )
++    parser.add_argument(
++        "--no_cache",
++        action="store_true",
++        help="Do not use cached results.",
++    )
++    parser.add_argument(
++        "--seed",
++        type=int,
++        default=0,
++        help="Random seed for reproducibility.",
++    )
++    parser.add_argument(
++        "--verbosity",
++        type=str,
++        default="INFO",
++        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
++        help="Logging verbosity level.",
++    )
++
++    return parser
++
++
++def check_argument_types(parser: argparse.ArgumentParser):
++    """
++    Checks if all user-defined CLI arguments in the parser have an explicit 'type' specified.
++    Raises a TypeError if any argument is found without an explicit type,
++    unless it's an action like 'store_true'/'store_false' which implicitly defines its type.
++    """
++    for action in parser._actions:
++        # Skip positional arguments (no option_strings), and special actions like --help
++        # We are interested in optional arguments that users define.
++        if action.option_strings and action.dest != argparse.SUPPRESS:
++            # Allow store_true/store_false/store_const actions which implicitly define their type
++            # by their 'const' value, even if action.type is None.
++            if action.type is None and action.const is None:
++                raise TypeError(
++                    f"CLI argument '{action.dest}' (option strings: {', '.join(action.option_strings)}) "
++                    "is not explicitly typed. Please specify a 'type' argument when adding it to the parser."
++                )
++
++
+ def parse_eval_args() -> argparse.Namespace:
+     """
+     Parses command-line arguments for evaluation.
++    Calls setup_parser to configure the parser and then parses arguments.
+     """
+-    parser = argparse.ArgumentParser(
+-        description="Language Model Evaluation Harness",
+-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+-    )
+-
+-    # Example arguments (replace with actual arguments from your project)
+-    parser.add_argument("--model", type=str, required=True, help="Model to evaluate")
+-    parser.add_argument("--tasks", type=str, nargs="+", required=True, help="Tasks to evaluate")
+-    parser.add_argument("--num_fewshot", type=int, default=0, help="Number of few-shot examples")
+-    parser.add_argument("--device", type=str, default="cuda", help="Device to use")
+-    # Add more arguments as needed, ensuring 'type' is always specified
+-
++    parser = setup_parser()
++    check_argument_types(parser)  # Validate parser definition
+     args = parser.parse_args()
+     return args
+ 
+@@ -13,6 +107,31 @@
+     """
+     Main entry point for CLI evaluation.
+     """
++    # --- Runtime Type Checks ---
++    if not isinstance(args.model, str):
++        raise TypeError(f"Argument 'model' expected type str, but got {type(args.model).__name__}.")
++    if not isinstance(args.tasks, list):
++        raise TypeError(f"Argument 'tasks' expected type list, but got {type(args.tasks).__name__}.")
++    if not all(isinstance(task, str) for task in args.tasks):
++        raise TypeError(f"All elements in 'tasks' argument must be strings.")
++    if not isinstance(args.num_fewshot, int):
++        raise TypeError(f"Argument 'num_fewshot' expected type int, but got {type(args.num_fewshot).__name__}.")
++    if args.limit is not None and not isinstance(args.limit, (int, float)):
++        raise TypeError(f"Argument 'limit' expected type int or float, but got {type(args.limit).__name__}.")
++    if args.description_dict is not None and not isinstance(args.description_dict, str):
++        raise TypeError(f"Argument 'description_dict' expected type str, but got {type(args.description_dict).__name__}.")
++    if not isinstance(args.device, str):
++        raise TypeError(f"Argument 'device' expected type str, but got {type(args.device).__name__}.")
++    if not isinstance(args.batch_size, int):
++        raise TypeError(f"Argument 'batch_size' expected type int, but got {type(args.batch_size).__name__}.")
++    if args.output_path is not None and not isinstance(args.output_path, str):
++        raise TypeError(f"Argument 'output_path' expected type str, but got {type(args.output_path).__name__}.")
++    if not isinstance(args.no_cache, bool):
++        raise TypeError(f"Argument 'no_cache' expected type bool, but got {type(args.no_cache).__name__}.")
++    if not isinstance(args.seed, int):
++        raise TypeError(f"Argument 'seed' expected type int, but got {type(args.seed).__name__}.")
++    if not isinstance(args.verbosity, str):
++        raise TypeError(f"Argument 'verbosity' expected type str, but got {type(args.verbosity).__name__}.")
++
++    # --- Original cli_evaluate logic starts here ---
+     # Example:
+     # model_name = args.model
+     # tasks_to_evaluate = args.tasks
+diff --git a/tests/test_cli_args.py b/tests/test_cli_args.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_cli_args.py
+@@ -0,0 +1,165 @@
++import pytest
++import argparse
++from unittest.mock import MagicMock
++
++# Import the functions from your main CLI file
++from lm_eval.__main__ import setup_parser, check_argument_types, cli_evaluate
++
++
++@pytest.fixture
++def parser() -> argparse.ArgumentParser:
++    """Fixture to provide a fresh parser for each test."""
++    return setup_parser()
++
++
++# --- Tests for setup_parser and basic argument parsing ---
++
++def test_parser_creation(parser):
++    """Verify that setup_parser returns an ArgumentParser instance."""
++    assert isinstance(parser, argparse.ArgumentParser)
++
++
++def test_model_arg_is_required(parser):
++    """Test that --model is a required argument."""
++    with pytest.raises(SystemExit):  # argparse exits with SystemExit on required arg missing
++        parser.parse_args(["--tasks", "hellaswag"])
++
++
++def test_tasks_arg_is_required(parser):
++    """Test that --tasks is a required argument."""
++    with pytest.raises(SystemExit):
++        parser.parse_args(["--model", "hf-causal-lm"])
++
++
++def test_model_arg_parsing(parser):
++    """Test parsing of the --model argument."""
++    args = parser.parse_args(["--model", "hf-causal-lm", "--tasks", "dummy"])
++    assert args.model == "hf-causal-lm"
++    assert isinstance(args.model, str)
++
++
++def test_tasks_arg_parsing_single(parser):
++    """Test parsing of a single task."""
++    args = parser.parse_args(["--model", "dummy", "--tasks", "hellaswag"])
++    assert args.tasks == ["hellaswag"]
++    assert isinstance(args.tasks, list)
++    assert isinstance(args.tasks[0], str)
++
++
++def test_tasks_arg_parsing_multiple(parser):
++    """Test parsing of multiple tasks."""
++    args = parser.parse_args(["--model", "dummy", "--tasks", "hellaswag", "mmlu"])
++    assert args.tasks == ["hellaswag", "mmlu"]
++    assert isinstance(args.tasks, list)
++    assert all(isinstance(t, str) for t in args.tasks)
++
++
++def test_num_fewshot_arg_parsing_valid(parser):
++    """Test parsing of --num_fewshot with a valid integer."""
++    args = parser.parse_args(["--model", "dummy", "--tasks", "dummy", "--num_fewshot", "5"])
++    assert args.num_fewshot == 5
++    assert isinstance(args.num_fewshot, int)
++
++
++def test_num_fewshot_arg_parsing_invalid_type(parser):
++    """Test --num_fewshot with a non-integer value (argparse should catch)."""
++    with pytest.raises(SystemExit):  # argparse handles basic type errors
++        parser.parse_args(["--model", "dummy", "--tasks", "dummy", "--num_fewshot", "five"])
++
++
++def test_limit_arg_parsing_valid_float(parser):
++    """Test parsing of --limit with a valid float."""
++    args = parser.parse_args(["--model", "dummy", "--tasks", "dummy", "--limit", "0.5"])
++    assert args.limit == 0.5
++    assert isinstance(args.limit, float)
++
++
++def test_no_cache_arg_parsing(parser):
++    """Test parsing of --no_cache (store_true action)."""
++    args = parser.parse_args(["--model", "dummy", "--tasks", "dummy", "--no_cache"])
++    assert args.no_cache is True
++    assert isinstance(args.no_cache, bool)
++
++    args_default = parser.parse_args(["--model", "dummy", "--tasks", "dummy"])
++    assert args_default.no_cache is False
++
++
++def test_default_values(parser):
++    """Test that default values are correctly assigned when arguments are not provided."""
++    args = parser.parse_args(["--model", "dummy", "--tasks", "dummy"])
++    assert args.num_fewshot == 0  # Assuming 0 is the default
++    assert args.device == "cuda"  # Assuming "cuda" is the default
++    assert args.limit is None
++    assert args.batch_size == 1
++    assert args.seed == 0
++    assert args.verbosity == "INFO"
++
++
++# --- Tests for check_argument_types ---
++
++def test_check_argument_types_success():
++    """Test check_argument_types with a parser where all args are explicitly typed."""
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--typed-str", type=str, help="A string argument")
++    parser.add_argument("--typed-int", type=int, help="An integer argument")
++    parser.add_argument("--flag", action="store_true", help="A boolean flag")
++    # This should not raise an error
++    check_argument_types(parser)
++
++
++def test_check_argument_types_failure():
++    """Test check_argument_types with a parser containing an untyped argument."""
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--untyped-arg", help="An argument missing explicit type")  # No type=
++    with pytest.raises(TypeError, match="CLI argument 'untyped_arg' .* is not explicitly typed"):
++        check_argument_types(parser)
++
++
++# --- Tests for cli_evaluate runtime type checks ---
++
++# To test cli_evaluate, we need to mock its internal dependencies
++# as it performs actual evaluation logic. We'll focus on the type checks.
++@pytest.fixture
++def mock_cli_args_base():
++    """Provides a MagicMock for argparse.Namespace with valid default types."""
++    mock_args = MagicMock(spec=argparse.Namespace)
++    # Set up all expected attributes with valid default types
++    mock_args.model = "hf-causal-lm"
++    mock_args.tasks = ["hellaswag"]
++    mock_args.num_fewshot = 0
++    mock_args.device = "cuda"
++    mock_args.model_args = ""
++    mock_args.tokenizer = None
++    mock_args.tokenizer_args = ""
++    mock_args.trust_remote_code = False
++    mock_args.batch_size = 1
++    mock_args.limit = None
++    mock_args.output_path = None
++    mock_args.no_cache = False
++    mock_args.seed = 0
++    mock_args.verbosity = "INFO"
++    mock_args.description_dict = None
++    # Add any other arguments cli_evaluate might access
++    return mock_args
++
++
++def test_cli_evaluate_runtime_model_type_error(mock_cli_args_base):
++    """Test cli_evaluate raises TypeError for incorrect 'model' type."""
++    mock_cli_args_base.model = 123  # Invalid type: int instead of str
++    with pytest.raises(TypeError, match="Argument 'model' expected type str, but got int"):
++        cli_evaluate(mock_cli_args_base)
++
++
++def test_cli_evaluate_runtime_tasks_type_error_not_list(mock_cli_args_base):
++    """Test cli_evaluate raises TypeError for 'tasks' not being a list."""
++    mock_cli_args_base.tasks = "hellaswag"  # Invalid type: str instead of list
++    with pytest.raises(TypeError, match="Argument 'tasks' expected type list, but got str"):
++        cli_evaluate(mock_cli_args_base)
++
++
++def test_cli_evaluate_runtime_tasks_type_error_elements_not_str(mock_cli_args_base):
++    """Test cli_evaluate raises TypeError for elements in 'tasks' not being strings."""
++    mock_cli_args_base.tasks = ["hellaswag", 123]  # Invalid element type
++    with pytest.raises(TypeError, match="All elements in 'tasks' argument must be strings."):
++        cli_evaluate(mock_cli_args_base)
++
++
++def test_cli_evaluate_runtime_num_fewshot_type_error(mock_cli_args_base):
++    """Test cli_evaluate raises TypeError for incorrect 'num_fewshot' type."""
++    mock_cli_args_base.num_fewshot = "5"  # Invalid type: str instead of int
++    with pytest.raises(TypeError, match="Argument 'num_fewshot' expected type int, but got str"):
++        cli_evaluate(mock_cli_args_base)
++
++
++def test_cli_evaluate_runtime_limit_type_error(mock_cli_args_base):
++    """Test cli_evaluate raises TypeError for incorrect 'limit' type."""
++    mock_cli_args_base.limit = ["0.5"]  # Invalid type: list instead of float/int
++    with pytest.raises(TypeError, match="Argument 'limit' expected type int or float, but got list"):
++        cli_evaluate(mock_cli_args_base)
++
++
++def test_cli_evaluate_runtime_no_cache_type_error(mock_cli_args_base):
++    """Test cli_evaluate raises TypeError for incorrect 'no_cache' type."""
++    mock_cli_args_base.no_cache = "True"  # Invalid type: str instead of bool
++    with pytest.raises(TypeError, match="Argument 'no_cache' expected type bool, but got str"):
++        cli_evaluate(mock_cli_args_base)
++
++
++def test_cli_evaluate_runtime_valid_args_no_error(mock_cli_args_base):
++    """Test cli_evaluate runs without TypeErrors for valid arguments."""
++    # This test ensures that when all types are correct, no TypeError is raised.
++    # We mock out the actual evaluation logic to prevent side effects.
++    # The cli_evaluate function itself doesn't return anything, so we just check no exception.
++    try:
++        cli_evaluate(mock_cli_args_base)
++    except TypeError as e:
++        pytest.fail(f"cli_evaluate raised an unexpected TypeError: {e}")

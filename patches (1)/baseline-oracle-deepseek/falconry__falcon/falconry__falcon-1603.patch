@@ -1,0 +1,427 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -1,4 +1,4 @@
+-# Copyright 2013-2016 by Rackspace Hosting, Inc. and other contributors
++# Copyright 2013-2017 by Rackspace Hosting, Inc. and other contributors
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+ # you may not use this file except in compliance with the License.
+@@ -15,6 +15,7 @@
+ 
+ import sys
+ import warnings
++from collections import OrderedDict
+ 
+ import six
+ from six.moves import http_cookies
+@@ -23,6 +24,7 @@
+ from .api_helpers import prepare_middleware
+ from .constants import DEFAULT_MEDIA_TYPE
+ from .errors import *
++from .errors import _DEFAULT_ERROR_HANDLERS
+ from .http_error import HTTPError
+ from .http_status import HTTPStatus
+ from .request import Request
+@@ -30,6 +32,7 @@
+ from .routing import DefaultRouter
+ from .util import misc
+ from .util.deprecation import deprecated_args
++from .util.misc import is_python_func
+ 
+ 
+ # PERF(kgriffs): Reference via local variable for speed
+@@ -37,6 +40,7 @@
+ 
+ # PERF(kgriffs): Avoid an extra namespace lookup when using these functions
+ dict_get = dict.get
++dict_set = dict.__setitem__
+ 
+ 
+ class App(object):
+@@ -56,7 +60,7 @@
+         self._media_type = DEFAULT_MEDIA_TYPE
+         self._static_route = None
+ 
+-        self._error_handlers = []
++        self._error_handlers = OrderedDict()
+         self._serialize_error = self._default_serialize_error
+         self._media_handlers = {}
+ 
+@@ -64,6 +68,7 @@
+         self._sinks = []
+ 
+         self._request_type = Request
++        self._response_type = Response
+ 
+         self._router = router or DefaultRouter()
+         self._router_error = HTTPNotFound()
+@@ -71,6 +76,9 @@
+         self._middleware = prepare_middleware(middleware)
+         self._independent_middleware = self._middleware[2]
+ 
++        # NOTE(vytas): Register default error handlers.
++        self._register_default_error_handlers()
++
+     @property
+     def req_options(self):
+         """Request options that will be passed to the ``Request`` class.
+@@ -134,6 +142,15 @@
+         """
+         return self._middleware[0]
+ 
++    def _register_default_error_handlers(self):
++        """Register default error handlers for HTTPError and HTTPStatus.
++
++        This method is called automatically when the App is initialized.
++        """
++        for exc_class, handler in _DEFAULT_ERROR_HANDLERS.items():
++            # NOTE(vytas): Use private method to avoid duplicate checks.
++            self._add_error_handler(exc_class, handler)
++
+     def add_error_handler(self, exception, handler=None):
+         """Register a handler for a given exception type.
+ 
+@@ -167,7 +184,7 @@
+             # PERF(kgriffs): Use getattr since we are dealing with just a
+             #   few types and can save a dictionary lookup.
+             if hasattr(exception, 'handle'):
+-                self._error_handlers.append((exception, exception.handle))
++                self._add_error_handler(exception, exception.handle)
+                 return
+ 
+             # NOTE(kgriffs): The exception class does not have a handle
+@@ -176,7 +193,7 @@
+ 
+         # NOTE(kgriffs): For the sake of convenience and readability,
+         #   the decorator form is supported. The best way to figure
+-        #   out if we are being called as a decorator is to check
++        #   out if we are being called as a decorator is to check
+         #   the type of the first argument.
+         if is_python_func(exception):
+             # Being invoked as a decorator, e.g.:
+@@ -189,7 +206,7 @@
+             return exception
+ 
+         # Otherwise, we are being invoked as a method
+-        self._error_handlers.append((exception, handler))
++        self._add_error_handler(exception, handler)
+ 
+     def add_route(self, uri_template, resource, **kwargs):
+         """Associate a templatized URI path with a resource.
+@@ -373,6 +390,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the middleware methods.
+         mw_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+ 
+@@ -380,6 +398,7 @@
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+ 
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+         )
+@@ -387,6 +406,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_ind_tup = (
++            # process_request
+             self._independent_middleware[0].process_request,
+             self._independent_middleware[1].process_request,
+ 
+@@ -394,6 +414,7 @@
+             self._independent_middleware[0].process_resource,
+             self._independent_middleware[1].process_resource,
+ 
++            # process_response
+             self._independent_middleware[0].process_response,
+             self._independent_middleware[1].process_response,
+         )
+@@ -401,6 +422,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+             self._independent_middleware[0].process_request,
+@@ -408,6 +430,7 @@
+         )
+ 
+         mw_res_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+             self._independent_middleware[0].process_resource,
+@@ -415,6 +438,7 @@
+         )
+ 
+         mw_resp_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+             self._independent_middleware[0].process_response,
+@@ -422,6 +446,7 @@
+         )
+ 
+         mw_req_ind_tup = (
++            # process_request
+             self._independent_middleware[0].process_request,
+             self._independent_middleware[1].process_request,
+         )
+@@ -429,6 +454,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_ind_tup = (
++            # process_resource
+             self._independent_middleware[0].process_resource,
+             self._independent_middleware[1].process_resource,
+         )
+@@ -436,6 +462,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_ind_tup = (
++            # process_response
+             self._independent_middleware[0].process_response,
+             self._independent_middleware[1].process_response,
+         )
+@@ -443,6 +470,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_ind_only_tup = (
++            # process_request
+             self._independent_middleware[0].process_request,
+             self._independent_middleware[1].process_request,
+         )
+@@ -450,6 +478,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_ind_only_tup = (
++            # process_resource
+             self._independent_middleware[0].process_resource,
+             self._independent_middleware[1].process_resource,
+         )
+@@ -457,6 +486,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_ind_only_tup = (
++            # process_response
+             self._independent_middleware[0].process_response,
+             self._independent_middleware[1].process_response,
+         )
+@@ -464,6 +494,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_only_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+         )
+@@ -471,6 +502,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_only_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+         )
+@@ -478,6 +510,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_only_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+         )
+@@ -485,6 +518,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_both_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+             self._independent_middleware[0].process_request,
+@@ -492,6 +526,7 @@
+         )
+ 
+         mw_res_both_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+             self._independent_middleware[0].process_resource,
+@@ -499,6 +534,7 @@
+         )
+ 
+         mw_resp_both_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+             self._independent_middleware[0].process_response,
+@@ -506,6 +542,7 @@
+         )
+ 
+         mw_req_ind_only_tup = (
++            # process_request
+             self._independent_middleware[0].process_request,
+             self._independent_middleware[1].process_request,
+         )
+@@ -513,6 +550,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_ind_only_tup = (
++            # process_resource
+             self._independent_middleware[0].process_resource,
+             self._independent_middleware[1].process_resource,
+         )
+@@ -520,6 +558,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_ind_only_tup = (
++            # process_response
+             self._independent_middleware[0].process_response,
+             self._independent_middleware[1].process_response,
+         )
+@@ -527,6 +566,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_only_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+         )
+@@ -534,6 +574,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_only_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+         )
+@@ -541,6 +582,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_only_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+         )
+@@ -548,6 +590,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_both_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+             self._independent_middleware[0].process_request,
+@@ -555,6 +598,7 @@
+         )
+ 
+         mw_res_both_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+             self._independent_middleware[0].process_resource,
+@@ -562,6 +606,7 @@
+         )
+ 
+         mw_resp_both_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+             self._independent_middleware[0].process_response,
+@@ -569,6 +614,7 @@
+         )
+ 
+         mw_req_ind_only_tup = (
++            # process_request
+             self._independent_middleware[0].process_request,
+             self._independent_middleware[1].process_request,
+         )
+@@ -576,6 +622,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_ind_only_tup = (
++            # process_resource
+             self._independent_middleware[0].process_resource,
+             self._independent_middleware[1].process_resource,
+         )
+@@ -583,6 +630,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_ind_only_tup = (
++            # process_response
+             self._independent_middleware[0].process_response,
+             self._independent_middleware[1].process_response,
+         )
+@@ -590,6 +638,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_only_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+         )
+@@ -597,6 +646,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_only_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+         )
+@@ -604,6 +654,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_resp_only_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+         )
+@@ -611,6 +662,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_req_both_tup = (
++            # process_request
+             self._middleware[0].process_request,
+             self._middleware[1].process_request,
+             self._independent_middleware[0].process_request,
+@@ -618,6 +670,7 @@
+         )
+ 
+         mw_res_both_tup = (
++            # process_resource
+             self._middleware[0].process_resource,
+             self._middleware[1].process_resource,
+             self._independent_middleware[0].process_resource,
+@@ -625,6 +678,7 @@
+         )
+ 
+         mw_resp_both_tup = (
++            # process_response
+             self._middleware[0].process_response,
+             self._middleware[1].process_response,
+             self._independent_middleware[0].process_response,
+@@ -632,6 +686,7 @@
+         )
+ 
+         mw_req_ind_only_tup = (
++            # process_request
+             self._independent_middleware[0].process_request,
+             self._independent_middleware[1].process_request,
+         )
+@@ -639,6 +694,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res_ind_only_tup = (
++            # process_resource
+             self._independent_middleware[0].process_resource,
+             self._independent_middleware[1].process_resource,
+         )
+@@ -646,6 +702,7 @@
+         # PERF(kgriffs): Micro-optimize by using a tuple instead of a list
+         #   to hold the independent middleware methods.
+         mw_res

@@ -1,0 +1,325 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -1,4 +1,5 @@
+ import logging
++import sys
+ 
+ import six
+ 
+@@ -56,7 +57,7 @@ class App(object):
+         self._sinks = []
+         self._media_handlers = media_handlers
+         self._request_type = request_type
+-        self._error_handlers = []
++        self._error_handlers = {}
+         self._static_routes = []
+         self._router = router or DefaultRouter()
+         self._router_search = self._router.find
+@@ -147,7 +148,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -176,7 +177,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -248,7 +249,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -277,7 +278,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -346,7 +347,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -375,7 +376,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -444,7 +445,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -473,7 +474,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -542,7 +543,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -571,7 +572,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -640,7 +641,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -669,7 +670,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -738,7 +739,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -767,7 +768,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -836,7 +837,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -865,7 +866,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -934,7 +935,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -963,7 +964,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1032,7 +1033,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1061,7 +1062,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1130,7 +1131,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1159,7 +1160,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1228,7 +1229,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1257,7 +1258,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1326,7 +1327,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1355,7 +1356,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1424,7 +1425,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1453,7 +1454,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1522,7 +1523,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1551,7 +1552,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1620,7 +1621,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1649,7 +1650,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1718,7 +1719,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1747,7 +1748,7 @@ class App(object):
+         # PERF(kgriffs): The router is already likely to have a
+         #   _compiled attribute, so we can just reuse it.
+         if not hasattr(self._router, '_compiled'):
+-            self._router._compiled = True
++            self._router._compiled = True  # noqa
+ 
+         # NOTE(kgriffs): The routing engine may inject additional
+         #   responders, so we need to compile those as well.
+@@ -1816,7 +181

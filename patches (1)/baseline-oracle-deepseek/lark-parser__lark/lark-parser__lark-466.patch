@@ -1,0 +1,106 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -1,6 +1,7 @@
+ from abc import ABC, abstractmethod
+ from collections import deque
+ from typing import Callable, Dict, Any, List
++from collections.abc import Iterable
+ 
+ from .tree import Tree
+ from .exceptions import VisitError, GrammarError
+@@ -56,6 +57,18 @@ class Visitor(ABC):
+         """
+         return self._call_userfunc(tree)
+ 
++    def visit_topdown(self, tree):
++        """Visit the tree, top-down.
++
++        Visits the tree, starting at the root, and then visits its children, recursively.
++        Returns the tree.
++        """
++        for subtree in tree.iter_subtrees_topdown():
++            f = getattr(self, subtree.data, self.__default__)
++            if f is not None:
++                f(subtree)
++        return tree
++
+     def _call_userfunc(self, tree):
+         # Assumes tree is already transformed
+         f = getattr(self, tree.data, self.__default__)
+@@ -117,6 +130,18 @@ class Visitor_Recursive(ABC):
+         """
+         return self._call_userfunc(tree)
+ 
++    def visit_topdown(self, tree):
++        """Visit the tree, top-down.
++
++        Visits the tree, starting at the root, and then visits its children, recursively.
++        Returns the tree.
++        """
++        f = getattr(self, tree.data, self.__default__)
++        if f is not None:
++            f(tree)
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
++        return tree
++
+     def _call_userfunc(self, tree):
+         f = getattr(self, tree.data, self.__default__)
+         return f(tree)
+diff --git a/tests/test_trees.py b/tests/test_trees.py
+--- a/tests/test_trees.py
++++ b/tests/test_trees.py
+@@ -1,6 +1,7 @@
+ import pytest
+ 
+ from lark import Tree
++from lark.visitors import Visitor, Visitor_Recursive
+ 
+ 
+ def test_tree_construction():
+@@ -31,3 +32,43 @@ def test_tree_iter_subtrees_topdown():
+     assert list(tree.iter_subtrees_topdown()) == [
+         tree, tree.children[0], tree.children[1]
+     ]
++
++def test_visitor_topdown():
++    class TestVisitor(Visitor):
++        def __init__(self):
++            self.visited = []
++        def __default__(self, tree):
++            self.visited.append(tree.data)
++
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", []),
++            Tree("d", [])
++        ]),
++        Tree("e", [
++            Tree("f", []),
++            Tree("g", [])
++        ])
++    ])
++
++    visitor = TestVisitor()
++    visitor.visit_topdown(tree)
++    assert visitor.visited == ["a", "b", "c", "d", "e", "f", "g"]
++
++def test_visitor_recursive_topdown():
++    class TestVisitor(Visitor_Recursive):
++        def __init__(self):
++            self.visited = []
++        def __default__(self, tree):
++            self.visited.append(tree.data)
++
++    tree = Tree("a", [
++        Tree("b", [
++            Tree("c", []),
++            Tree("d", [])
++        ]),
++        Tree("e", [Tree("f", []), Tree("g", [])])
++    ])
++    visitor = TestVisitor()
++    visitor.visit_topdown(tree)
++    assert visitor.visited == ["a", "b", "c", "d", "e", "f", "g"]

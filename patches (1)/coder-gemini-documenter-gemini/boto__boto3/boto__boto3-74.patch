@@ -1,0 +1,138 @@
+diff --git a/boto3/resources/base.py b/boto3/resources/base.py
+--- a/boto3/resources/base.py
++++ b/boto3/resources/base.py
+@@ -1,6 +1,8 @@
+ import logging
+ 
+ from botocore.exceptions import ClientError
+-from botocore.exceptions import DataNotFoundError
+ from botocore.exceptions import ParamValidationError
++from botocore.exceptions import ResourceLoadException
++import jmespath
+ 
+ logger = logging.getLogger(__name__)
+@@ -16,13 +18,29 @@
+ class ResourceMeta(object):
+     def __init__(self, data=None, client=None, resource_model=None,
+                  identifiers=None):
++    def __init__(self, data=None, client=None, resource_model=None,
++                 identifiers=None, parent=None, resource_path=None,
++                 resource_name=None):
++        """
++        Initializes the ResourceMeta object.
++
++        :param data: Initial data for the resource.
++        :param client: The low-level client for the service.
++        :param resource_model: The resource model for this resource.
++        :param identifiers: A list of identifier values for this resource.
++        :param parent: The parent Resource instance, if this is a sub-resource.
++        :param resource_path: The JMESPath expression to extract this resource's
++                              data from the parent's data.
++        :param resource_name: The name of the resource, used for error messages.
++        """
+         self._data = data
+         self._client = client
+         self._resource_model = resource_model
+         self._identifiers = identifiers if identifiers is not None else []
+         self._resource_name = resource_model.name if resource_model else None
++        self._parent = parent
++        self._resource_path = resource_path
++        if resource_name is not None:
++            self._resource_name = resource_name
+ 
+-    @property
+-    def data(self):
+-        return self._data
+-
+-    @data.setter
+-    def data(self, value):
+-        self._data = value
++    @property
++    def data(self):
++        """
++        Returns the raw data for the resource.
++        If data is not yet loaded, it attempts to load it.
++        For sub-resources with a resource_path, it attempts to load from the parent.
++        """
++        if self._data is None:
++            if self._parent is not None and self._resource_path is not None:
++                self._load_from_parent()
++            else:
++                # If it's a top-level resource or a sub-resource without a resource_path,
++                # and its data is still None, it means it hasn't been loaded.
++                # For resources that don't have their own 'load' method (like
++                # NetworkInterfaceAssociation in the problem description), this is
++                # where the ResourceLoadException would typically be raised.
++                raise ResourceLoadException(
++                    "%s has no load method and no data to load." % self._resource_name
++                )
++        return self._data
++
++    @data.setter
++    def data(self, value):
++        self._data = value
++
++    def _load_from_parent(self):
++        """
++        Attempts to load this resource's data by extracting it from its parent's data.
++        If the parent's data is not yet loaded, it will trigger the parent's load method
++        (via accessing `self._parent.meta.data`).
++        """
++        # Accessing parent.meta.data will recursively trigger the parent's
++        # data loading logic if its data is also None. This handles the case
++        # where the parent itself needs to be loaded first.
++        parent_data = self._parent.meta.data
++
++        if parent_data is None:
++            # This scenario should ideally be prevented by the parent's own
++            # data property, but as a safeguard:
++            raise ResourceLoadException(
++                "Parent resource (%s) has no data and could not be loaded "
++                "to provide data for %s." %
++                (self._parent.__class__.__name__, self._resource_name)
++            )
++
++        extracted_data = jmespath.search(self._resource_path, parent_data)
++
++        if extracted_data is None:
++            # JMESPath query returned None, meaning the path didn't exist or matched nothing.
++            # This could indicate missing data or an invalid path.
++            raise ResourceLoadException(
++                "Could not extract data for %s from parent using JMESPath: '%s'. "
++                "Parent data: %s" %
++                (self._resource_name, self._resource_path, parent_data)
++            )
++        self._data = extracted_data
+ 
+ 
+ class Resource(object):
+@@ -107,7 +160,10 @@
+             data=kwargs.pop('data', None),
+             client=client,
+             resource_model=resource_model,
+-            identifiers=identifiers
++            identifiers=identifiers,
++            parent=kwargs.pop('parent', None),
++            resource_path=kwargs.pop('resource_path', None),
++            resource_name=self.__class__.__name__
+         )
+         self._transfer_attributes_to_resource()
+ 
+diff --git a/boto3/resources/model.py b/boto3/resources/model.py
+--- a/boto3/resources/model.py
++++ b/boto3/resources/model.py
+@@ -105,9 +105,13 @@
+         target_resource_class = self._service_context.get_resource_class(
+             self._resource_model.target.name
+         )
+-        identifiers = self._get_identifiers_from_parent(instance)
++        identifiers = self._get_identifiers_from_parent(instance) 
++        resource_path = self._resource_model.resource_path
++
+         child_resource = target_resource_class(
+             *identifiers,
++            parent=instance,
++            resource_path=resource_path
+         )
+         return child_resource
+ 

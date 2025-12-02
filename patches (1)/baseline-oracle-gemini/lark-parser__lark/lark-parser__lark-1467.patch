@@ -1,0 +1,37 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -3,13 +1,13 @@
+ 
+ from typing import List, Callable, Iterator, Union, Optional, Generic, TypeVar, TYPE_CHECKING
+ 
++from .lexer import Token
++
+ if TYPE_CHECKING:
+-    from .lexer import TerminalDef, Token
++    from .lexer import TerminalDef
+     try:
+         import rich
+     except ImportError:
+         pass
+     from typing import Literal
+ 
+-###{standalone
+-
+ class Meta:
+ 
+     empty: bool
+@@ -204,6 +202,13 @@
+                 if pred(c):
+                     yield c
+ 
++    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
++        """Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++        """
++        return self.scan_values(lambda v: isinstance(v, Token) and v.type == token_type)
++
+     def __deepcopy__(self, memo):
+         return type(self)(self.data, deepcopy(self.children, memo), meta=self._meta)
+ 

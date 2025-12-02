@@ -1,0 +1,597 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,4 +1,5 @@
+ import argparse
++import sys
+ import lm_eval.models as models
+ import lm_eval.tasks as tasks
+ import lm_eval.evaluator as evaluator
+@@ -6,7 +7,7 @@
+ import json
+ 
+ 
+-def parse_eval_args():
++def setup_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(
+         description="Language Model Evaluation Harness",
+         formatter_class=argparse.RawTextHelpFormatter,
+@@ -14,6 +15,7 @@
+     parser.add_argument(
+         "--model",
+         type=str,
++        required=True,
+         help="Name of model to use",
+     )
+     parser.add_argument(
+@@ -24,7 +26,7 @@
+     parser.add_argument(
+         "--tasks",
+         type=str,
+-        default=None,
++        default="",
+         help="Tasks to evaluate. Use comma separation for multiple tasks",
+     )
+     parser.add_argument(
+@@ -32,7 +34,7 @@
+         type=str,
+         default=None,
+         help="Provide description of the model, dataset, and "
+-        "adapters as a JSON file or string. If not provided, "
++        "adapters as a JSON file or string. If not provided,"
+         "the information is assumed to be included in "
+         "model_args or task_args",
+     )
+@@ -40,7 +42,7 @@
+         "--num_fewshot",
+         type=int,
+         default=None,
+-        help="Number of examples in few-shot context",
++        help="Number of examples in few-shot context"
+     )
+     parser.add_argument(
+         "--batch_size",
+@@ -51,7 +53,7 @@
+     parser.add_argument(
+         "--max_batch_size",
+         type=int,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--device",
+@@ -62,7 +64,7 @@
+     parser.add_argument(
+         "--output_path",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--limit",
+@@ -73,7 +75,7 @@
+     parser.add_argument(
+         "--use_cache",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--decontamination_ngrams_path",
+@@ -84,7 +86,7 @@
+     parser.add_argument(
+         "--check_integrity",
+         action="store_true",
+-        help="Whether to run the relevant part of the test suite for the tasks",
++        help="Whether to run the relevant part of the test suite for the tasks"
+     )
+     parser.add_argument(
+         "--write_out",
+@@ -95,7 +97,7 @@
+     parser.add_argument(
+         "--log_samples",
+         action="store_true",
+-        help="Whether to write out all the output samples to output_path/samples.json",
++        help="Whether to write out all the output samples to output_path/samples.json"
+     )
+     parser.add_argument(
+         "--show_config",
+@@ -106,7 +108,7 @@
+     parser.add_argument(
+         "--include_path",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--gen_kwargs",
+@@ -117,7 +119,7 @@
+     parser.add_argument(
+         "--verbosity",
+         type=str,
+-        default="INFO",
++        default="INFO"
+     )
+     parser.add_argument(
+         "--wandb_args",
+@@ -128,7 +130,7 @@
+     parser.add_argument(
+         "--predict_only",
+         action="store_true",
+-        help="Use with log_samples. Only model outputs will be saved and no evaluation will be run.",
++        help="Use with log_samples. Only model outputs will be saved and no evaluation will be run."
+     )
+     parser.add_argument(
+         "--task_args",
+@@ -139,7 +141,7 @@
+     parser.add_argument(
+         "--task_manager",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--seed",
+@@ -150,7 +152,7 @@
+     parser.add_argument(
+         "--trust_remote_code",
+         action="store_true",
+-        help="If set, will trust remote code from HuggingFace models and datasets.",
++        help="If set, will trust remote code from HuggingFace models and datasets."
+     )
+     parser.add_argument(
+         "--accelerator",
+@@ -161,7 +163,7 @@
+     parser.add_argument(
+         "--precision",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--save_every",
+@@ -172,7 +174,7 @@
+     parser.add_argument(
+         "--load_every",
+         type=int,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_jsonl",
+@@ -183,7 +185,7 @@
+     parser.add_argument(
+         "--export_csv",
+         action="store_true",
+-        help="Export results to CSV format",
++        help="Export results to CSV format"
+     )
+     parser.add_argument(
+         "--export_tsv",
+@@ -194,7 +196,7 @@
+     parser.add_argument(
+         "--export_md",
+         action="store_true",
+-        help="Export results to Markdown format",
++        help="Export results to Markdown format"
+     )
+     parser.add_argument(
+         "--export_latex",
+@@ -205,7 +207,7 @@
+     parser.add_argument(
+         "--export_sqlite",
+         action="store_true",
+-        help="Export results to SQLite database",
++        help="Export results to SQLite database"
+     )
+     parser.add_argument(
+         "--export_sqlite_table",
+@@ -216,7 +218,7 @@
+     parser.add_argument(
+         "--export_sqlite_overwrite",
+         action="store_true",
+-        help="Overwrite existing SQLite table",
++        help="Overwrite existing SQLite table"
+     )
+     parser.add_argument(
+         "--export_sqlite_index",
+@@ -227,7 +229,7 @@
+     parser.add_argument(
+         "--export_sqlite_commit",
+         action="store_true",
+-        help="Commit changes to SQLite database",
++        help="Commit changes to SQLite database"
+     )
+     parser.add_argument(
+         "--export_sqlite_close",
+@@ -238,7 +240,7 @@
+     parser.add_argument(
+         "--export_sqlite_path",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_db",
+@@ -249,7 +251,7 @@
+     parser.add_argument(
+         "--export_sqlite_if_exists",
+         type=str,
+-        default="fail",
++        default="fail"
+     )
+     parser.add_argument(
+         "--export_sqlite_chunksize",
+@@ -260,7 +262,7 @@
+     parser.add_argument(
+         "--export_sqlite_dtype",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_method",
+@@ -271,7 +273,7 @@
+     parser.add_argument(
+         "--export_sqlite_name",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_con",
+@@ -282,7 +284,7 @@
+     parser.add_argument(
+         "--export_sqlite_schema",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_if_not_exists",
+@@ -293,7 +295,7 @@
+     parser.add_argument(
+         "--export_sqlite_index_label",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_engine",
+@@ -304,7 +306,7 @@
+     parser.add_argument(
+         "--export_sqlite_compression",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_quoting",
+@@ -315,7 +317,7 @@
+     parser.add_argument(
+         "--export_sqlite_escapechar",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_chunksize",
+@@ -326,7 +328,7 @@
+     parser.add_argument(
+         "--export_sqlite_date_format",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_datetime_format",
+@@ -337,7 +339,7 @@
+     parser.add_argument(
+         "--export_sqlite_mode",
+         type=str,
+-        default="w",
++        default="w"
+     )
+     parser.add_argument(
+         "--export_sqlite_storage_options",
+@@ -348,7 +350,7 @@
+     parser.add_argument(
+         "--export_sqlite_errors",
+         type=str,
+-        default="strict",
++        default="strict"
+     )
+     parser.add_argument(
+         "--export_sqlite_verbose",
+@@ -359,7 +361,7 @@
+     parser.add_argument(
+         "--export_sqlite_force_ascii",
+         action="store_true",
+-        help="Force ASCII encoding for SQLite export",
++        help="Force ASCII encoding for SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_encoding",
+@@ -370,7 +372,7 @@
+     parser.add_argument(
+         "--export_sqlite_decimal",
+         type=str,
+-        default=".",
++        default="."
+     )
+     parser.add_argument(
+         "--export_sqlite_thousands",
+@@ -381,7 +383,7 @@
+     parser.add_argument(
+         "--export_sqlite_float_format",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_sparsify",
+@@ -392,7 +394,7 @@
+     parser.add_argument(
+         "--export_sqlite_index_names",
+         action="store_true",
+-        help="Include index names in SQLite export",
++        help="Include index names in SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_na_rep",
+@@ -403,7 +405,7 @@
+     parser.add_argument(
+         "--export_sqlite_inf_rep",
+         type=str,
+-        default="inf",
++        default="inf"
+     )
+     parser.add_argument(
+         "--export_sqlite_formatters",
+@@ -414,7 +416,7 @@
+     parser.add_argument(
+         "--export_sqlite_columns",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_header",
+@@ -425,7 +427,7 @@
+     parser.add_argument(
+         "--export_sqlite_line_terminator",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_quotechar",
+@@ -436,7 +438,7 @@
+     parser.add_argument(
+         "--export_sqlite_doublequote",
+         action="store_true",
+-        help="Use double quotes for SQLite export",
++        help="Use double quotes for SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_escapechar",
+@@ -447,7 +449,7 @@
+     parser.add_argument(
+         "--export_sqlite_comment",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_encoding_errors",
+@@ -458,7 +460,7 @@
+     parser.add_argument(
+         "--export_sqlite_style",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_merge_cells",
+@@ -469,7 +471,7 @@
+     parser.add_argument(
+         "--export_sqlite_freeze_panes",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_engine_kwargs",
+@@ -480,7 +482,7 @@
+     parser.add_argument(
+         "--export_sqlite_converters",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_dtype_backend",
+@@ -491,7 +493,7 @@
+     parser.add_argument(
+         "--export_sqlite_verbose",
+         action="store_true",
+-        help="Verbose output for SQLite export",
++        help="Verbose output for SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_store_index",
+@@ -502,7 +504,7 @@
+     parser.add_argument(
+         "--export_sqlite_index_col",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_skip_blank_lines",
+@@ -513,7 +515,7 @@
+     parser.add_argument(
+         "--export_sqlite_parse_dates",
+         action="store_true",
+-        help="Parse dates in SQLite export",
++        help="Parse dates in SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_infer_datetime_format",
+@@ -524,7 +526,7 @@
+     parser.add_argument(
+         "--export_sqlite_keep_date_col",
+         action="store_true",
+-        help="Keep date columns in SQLite export",
++        help="Keep date columns in SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_date_parser",
+@@ -535,7 +537,7 @@
+     parser.add_argument(
+         "--export_sqlite_dayfirst",
+         action="store_true",
+-        help="Parse dates with day first in SQLite export",
++        help="Parse dates with day first in SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_cache_dates",
+@@ -546,7 +548,7 @@
+     parser.add_argument(
+         "--export_sqlite_iterator",
+         action="store_true",
+-        help="Use iterator for SQLite export",
++        help="Use iterator for SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_chunksize",
+@@ -557,7 +559,7 @@
+     parser.add_argument(
+         "--export_sqlite_compression",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_thousands",
+@@ -568,7 +570,7 @@
+     parser.add_argument(
+         "--export_sqlite_decimal",
+         type=str,
+-        default=".",
++        default="."
+     )
+     parser.add_argument(
+         "--export_sqlite_lineterminator",
+@@ -579,7 +581,7 @@
+     parser.add_argument(
+         "--export_sqlite_quotechar",
+         type=str,
+-        default='"',
++        default='"'
+     )
+     parser.add_argument(
+         "--export_sqlite_quoting",
+@@ -590,7 +592,7 @@
+     parser.add_argument(
+         "--export_sqlite_doublequote",
+         action="store_true",
+-        help="Use double quotes for SQLite export",
++        help="Use double quotes for SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_escapechar",
+@@ -601,7 +603,7 @@
+     parser.add_argument(
+         "--export_sqlite_comment",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_encoding",
+@@ -612,7 +614,7 @@
+     parser.add_argument(
+         "--export_sqlite_dialect",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_error_bad_lines",
+@@ -623,7 +625,7 @@
+     parser.add_argument(
+         "--export_sqlite_warn_bad_lines",
+         action="store_true",
+-        help="Warn about bad lines in SQLite export",
++        help="Warn about bad lines in SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_delim_whitespace",
+@@ -634,7 +636,7 @@
+     parser.add_argument(
+         "--export_sqlite_low_memory",
+         action="store_true",
+-        help="Use low memory mode for SQLite export",
++        help="Use low memory mode for SQLite export"
+     )
+     parser.add_argument(
+         "--export_sqlite_memory_map",
+@@ -645,7 +647,7 @@
+     parser.add_argument(
+         "--export_sqlite_float_precision",
+         type=int,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_storage_options",
+@@ -656,7 +658,7 @@
+     parser.add_argument(
+         "--export_sqlite_dtype_backend",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_engine",
+@@ -667,7 +669,7 @@
+     parser.add_argument(
+         "--export_sqlite_converters",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_true_values",
+@@ -678,7 +680,7 @@
+     parser.add_argument(
+         "--export_sqlite_false_values",
+         type=str,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_skipinitialspace",
+@@ -689,7 +691,7 @@
+     parser.add_argument(
+         "--export_sqlite_skiprows",
+         type=int,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_skipfooter",
+@@ -700,7 +702,7 @@
+     parser.add_argument(
+         "--export_sqlite_nrows",
+         type=int,
+-        default=None,
++        default=None
+     )
+     parser.add_argument(
+         "--export_sqlite_na_values",
+@@ -711,7 +713,7 @@
+     parser.add_argument(
+         "--export_sqlite_keep_default_na",
+         action="store_true",

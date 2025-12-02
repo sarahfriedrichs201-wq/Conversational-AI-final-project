@@ -1,0 +1,50 @@
+diff --git a/faker/providers/company/ja_JP/__init__.py b/faker/providers/company/ja_JP/__init__.py
+--- a/faker/providers/company/ja_JP/__init__.py
++++ b/faker/providers/company/ja_JP/__init__.py
+@@ -1,3 +1,41 @@
+ from .. import Provider as CompanyProvider
+ 
+ 
++class Provider(CompanyProvider):
++    """
++    Japanese company provider
++    """
++    
++    # Company categories sourced from Ruby Faker's ja.yml
++    company_categories = [
++        '株式会社',
++        '有限会社',
++        '合名会社',
++        '合資会社',
++        '合同会社',
++        '一般社団法人',
++        '公益社団法人',
++        '一般財団法人',
++        '公益財団法人',
++        '医療法人',
++        '学校法人',
++        '宗教法人',
++        '社会福祉法人',
++        '特定非営利活動法人',
++        '独立行政法人',
++        '国立大学法人',
++        '公立大学法人',
++        '企業',
++        '個人事業主',
++        '協同組合',
++        '信用金庫',
++        '信用組合',
++        '労働金庫',
++        '農協',
++        '漁協',
++        '生活協同組合',
++        '事業協同組合',
++        '協業組合',
++        '企業組合',
++    ]
++    
++    def company_category(self):
++        """
++        Returns a random Japanese company category
++        """
++        return self.random_element(self.company_categories)

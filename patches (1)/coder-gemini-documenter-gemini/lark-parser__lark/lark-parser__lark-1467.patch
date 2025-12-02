@@ -1,0 +1,129 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -1,6 +1,6 @@
+ """
+ This module implements the Tree data structure, as returned by the Lark parser.
+ """
+-from typing import TYPE_CHECKING, List, Tuple, Union, cast
++from typing import Iterator, TYPE_CHECKING, List, Tuple, Union, cast
+ 
+ if TYPE_CHECKING:
+     from .lexer import Token
+@@ -128,3 +128,34 @@
+             else:
+                 yield from child.find_pred(pred, inverse=inverse)
+ 
++    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
++        """
++        Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++        The traversal order is depth-first.
++
++        Args:
++            token_type: The type of the token to search for (e.g., 'NUMBER', 'WORD').
++
++        Yields:
++            Token: All matching tokens found in the tree.
++
++        Example:
++            >>> from lark import Lark
++            >>> parser = Lark('start: (NUMBER | WORD)+', parser='lalr',
++            ...               lexer_callbacks={'NUMBER': int})
++            >>> tree = parser.parse('123 hello 456 world')
++            >>> list(tree.find_token('NUMBER'))
++            [Token('NUMBER', 123), Token('NUMBER', 456)]
++            >>> list(tree.find_token('WORD'))
++            [Token('WORD', 'hello'), Token('WORD', 'world')]
++            >>> list(tree.find_token('NON_EXISTENT'))
++            []
++        """
++        for child in self.children:
++            if isinstance(child, Token):
++                if child.type == token_type:
++                    yield child
++            elif isinstance(child, Tree):
++                yield from child.find_token(token_type)
+diff --git a/lark/tests/test_tree.py b/lark/tests/test_tree.py
+--- a/lark/tests/test_tree.py
++++ b/lark/tests/test_tree.py
+@@ -1,6 +1,6 @@
+ import unittest
+ 
+-from ..tree import Tree
++from ..tree import Tree, Token
+ from ..lexer import Token as _Token
+ from ..exceptions import VisitError
+ from .. import Lark
+@@ -109,3 +109,69 @@
+         self.assertEqual(list(t.find_pred(lambda x: x.data == 'x', inverse=True)),
+                          [t, t.children[0], t.children[0].children[0], t.children[1]])
+ 
++
++class TestTreeMethods(unittest.TestCase):
++    def setUp(self):
++        # A simple grammar for testing token finding
++        self.parser = Lark('''
++            start: expr+
++            expr: NUMBER | WORD | group
++            group: "(" expr+ ")"
++            %import common.NUMBER
++            %import common.WORD
++            %ignore " "
++        ''', parser='lalr')
++
++    def test_find_token_basic(self):
++        tree = self.parser.parse("123 hello (456 world)")
++
++        # Test finding NUMBER tokens
++        numbers = list(tree.find_token('NUMBER'))
++        self.assertEqual(len(numbers), 2)
++        self.assertEqual(numbers[0].value, '123')
++        self.assertEqual(numbers[1].value, '456')
++
++        # Test finding WORD tokens
++        words = list(tree.find_token('WORD'))
++        self.assertEqual(len(words), 2)
++        self.assertEqual(words[0].value, 'hello')
++        self.assertEqual(words[1].value, 'world')
++
++        # Test finding a non-existent token type
++        non_existent = list(tree.find_token('IDENTIFIER'))
++        self.assertEqual(len(non_existent), 0)
++
++    def test_find_token_nested(self):
++        tree = self.parser.parse("( (1) (hello world) )")
++
++        # Test finding NUMBER in nested structure
++        numbers = list(tree.find_token('NUMBER'))
++        self.assertEqual(len(numbers), 1)
++        self.assertEqual(numbers[0].value, '1')
++
++        # Test finding WORD in nested structure
++        words = list(tree.find_token('WORD'))
++        self.assertEqual(len(words), 2)
++        self.assertEqual(words[0].value, 'hello')
++        self.assertEqual(words[1].value, 'world')
++
++    def test_find_token_empty_tree(self):
++        # A tree with no children (not typical for parsed output, but good for edge cases)
++        empty_tree = Tree('empty', [])
++        self.assertEqual(list(empty_tree.find_token('ANY')), [])
++
++    def test_find_token_no_match(self):
++        tree = self.parser.parse("123")
++        self.assertEqual(list(tree.find_token('WORD')), [])
++
++        tree = self.parser.parse("hello")
++        self.assertEqual(list(tree.find_token('NUMBER')), [])
++
++    def test_find_token_with_only_tokens(self):
++        # Create a tree with only tokens as children
++        tree = Tree('start', [Token('NUMBER', '1'), Token('WORD', 'a')])
++        numbers = list(tree.find_token('NUMBER'))
++        self.assertEqual(len(numbers), 1)
++        self.assertEqual(numbers[0].value, '1')
++        words = list(tree.find_token('WORD'))
++        self.assertEqual(len(words), 1)
++        self.assertEqual(words[0].value, 'a')

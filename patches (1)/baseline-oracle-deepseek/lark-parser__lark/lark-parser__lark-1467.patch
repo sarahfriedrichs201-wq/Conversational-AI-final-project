@@ -1,0 +1,46 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -1,6 +1,6 @@
+ import copy
+ from collections import deque
+-from typing import List, Union, Iterable, Iterator, Any
++from typing import List, Union, Iterable, Iterator, Any, Optional
+ 
+ from .utils import Serialize
+ from .visitors import Visitor
+@@ -8,7 +8,7 @@ from .visitors import Visitor
+ __all__ = ['Tree', 'ParseTree']
+ 
+ _Leaf_T = Union['Tree', Token]
+-_Branch_T = Union['Tree', List['Tree']]
++_Branch_T = Union['Tree', List['Tree'], Token]
+ 
+ class Tree(Serialize):
+     """The main tree class.
+@@ -195,6 +195,25 @@ class Tree(Serialize):
+         for subtree in self.iter_subtrees():
+             yield subtree
+ 
++    def find_token(self, token_type: str) -> Iterator[Token]:
++        """Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++
++        Example:
++            >>> term_tokens = tree.find_token('TERM')
++        """
++        for child in self.children:
++            if isinstance(child, Tree):
++                yield from child.find_token(token_type)
++            elif isinstance(child, Token):
++                if child.type == token_type:
++                    yield child
++            elif isinstance(child, list):
++                for item in child:
++                    if isinstance(item, Tree):
++                        yield from item.find_token(token_type)
++
+     def __eq__(self, other):
+         if not isinstance(other, Tree):
+             return False

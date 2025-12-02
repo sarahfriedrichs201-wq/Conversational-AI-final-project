@@ -1,0 +1,119 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -165,6 +165,16 @@
+             self._call_userfunc(subtree)
+         return tree
+ 
++    def visit_topdown(self, tree):
++        """Top-down visitor, non-recursive
++
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        for subtree in tree.iter_topdown():
++            self._call_userfunc(subtree)
++        return tree
++
+ class Visitor_Recursive(VisitorBase):
+     """Bottom-up visitor, recursive
+ 
+@@ -179,6 +189,17 @@
+         f = getattr(self, tree.data, self.__default__)
+         f(tree)
+         return tree
++
++    def visit_topdown(self, tree):
++        """Top-down visitor, recursive
++
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        f = getattr(self, tree.data, self.__default__)
++        f(tree)
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
++        return tree
+ 
+ 
+ 
+diff --git a/tests/test_trees.py b/tests/test_trees.py
+--- a/tests/test_trees.py
++++ b/tests/test_trees.py
+@@ -1,6 +1,8 @@
+ import unittest
+ from copy import deepcopy
+ from itertools import chain
++from io import StringIO
++import sys
+ 
+ from lark import Lark
+ from lark.tree import Tree, SlottedTree
+@@ -8,6 +10,7 @@
+ from lark.lexer import Token
+ from lark.exceptions import VisitError
+ from lark.common import LexerConf
++from lark.visitors import Visitor, Visitor_Recursive
+ 
+ 
+ class TestTree(unittest.TestCase):
+@@ -296,3 +299,57 @@
+         with self.assertRaises(TypeError):
+             t.children[0] = 'x'
+ 
++
++class TestVisitors(unittest.TestCase):
++    def setUp(self):
++        self.tree = Tree("a",[
++            Tree("b",[
++                Tree("c",[]),
++                Tree("d",[])
++            ]),
++            Tree("e",[
++                Tree("f",[]),
++                Tree("g",[])
++            ])
++        ])
++
++        class Printer(Visitor):
++            def __default__(self,tree):
++                print(tree.data)
++        self.Printer = Printer
++
++        class Printer_Recursive(Visitor_Recursive):
++            def __default__(self,tree):
++                print(tree.data)
++        self.Printer_Recursive = Printer_Recursive
++
++    def _capture_output(self, func, *args, **kwargs):
++        old_stdout = sys.stdout
++        sys.stdout = mystdout = StringIO()
++        try:
++            func(*args, **kwargs)
++        finally:
++            sys.stdout = old_stdout
++        return mystdout.getvalue()
++
++    def test_visitor_topdown(self):
++        output = self._capture_output(self.Printer().visit_topdown, self.tree)
++        self.assertEqual(output.strip().splitlines(), list("abcdefg"))
++
++    def test_visitor_recursive_topdown(self):
++        output = self._capture_output(self.Printer_Recursive().visit_topdown, self.tree)
++        self.assertEqual(output.strip().splitlines(), list("abcdefg"))
++
++    def test_visitor_bottomup(self):
++        # This tests the existing Visitor.visit (bottom-up, non-recursive)
++        output = self._capture_output(self.Printer().visit, self.tree)
++        self.assertEqual(output.strip().splitlines(), list("cdbfgea"))
++
++    def test_visitor_recursive_bottomup(self):
++        # This tests the existing Visitor_Recursive.visit (bottom-up, recursive)
++        output = self._capture_output(self.Printer_Recursive().visit, self.tree)
++        self.assertEqual(output.strip().splitlines(), list("cdbfgea"))
++
++
++
++
+```

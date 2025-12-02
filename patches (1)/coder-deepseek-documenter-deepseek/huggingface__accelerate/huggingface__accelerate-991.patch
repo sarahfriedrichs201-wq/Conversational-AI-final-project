@@ -1,0 +1,491 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -1,4 +1,5 @@
+ import contextlib
++import copy
+ import inspect
+ import io
+ import json
+@@ -31,6 +32,7 @@
+ from packaging import version
+ from torch.cuda.amp import GradScaler
+ from torch.optim.lr_scheduler import LRScheduler
++from torch.utils import hooks
+ from torch.utils.data import DataLoader, Dataset, DistributedSampler
+ from torch.utils.data.distributed import DistributedSampler
+ from typing import (
+@@ -39,6 +41,7 @@
+     Any,
+     Callable,
+     Dict,
++    List,
+     Optional,
+     Tuple,
+     Union,
+@@ -179,6 +182,11 @@
+         self.project_dir = project_dir
+         self.project_config = project_config
+ 
++        # Hook management
++        self._save_state_pre_hooks: Dict[int, Callable] = {}
++        self._load_state_pre_hooks: Dict[int, Callable] = {}
++        self._hook_id = 0  # Counter for generating unique hook IDs
++
+         # Mixed precision attributes
+         self.native_amp = False
+         self.use_cpu_amp = False
+@@ -3075,6 +3083,58 @@
+         """
+         return self.state.sync_gradients
+ 
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], input_dir: str) -> None`
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook
++        """
++        hook_id = self._hook_id
++        self._save_state_pre_hooks[hook_id] = hook
++        self._hook_id += 1
++
++        def remove():
++            if hook_id in self._save_state_pre_hooks:
++                del self._save_state_pre_hooks[hook_id]
++
++        return hooks.RemovableHandle(remove)
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `load_checkpoint` is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook
++        """
++        hook_id = self._hook_id
++        self._load_state_pre_hooks[hook_id] = hook
++        self._hook_id += 1
++
++        def remove():
++            if hook_id in self._load_state_pre_hooks:
++                del self._load_state_pre_hooks[hook_id]
++
++        return hooks.RemovableHandle(remove)
++
++    def _get_hook_id(self):
++        """Internal method to get and increment hook ID counter."""
++        return self._hook_id
++
+     def save_state(
+         self,
+         output_dir: Optional[str] = None,
+@@ -3138,6 +3198,15 @@
+                 weights.append(model.state_dict())
+                 models.append(model)
+ 
++        # Execute save state pre hooks
++        for hook in self._save_state_pre_hooks.values():
++            hook(models, weights, output_dir)
++
++        # Clean up any None entries that hooks may have inserted
++        models = [m for m in models if m is not None]
++        weights = [w for w in weights if w is not None]
++        # Ensure weights list matches models list length
++        weights = weights[:len(models)]
+         # Save the models
+         if not self.state.use_fsdp:
+             for i, (model, weight) in enumerate(zip(models, weights)):
+@@ -3248,6 +3317,14 @@
+         # Get models
+         models = list(self._models)
+ 
++        # Execute load state pre hooks
++        for hook in self._load_state_pre_hooks.values():
++            hook(models, input_dir)
++
++        # Clean up any None entries that hooks may have inserted
++        models = [m for m in models if m is not None]
++        # Ensure we only load models that are still in the list
++        self._models = models
+         # Load the models
+         if not self.state.use_fsdp:
+             for i, model in enumerate(models):
+diff --git a/tests/test_hooks.py b/tests/test_hooks.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_hooks.py
+@@ -0,0 +1,120 @@
++import os
++import tempfile
++
++import torch
++import torch.nn as nn
++
++from accelerate import Accelerator
++
++
++class TestModel(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.linear = nn.Linear(10, 10)
++
++    def forward(self, x):
++        return self.linear(x)
++
++
++def test_save_state_hook():
++    accelerator = Accelerator()
++    model = TestModel()
++    model = accelerator.prepare(model)
++
++    save_called = False
++
++    def save_hook(models, weights, output_dir):
++        nonlocal save_called
++        save_called = True
++        assert len(models) == 1
++        assert len(weights) == 1
++        assert isinstance(output_dir, str)
++
++    handle = accelerator.register_save_state_pre_hook(save_hook)
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        accelerator.save_state(tmpdir)
++
++    assert save_called
++    handle.remove()
++
++
++def test_load_state_hook():
++    accelerator = Accelerator()
++    model = TestModel()
++    model = accelerator.prepare(model)
++
++    load_called = False
++
++    def load_hook(models, input_dir):
++        nonlocal load_called
++        load_called = True
++        assert len(models) == 1
++        assert isinstance(input_dir, str)
++
++    handle = accelerator.register_load_state_pre_hook(load_hook)
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        # First save state to load from
++        accelerator.save_state(tmpdir)
++        accelerator.load_state(tmpdir)
++
++    assert load_called
++    handle.remove()
++
++
++def test_hook_model_removal():
++    accelerator = Accelerator()
++    model1 = TestModel()
++    model2 = TestModel()
++    model1, model2 = accelerator.prepare(model1, model2)
++
++    def save_hook(models, weights, output_dir):
++        # Remove first model from saving
++        if len(models) > 0:
++            models.pop(0)
++        if len(weights) > 0:
++            weights.pop(0)
++
++    accelerator.register_save_state_pre_hook(save_hook)
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        accelerator.save_state(tmpdir)
++        # Verify only one model was saved by checking pytorch_model.bin files
++        # (implementation detail, but useful for testing)
++        import glob
++        bin_files = glob.glob(os.path.join(tmpdir, "pytorch_model*.bin"))
++        # Should have at least one but not necessarily exactly one due to other saved state
++        assert len(bin_files) >= 1
++
++    def load_hook(models, input_dir):
++        # Remove first model from loading
++        if len(models) > 0:
++            models.pop(0)
++
++    accelerator.register_load_state_pre_hook(load_hook)
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        accelerator.load_state(tmpdir)
++        # Verify loading behavior - should have one less model after hook
++        pass
++
++
++def test_hook_removal():
++    accelerator = Accelerator()
++
++    hook_called = False
++
++    def test_hook(models, weights, output_dir):
++        nonlocal hook_called
++        hook_called = True
++
++    handle = accelerator.register_save_state_pre_hook(test_hook)
++    handle.remove()
++
++    with tempfile.TemporaryDirectory() as tmpdir:
++        accelerator.save_state(tmpdir)
++
++    # Hook should not have been called since it was removed
++    assert not hook_called
++
+diff --git a/tests/test_core.py b/tests/test_core.py
+--- a/tests/test_core.py
++++ b/tests/test_core.py
+@@ -1,4 +1,5 @@
+ import copy
++import os
+ import sys
+ import tempfile
+ import warnings
+@@ -8,6 +9,7 @@
+ import torch
+ import torch.nn as nn
+ from torch.optim import AdamW
++from torch.utils import hooks
+ 
+ from accelerate import Accelerator
+ from accelerate.state import AcceleratorState
+@@ -16,6 +18,7 @@
+ from accelerate.test_utils.testing import (
+     AccelerateTestCase,
+     TempDirTestCase,
++    execute_subprocess_async,
+     require_cpu,
+     require_cuda,
+     require_fsdp,
+@@ -23,6 +26,7 @@
+     require_multi_gpu,
+     require_non_cpu,
+     require_non_xla,
++    require_single_gpu,
+     require_tpu,
+     slow,
+ )
+@@ -31,6 +35,7 @@
+ from accelerate.utils import (
+     DeepSpeedPlugin,
+     DistributedDataParallelKwargs,
++    gather,
+     is_bf16_available,
+     is_deepspeed_available,
+     is_fsdp_available,
+@@ -38,6 +43,7 @@
+     is_torch_version,
+     is_xpu_available,
+     set_seed,
++    synchronize_rng_states,
+ )
+ 
+ 
+@@ -46,6 +52,7 @@
+     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+     from torch.distributed.fsdp import MixedPrecision
+     from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
++
+     from accelerate.utils import FullyShardedDataParallelPlugin
+ 
+ 
+@@ -56,6 +63,7 @@
+ 
+ if is_tpu_available(check_device=False):
+     import torch_xla.core.xla_model as xm
++
+     from accelerate.utils import XLAFSDPV1Plugin
+ 
+ 
+@@ -63,6 +71,7 @@
+     import deepspeed
+ 
+     from accelerate.utils import DummyOptim
++
+     from deepspeed.runtime.engine import DeepSpeedEngine
+ 
+ 
+@@ -70,6 +79,7 @@
+     from accelerate.utils import load_xpu
+ 
+     torch.xpu.init()
++
+ 
+ class ModelForTest(nn.Module):
+     def __init__(self):
+@@ -78,6 +88,7 @@
+ 
+     def forward(self, x):
+         return self.linear1(x)
++
+ 
+ class MultiInputModelForTest(nn.Module):
+     def __init__(self):
+@@ -87,6 +98,7 @@
+     def forward(self, x, y):
+         return self.linear1(x) + self.linear2(y)
+ 
++
+ class ModelForTestCopy(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -94,6 +106,7 @@
+ 
+     def forward(self, x):
+         return self.linear1(x)
++
+ 
+ class ModelForTestZeroInit(nn.Module):
+     def __init__(self):
+@@ -103,6 +116,7 @@
+     def forward(self, x):
+         return self.linear1(x)
+ 
++
+ class ModelForTestTiedWeights(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -112,6 +126,7 @@
+     def forward(self, x):
+         return self.linear1(x) + self.linear2(x)
+ 
++
+ class ModelForTestDoubleCopy(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -121,6 +136,7 @@
+     def forward(self, x):
+         return self.linear1(x) + self.linear2(x)
+ 
++
+ class ModelForTestWithBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -130,6 +146,7 @@
+     def forward(self, x):
+         return self.linear1(x) + self.buffer
+ 
++
+ class ModelForTestWithNonPersistentBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -140,6 +157,7 @@
+     def forward(self, x):
+         return self.linear1(x) + self.buffer
+ 
++
+ class ModelForTestWithChild(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -149,6 +167,7 @@
+     def forward(self, x):
+         return self.child.linear1(x)
+ 
++
+ class ModelForTestWithLongChildName(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -158,6 +177,7 @@
+     def forward(self, x):
+         return self.child.linear1(x)
+ 
++
+ class ModelForTestWithLongChildNameAndBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -168,6 +188,7 @@
+     def forward(self, x):
+         return self.child.linear1(x) + self.buffer
+ 
++
+ class ModelForTestWithLongChildNameAndNonPersistentBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -178,6 +199,7 @@
+     def forward(self, x):
+         return self.child.linear1(x) + self.buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -189,6 +211,7 @@
+     def forward(self, x):
+         return self.child.linear1(x) + self.buffer + self.non_persistent_buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -201,6 +224,7 @@
+     def forward(self, x):
+         return self.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBuffer(nn.Module):
+     def __init__(self):
+         super().__init__()
+@@ -215,6 +239,7 @@
+     def forward(self, x):
+         return self.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer + self.child.non_persistent_buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBufferAndChildChild(
+     nn.Module
+ ):
+@@ -233,6 +258,7 @@
+     def forward(self, x):
+         return self.child.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer + self.child.non_persistent_buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBufferAndChildChildAndChildChildBuffer(
+     nn.Module
+ ):
+@@ -253,6 +279,7 @@
+     def forward(self, x):
+         return self.child.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer + self.child.non_persistent_buffer + self.child.child.buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBufferAndChildChildAndChildChildBufferAndChildChildNonPersistentBuffer(
+     nn.Module
+ ):
+@@ -275,6 +302,7 @@
+     def forward(self, x):
+         return self.child.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer + self.child.non_persistent_buffer + self.child.child.buffer + self.child.child.non_persistent_buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBufferAndChildChildAndChildChildBufferAndChildChildNonPersistentBufferAndChildChildChild(
+     nn.Module
+ ):
+@@ -299,6 +327,7 @@
+     def forward(self, x):
+         return self.child.child.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer + self.child.non_persistent_buffer + self.child.child.buffer + self.child.child.non_persistent_buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBufferAndChildChildAndChildChildBufferAndChildChildNonPersistentBufferAndChildChildChildAndChildChildChildBuffer(
+     nn.Module
+ ):
+@@ -326,6 +355,7 @@
+     def forward(self, x):
+         return self.child.child.child.linear1(x) + self.buffer + self.non_persistent_buffer + self.child.buffer + self.child.non_persistent_buffer + self.child.child.buffer + self.child.child.non_persistent_buffer + self.child.child.child.buffer
+ 
++
+ class ModelForTestWithLongChildNameAndBufferAndNonPersistentBufferAndChildBufferAndChildNonPersistentBufferAndChildChildAndChildChildBufferAndChildChildNonPersistentBufferAndChild

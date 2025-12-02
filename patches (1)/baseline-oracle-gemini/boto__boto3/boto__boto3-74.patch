@@ -1,0 +1,36 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+index 4554013..979685a 100644
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -10,6 +10,7 @@
+ 
+ import logging
+ from functools import partial
++import jmespath
+ 
+ from .action import ServiceAction
+ from .action import WaiterAction
+@@ -236,6 +237,21 @@
+             # when first accessed.
+             # First, though, we need to see if we have the required
+             # identifiers to instantiate the resource reference.
+-            return handler(self, {}, {})
++            data_from_parent = {}
++            if reference.resource_path:
++                # If the parent resource has not been loaded, but it can
++                # be loaded, then we should load it.
++                if self.meta.data is None and hasattr(self, 'load'):
++                    self.load()
++
++                # If the parent resource has data, then we can attempt
++                # to extract the child's data from it.
++                if self.meta.data is not None:
++                    extracted_data = jmespath.search(
++                        reference.resource_path, self.meta.data)
++                    if extracted_data is not None:
++                        data_from_parent = extracted_data
++
++            return handler(self, data_from_parent, {})
+ 
+         get_reference.__name__ = str(reference.name)
+         get_reference.__doc__ = 'TODO'

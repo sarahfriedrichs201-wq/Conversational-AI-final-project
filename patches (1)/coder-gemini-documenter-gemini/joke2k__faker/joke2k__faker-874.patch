@@ -1,0 +1,91 @@
+diff --git a/faker/providers/company/ja_JP/__init__.py b/faker/providers/company/ja_JP/__init__.py
+--- a/faker/providers/company/ja_JP/__init__.py
++++ b/faker/providers/company/ja_JP/__init__.py
+@@ -8,19 +8,44 @@
+         "合同会社",
+         "合資会社",
+         "合名会社",
+     )
+ 
++    company_categories = (
++        "農業",
++        "林業",
++        "漁業",
++        "鉱業、採石業、砂利採取業",
++        "建設業",
++        "製造業",
++        "電気・ガス・熱供給・水道業",
++        "情報通信業",
++        "運輸業、郵便業",
++        "卸売業、小売業",
++        "金融業、保険業",
++        "不動産業、物品賃貸業",
++        "学術研究、専門・技術サービス業",
++        "宿泊業、飲食サービス業",
++        "生活関連サービス業、娯楽業",
++        "教育、学習支援業",
++        "医療、福祉",
++        "複合サービス事業",
++        "サービス業（他に分類されないもの）",
++        "公務",
++    )
++
+     company_formats = (
+         "{{last_name}}{{company_suffix}}",
++        "{{company_category}}{{company_suffix}}",
++        "{{last_name}}{{company_category}}{{company_suffix}}",
+         "{{last_name}}",
+         "{{last_name}}",
+         "{{last_name}}",
+         "{{last_name}}",
+     )
+ 
+     def company_suffix(self):
+         return self.random_element(self.company_suffixes)
+ 
++    def company_category(self):
++        """
++        Generates a random Japanese company industry category.
++        """
++        return self.random_element(self.company_categories)
++
+     def company(self):
+         pattern = self.random_element(self.company_formats)
+         return self.generator.parse(pattern)
+diff --git a/tests/ja_JP/test_company.py b/tests/ja_JP/test_company.py
+--- a/tests/ja_JP/test_company.py
++++ b/tests/ja_JP/test_company.py
+@@ -1,7 +1,8 @@
+ import re
+ 
+ from faker import Faker
++from faker.providers.company.ja_JP import Provider as JaJpCompanyProvider
+ 
+ 
+ class TestJaJp(object):
+     def setup_method(self, method):
+@@ -14,7 +15,28 @@
+         assert isinstance(suffix, str)
+         assert suffix in self.fake.company_suffixes
+ 
++    def test_company_category(self):
++        category = self.fake.company_category()
++        assert isinstance(category, str)
++        assert category in JaJpCompanyProvider.company_categories
++
+     def test_company(self):
+         company = self.fake.company()
+         assert isinstance(company, str)
+         assert len(company) > 0
++
++        # Check if any generated company name contains a category from the provider's list
++        found_category_in_company = False
++        for _ in range(50):  # Try multiple times to hit a format with category
++            company_name = self.fake.company()
++            for category in JaJpCompanyProvider.company_categories:
++                if category in company_name:
++                    found_category_in_company = True
++                    break
++            if found_category_in_company:
++                break
++        assert found_category_in_company, "Generated company name should sometimes include a category"

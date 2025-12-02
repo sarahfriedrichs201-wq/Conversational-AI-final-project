@@ -1,0 +1,142 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -70,6 +70,33 @@
+ 
+         return results.get(id(tree), tree) # Return the result for the root node, or the original tree
+ 
++    def visit_topdown(self, tree):
++        """
++        Visits the tree in a top-down (pre-order) fashion, calling the appropriate
++        'visit_rule_name' or '__default__' method for each node.
++
++        The traversal is iterative (stack-based).
++
++        Args:
++            tree (Tree): The root of the tree to visit.
++
++        Returns:
++            Tree: The original tree (as this visitor is typically for side-effects).
++        """
++        # Use a list as a stack for iterative DFS.
++        # We push the root node first.
++        stack = [tree]
++
++        while stack:
++            current_node = stack.pop()
++
++            # Process the current node (call user-defined method)
++            method = self._visitor_callbacks.get(current_node.data, self.__default__)
++            method(current_node)
++
++            for child in reversed(current_node.children):
++                if isinstance(child, Tree):
++                    stack.append(child)
++        return tree
+ 
+ class Visitor_Recursive(Visitor):
+     """
+@@ -99,3 +126,26 @@
+ 
+         method = self._visitor_callbacks.get(tree.data, self.__default__)
+         return method(tree)
++
++    def visit_topdown(self, tree):
++        """
++        Visits the tree in a top-down (pre-order) fashion, calling the appropriate
++        'visit_rule_name' or '__default__' method for each node.
++
++        The traversal is recursive.
++
++        Args:
++            tree (Tree): The root of the tree to visit.
++
++        Returns:
++            Tree: The original tree (as this visitor is typically for side-effects).
++        """
++        # Process the current node (call user-defined method)
++        method = self._visitor_callbacks.get(tree.data, self.__default__)
++        method(tree)
++
++        # Recursively visit children from left to right.
++        # Only visit Tree objects, not tokens.
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
++        return tree
+diff --git a/tests/test_trees.py b/tests/test_trees.py
+--- a/tests/test_trees.py
++++ b/tests/test_trees.py
+@@ -1,7 +1,7 @@
+ import unittest
+ import sys
+ from io import StringIO
+-from lark.visitors import Visitor, Transformer, v_args, Discard
++from lark.visitors import Visitor, Transformer, v_args, Discard, Visitor_Recursive
+ from lark.tree import Tree
+ from lark.lexer import Token
+ 
+@@ -194,3 +194,62 @@
+         self.assertEqual(t.children[0].children[0].children[0].data, 'c')
+         self.assertEqual(t.children[0].children[0].children[0].children, [])
+ 
++    def test_visit_topdown(self):
++        """
++        Tests the top-down traversal for both iterative (Visitor)
++        and recursive (Visitor_Recursive) visitors.
++        Also includes a bottom-up test for comparison.
++        """
++        # Setup the test tree structure
++        tree = Tree("a", [
++            Tree("b", [
++                Tree("c", []),
++                Tree("d", [])
++            ]),
++            Tree("e", [
++                Tree("f", []),
++                Tree("g", [])
++            ])
++        ])
++
++        # Define a simple visitor that prints the node data
++        class Printer(Visitor):
++            def __init__(self):
++                super().__init__() # Call super().__init__() to initialize _visitor_callbacks
++                self.output = []
++            def __default__(self, tree):
++                self.output.append(tree.data)
++                return tree # Visitors usually return the node, or None for side-effects
++
++        class Printer_Recursive(Visitor_Recursive):
++            def __init__(self):
++                super().__init__() # Call super().__init__() to initialize _visitor_callbacks
++                self.output = []
++            def __default__(self, tree):
++                self.output.append(tree.data)
++                return tree
++
++        # --- Test Iterative Visitor (top-down) ---
++        printer_iterative_td = Printer()
++        printer_iterative_td.visit_topdown(tree)
++        expected_topdown = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
++        self.assertEqual(printer_iterative_td.output, expected_topdown,
++                         "Iterative Visitor_topdown failed")
++
++        # --- Test Recursive Visitor (top-down) ---
++        printer_recursive_td = Printer_Recursive()
++        printer_recursive_td.visit_topdown(tree)
++        self.assertEqual(printer_recursive_td.output, expected_topdown,
++                         "Recursive Visitor_topdown failed")
++
++        # --- Test Iterative Visitor (bottom-up, for comparison) ---
++        printer_iterative_bu = Printer()
++        printer_iterative_bu.visit(tree) # Assuming 'visit' is the bottom-up method
++        expected_bottomup = ['c', 'd', 'b', 'f', 'g', 'e', 'a']
++        self.assertEqual(printer_iterative_bu.output, expected_bottomup,
++                         "Iterative Visitor (bottom-up) failed")
++
++        # --- Test Recursive Visitor (bottom-up, for comparison) ---
++        printer_recursive_bu = Printer_Recursive()
++        printer_recursive_bu.visit(tree) # Assuming 'visit' is the bottom-up method
++        self.assertEqual(printer_recursive_bu.output, expected_bottomup,
++                         "Recursive Visitor (bottom-up) failed")

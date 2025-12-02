@@ -1,0 +1,454 @@
+diff --git a/src/sagemaker/image_uris.py b/src/sagemaker/image_uris.py
+--- a/src/sagemaker/image_uris.py
++++ b/src/sagemaker/image_uris.py
+@@ -1,4 +1,4 @@
+-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
++# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.  
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License"). You
+ # may not use this file except in compliance with the License. A copy of
+@@ -11,6 +11,7 @@
+ # ANY KIND, either express or implied. See the License for the specific
+ # language governing permissions and limitations under the License.
+ """Placeholder docstring"""
++
+ from __future__ import absolute_import
+ 
+ import logging
+@@ -18,6 +19,7 @@
+ import re
+ from typing import Dict, Optional
+ 
++from sagemaker.instance_types import InstanceType
+ from sagemaker.utils import get_region, get_service_name
+ 
+ logger = logging.getLogger(__name__)
+@@ -25,6 +27,7 @@
+ 
+ def _get_image_scope_for_instance_type(framework, instance_type, image_scope):
+     """Extract the image scope from instance type.
++
+     Args:
+         framework (str): The framework name.
+         instance_type (str): The instance type.
+@@ -32,7 +35,15 @@
+     Returns:
+         str: The image scope.
+     """
+-    return image_scope
++    # Check if instance type is a Graviton instance (c6g, c7g, m6g, m7g, r6g, r7g, t4g)
++    if instance_type and instance_type.startswith(("ml.c6g", "ml.c7g", "ml.m6g", "ml.m7g", "ml.r6g", "ml.r7g", "ml.t4g")):
++        # For PyTorch and TensorFlow frameworks, use "inference-graviton" scope
++        if framework in ["pytorch", "tensorflow"]:
++            if image_scope == "inference":
++                return "inference-graviton"
++            elif image_scope == "training":
++                return "training-graviton"
++    return image_scope
+ 
+ 
+ def retrieve(
+@@ -44,6 +55,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Retrieves the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -58,6 +70,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -67,6 +80,9 @@
+     """
+     region = region or get_region()
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if framework in FRAMEWORK_VERSION_AND_SCOPE:
+         config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+         return _retrieve_framework_image_uri(
+@@ -77,6 +93,7 @@
+             container_version=container_version,
+             distribution=distribution,
+             base_framework_version=base_framework_version,
++            instance_type=instance_type,
+         )
+ 
+     if framework in ALGORITHM_AND_SCOPE:
+@@ -88,6 +105,7 @@
+             container_version=container_version,
+             distribution=distribution,
+             base_framework_version=base_framework_version,
++            instance_type=instance_type,
+         )
+ 
+     raise ValueError(
+@@ -104,6 +122,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Retrieves the framework ECR URI for the Docker image matching the given arguments.
+ 
+@@ -118,6 +137,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -127,6 +147,9 @@
+     """
+     config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if image_scope not in config:
+         raise ValueError(
+             "Unsupported image scope: {}. Supported image scopes are: {}".format(
+@@ -134,7 +157,7 @@
+             )
+         )
+ 
+-    return _retrieve_image_uri(
++    image_uri = _retrieve_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -143,7 +166,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _retrieve_algorithm_image_uri(
+@@ -154,6 +179,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Retrieves the algorithm ECR URI for the Docker image matching the given arguments.
+ 
+@@ -168,6 +194,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -177,7 +204,7 @@
+     """
+     config = ALGORITHM_AND_SCOPE[framework]
+ 
+-    return _retrieve_image_uri(
++    image_uri = _retrieve_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -186,7 +213,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _retrieve_image_uri(
+@@ -197,6 +226,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Retrieves the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -211,6 +241,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -220,6 +251,9 @@
+     """
+     region = region or get_region()
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if framework in FRAMEWORK_VERSION_AND_SCOPE:
+         config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+     elif framework in ALGORITHM_AND_SCOPE:
+@@ -234,6 +268,7 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
+ 
+     if image_scope not in config:
+@@ -243,7 +278,7 @@
+             )
+         )
+ 
+-    return _build_image_uri(
++    image_uri = _build_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -252,7 +287,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _build_image_uri(
+@@ -263,6 +300,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Builds the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -277,6 +315,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -286,6 +325,9 @@
+     """
+     region = region or get_region()
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if framework in FRAMEWORK_VERSION_AND_SCOPE:
+         config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+     elif framework in ALGORITHM_AND_SCOPE:
+@@ -300,6 +342,7 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
+ 
+     if image_scope not in config:
+@@ -309,7 +352,7 @@
+             )
+         )
+ 
+-    return _construct_image_uri(
++    image_uri = _construct_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -318,7 +361,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _construct_image_uri(
+@@ -329,6 +374,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Constructs the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -343,6 +389,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -352,6 +399,9 @@
+     """
+     region = region or get_region()
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if framework in FRAMEWORK_VERSION_AND_SCOPE:
+         config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+     elif framework in ALGORITHM_AND_SCOPE:
+@@ -366,6 +416,7 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
+ 
+     if image_scope not in config:
+@@ -375,7 +426,7 @@
+             )
+         )
+ 
+-    return _generate_image_uri(
++    image_uri = _generate_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -384,7 +435,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _generate_image_uri(
+@@ -395,6 +448,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Generates the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -409,6 +463,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -418,6 +473,9 @@
+     """
+     region = region or get_region()
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if framework in FRAMEWORK_VERSION_AND_SCOPE:
+         config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+     elif framework in ALGORITHM_AND_SCOPE:
+@@ -432,6 +490,7 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
+ 
+     if image_scope not in config:
+@@ -441,7 +500,7 @@
+             )
+         )
+ 
+-    return _create_image_uri(
++    image_uri = _create_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -450,7 +509,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _create_image_uri(
+@@ -461,6 +522,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Creates the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -475,6 +537,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -484,6 +547,9 @@
+     """
+     region = region or get_region()
+ 
++    # Adjust image scope based on instance type
++    image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if framework in FRAMEWORK_VERSION_AND_SCOPE:
+         config = FRAMEWORK_VERSION_AND_SCOPE[framework]
+     elif framework in ALGORITHM_AND_SCOPE:
+@@ -498,6 +564,7 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
+ 
+     if image_scope not in config:
+@@ -507,7 +574,7 @@
+             )
+         )
+ 
+-    return _format_image_uri(
++    image_uri = _format_image_uri(
+         region=region,
+         framework=framework,
+         framework_version=framework_version,
+@@ -516,7 +583,9 @@
+         container_version=container_version,
+         distribution=distribution,
+         base_framework_version=base_framework_version,
++        instance_type=instance_type,
+     )
++    return image_uri
+ 
+ 
+ def _format_image_uri(
+@@ -527,6 +596,7 @@
+     container_version: Optional[str] = None,
+     distribution: Optional[str] = None,
+     base_framework_version: Optional[str] = None,
++    instance_type: Optional[str] = None,
+ ) -> str:
+     """Formats the ECR URI for the Docker image matching the given arguments.
+ 
+@@ -541,6 +611,7 @@
+         container_version (str): The version of the container.
+             (default: None).
+         distribution (str): The distribution of the container.
++        instance_type (str): The instance type.
+         base_framework_version (str): The base framework version.
+             For example, for TensorFlow 1.15.2 installs PyTorch 0.4.0,
+             so base_framework_version is '1.15.2'. (default: None).
+@@ -550,6 +621,9 @@

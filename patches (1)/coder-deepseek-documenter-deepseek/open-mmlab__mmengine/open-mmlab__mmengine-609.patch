@@ -1,0 +1,161 @@
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -1,5 +1,8 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
+ import inspect
++import functools
++import warnings
++from typing import Callable
+ from collections.abc import Sequence
+ from typing import Any, List, Optional, Tuple, Union
+ 
+@@ -8,6 +11,7 @@ import torch.nn as nn
+ from mmengine.utils.dl_utils import TORCH_VERSION
+ 
+ __all__ = [
++    'deprecated_function',
+     'get_object_from_string',
+     'is_seq_of',
+     'is_list_of',
+@@ -18,6 +22,64 @@ __all__ = [
+ ]
+ 
+ 
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++    
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A decorator that marks the function as deprecated.
++    """
++    
++    def decorator(function: Callable) -> Callable:
++        """Inner decorator function that wraps the deprecated function."""
++        
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            """Wrapper function that shows deprecation warning."""
++            warnings.warn(
++                f"Function {function.__name__} is deprecated since version {since} "
++                f"and will be removed in version {removed_in}. {instructions}",
++                category=DeprecationWarning,
++                stacklevel=2
++            )
++            return function(*args, **kwargs)
++        
++        # Add deprecation note to the function's docstring
++        deprecation_note = (
++            f"\n\n.. deprecated:: {since}\n"
++            f"    This function is deprecated and will be removed in version {removed_in}.\n"
++            f"    {instructions}\n"
++        )
++        
++        if wrapper.__doc__ is None:
++            wrapper.__doc__ = deprecation_note
++        else:
++            wrapper.__doc__ += deprecation_note
++        
++        return wrapper
++    
++    return decorator
++
++
++@deprecated_function(
++    since="0.4.0", 
++    removed_in="0.6.0", 
++    instructions="Please use new_function() instead."
++)
++def old_function():
++    """This is an old function that should not be used anymore.
++    
++    This is an example of a deprecated function."""
++    return "old result"
++
++
+ def get_object_from_string(name: str) -> Any:
+     """Get an object from a string.
+ 
+diff --git a/tests/test_utils/test_misc.py b/tests/test_utils/test_misc.py
+--- a/tests/test_utils/test_misc.py
++++ b/tests/test_utils/test_misc.py
+@@ -1,5 +1,6 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
+ import inspect
++import warnings
+ import numpy as np
+ import pytest
+ import torch
+@@ -7,6 +8,7 @@ import torch.nn as nn
+ 
+ from mmengine.utils.misc import (get_object_from_string, import_modules_from_strings,
+                                  is_list_of, is_seq_of, is_tuple_of,
++                                 deprecated_function,
+                                  requires_executable, requires_package)
+ 
+ 
+@@ -14,6 +16,50 @@ from mmengine.utils.misc import (get_object_from_string, import_modules_from_st
+     import_modules_from_strings
+ 
+ 
++def test_deprecated_function():
++    """Test that deprecated_function decorator works correctly."""
++    
++    # Test function with decorator
++    @deprecated_function(
++        since="0.4.0",
++        removed_in="0.6.0", 
++        instructions="Use new_func instead."
++    )
++    def test_func():
++        return "test_result"
++    
++    # Test that warning is raised
++    with warnings.catch_warnings(record=True) as w:
++        warnings.simplefilter("always")
++        result = test_func()
++        
++        # Check that warning was raised
++        assert len(w) == 1
++        assert issubclass(w[0].category, DeprecationWarning)
++        assert "test_func" in str(w[0].message)
++        assert "0.4.0" in str(w[0].message)
++        assert "0.6.0" in str(w[0].message)
++        assert "Use new_func instead" in str(w[0].message)
++        
++        # Check that function still works
++        assert result == "test_result"
++    
++    # Test that docstring is modified
++    assert "deprecated" in test_func.__doc__
++    assert "0.4.0" in test_func.__doc__
++    assert "0.6.0" in test_func.__doc__
++
++
++def test_deprecated_function_with_args():
++    """Test deprecated function with arguments."""
++    
++    @deprecated_function(
++        since="0.4.0",
++        removed_in="0.6.0",
++        instructions="Use new_func instead."
++    )
++    def func_with_args(x, y=10):
++        return x + y
++    
++    with warnings.catch_warnings(record=True):
++        warnings.simplefilter("always")
++        result = func_with_args(5, y=3)
++        assert result == 8
++
++
+ def test_requires_package():
+ 
+     @requires_package('torch')

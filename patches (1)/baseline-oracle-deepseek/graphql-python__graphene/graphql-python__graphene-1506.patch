@@ -1,0 +1,110 @@
+diff --git a/graphene/types/inputobjecttype.py b/graphene/types/inputobjecttype.py
+--- a/graphene/types/inputobjecttype.py
++++ b/graphene/types/inputobjecttype.py
+@@ -1,6 +1,8 @@
+ from collections import OrderedDict
+ 
+ from .base import BaseOptions, BaseType
++
++_input_object_type_default_value = None
+ 
+ 
+ class InputObjectTypeOptions(BaseOptions):
+@@ -8,6 +10,13 @@
+     pass
+ 
+ 
++def set_input_object_type_default_value(default_value):
++    """Change the sentinel value returned by non-specified fields in an InputObjectType.
++    Useful to differentiate between a field not being set and a field being set to None.
++    """
++    globals()["_input_object_type_default_value"] = default_value
++
++
+ class InputObjectType(BaseType):
+     """
+     Input Object Type Definition
+@@ -37,7 +46,7 @@
+         for field_name in self._meta.fields:
+             if field_name not in self._data:
+                 field = self._meta.fields[field_name]
+-                value = None
++                value = _input_object_type_default_value
+                 if callable(field.default_value):
+                     value = field.default_value()
+                 else:
+diff --git a/graphene/types/tests/test_inputobjecttype.py b/graphene/types/tests/test_inputobjecttype.py
+--- a/graphene/types/tests/test_inputobjecttype.py
++++ b/graphene/types/tests/test_inputobjecttype.py
+@@ -1,5 +1,6 @@
+ import pytest
+ 
++from ..inputobjecttype import set_input_object_type_default_value
+ from ..inputobjecttype import InputObjectType
+ from ..objecttype import ObjectType
+ from ..scalars import String
+@@ -7,6 +8,7 @@
+ from ..schema import Schema
+ from ..field import Field
+ from ..argument import Argument
++from graphql import Undefined
+ 
+ 
+ def test_inputobjecttype():
+@@ -120,3 +122,56 @@
+     result = schema.execute("""{ hello(input: {}) }""")
+     assert not result.errors
+     assert result.data == {"hello": "test"}
++
++
++def test_inputobjecttype_default_value():
++    class InputType(InputObjectType):
++        field1 = String()
++        field2 = String()
++
++    input_instance = InputType()
++    assert input_instance.field1 is None
++    assert input_instance.field2 is None
++
++    # Test with explicit None
++    input_instance = InputType(field1=None)
++    assert input_instance.field1 is None
++    assert input_instance.field2 is None
++
++    # Test with explicit value
++    input_instance = InputType(field1="test")
++    assert input_instance.field1 == "test"
++    assert input_instance.field2 is None
++
++
++def test_set_input_object_type_default_value():
++    # Reset to default
++    set_input_object_type_default_value(None)
++
++    class InputType(InputObjectType):
++        field1 = String()
++        field2 = String()
++
++    input_instance = InputType()
++    assert input_instance.field1 is None
++    assert input_instance.field2 is None
++
++    # Change default to Undefined
++    set_input_object_type_default_value(Undefined)
++
++    class InputType2(InputObjectType):
++        field1 = String()
++        field2 = String()
++
++    input_instance = InputType2()
++    assert input_instance.field1 is Undefined
++    assert input_instance.field2 is Undefined
++
++    # Explicit None should still work
++    input_instance = InputType2(field1=None)
++    assert input_instance.field1 is None
++    assert input_instance.field2 is Undefined
++
++    # Reset back to None
++    set_input_object_type_default_value(None)
++

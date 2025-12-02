@@ -1,0 +1,495 @@
+diff --git a/boto3/exceptions.py b/boto3/exceptions.py
+--- a/boto3/exceptions.py
++++ b/boto3/exceptions.py
+@@ -1,4 +1,12 @@
+ class Boto3Error(Exception):
+     """Base class for all boto3 errors."""
+     pass
+ 
++
++class ReferenceLoadError(Boto3Error):
++    """Base exception for reference loading errors."""
++    pass
++
++
++class JMESPathError(ReferenceLoadError):
++    """Exception raised when JMESPath query fails."""
++    pass
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -1,8 +1,15 @@
+ # Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License"). You
+ # may not use this file except in compliance with the License. A copy of
+ # the License is located at
+ #
+ # http://aws.amazon.com/apache2.0/
+ #
+ # or in the "license" file accompanying this file. This file is
+ # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+ # ANY KIND, either express or implied. See the License for the specific
+ # language governing permissions and limitations under the License.
++
++try:
++    import jmespath
++except ImportError:
++    jmespath = None
++
+ from botocore import xform_name
+ from botocore.utils import merge_dicts
+ 
+ from boto3.docs.docstring import ActionDocstring, ResourceDocstring
+ from boto3.resources.action import BatchAction, CustomModeledAction, WaiterAction
+ from boto3.resources.base import ResourceMeta, ServiceResource
+ from boto3.resources.collection import CollectionFactory, CollectionManager
+ from boto3.resources.model import Collection, PrimaryKey, SearchPath
+ from boto3.utils import inject_attribute
+ 
+@@ -15,21 +22,21 @@
+     """
+     A factory that creates resource classes and instances.
+     """
+ 
+     def __init__(self, emitter):
+         self._emitter = emitter
+ 
+     def load_from_definition(self, resource_name, single_resource_json_definition,
+                              service_context, event_emitter=None):
+         """
+         Loads a resource from a model, creating a new resource class
+         with the correct properties and methods, named as specified.
+         """
+         # Use the emitter passed in, but fall back on the factory's if needed.
+         if event_emitter is None:
+             event_emitter = self._emitter
+ 
+         # Set up the resource class base
+         bases = [ServiceResource]
+ 
+         # Create the new resource class
+@@ -43,21 +50,21 @@
+         # Add in all reload, load, and actions
+         self._load_actions(resource_name, single_resource_json_definition,
+                            service_context, resource_cls, event_emitter)
+         self._load_identifiers(resource_name, single_resource_json_definition,
+                                resource_cls)
+         self._load_attributes(resource_name, single_resource_json_definition,
+                               resource_cls)
+         self._load_references(resource_name, single_resource_json_definition,
+                               resource_cls)
+         self._load_collections(resource_name, single_resource_json_definition,
+                                service_context, resource_cls, event_emitter)
+         self._load_waiter_actions(resource_name, single_resource_json_definition,
+                                   service_context, resource_cls, event_emitter)
+ 
+         # Emit an event to allow further customization of the resource class.
+         # This is used by the resource model injection to add additional
+         # features and methods to the resource class.
+         service_name = service_context.service_name
+         event_emitter.emit(
+             'creating-resource-class.{}.{}'.format(
+                 service_name, resource_name),
+@@ -65,21 +72,21 @@
+             resource_name=resource_name,
+             resource_cls=resource_cls,
+             json_definitions=service_context.resource_json_definitions
+         )
+ 
+         return resource_cls
+ 
+     def _load_actions(self, resource_name, resource_model, service_context,
+                       resource_cls, event_emitter):
+         """
+         Loads a set of actions onto a resource.
+         """
+         for action in resource_model.get('actions', []):
+             self._load_action(
+                 action, resource_name, resource_model, service_context,
+                 resource_cls, event_emitter)
+ 
+     def _load_action(self, action, resource_name, resource_model,
+                      service_context, resource_cls, event_emitter):
+         """
+         Loads an individual action onto a resource.
+@@ -87,21 +94,21 @@
+         action_type = action.get('type', 'custom')
+         if action_type == 'custom':
+             self._load_custom_action(
+                 action, resource_name, resource_model, service_context,
+                 resource_cls, event_emitter)
+         else:
+             self._load_modeled_action(
+                 action, resource_name, resource_model, service_context,
+                 resource_cls, event_emitter)
+ 
+     def _load_custom_action(self, action, resource_name, resource_model,
+                             service_context, resource_cls, event_emitter):
+         """
+         Loads a custom action onto a resource.
+         """
+         action_name = action['name']
+         function = self._create_action(
+             action, resource_name, resource_model, service_context,
+             event_emitter)
+ 
+         # Add the action to the class as a method
+         inject_attribute(resource_cls, action_name, function)
+@@ -109,21 +116,21 @@
+     def _load_modeled_action(self, action, resource_name, resource_model,
+                              service_context, resource_cls, event_emitter):
+         """
+         Loads a modeled action onto a resource.
+         """
+         action_name = action['name']
+         function = self._create_action(
+             action, resource_name, resource_model, service_context,
+             event_emitter)
+ 
+         # Add the action to the class as a method
+         inject_attribute(resource_cls, action_name, function)
+ 
+     def _create_action(self, action, resource_name, resource_model,
+                        service_context, event_emitter):
+         """
+         Creates a function for the given action.
+         """
+         action_type = action.get('type', 'custom')
+         if action_type == 'GetAtt':
+             # Special case for GetAtt, which is a modeled action that
+@@ -131,21 +138,21 @@
+             return self._create_getatt_action(
+                 action, resource_name, resource_model, service_context,
+                 event_emitter)
+         elif action_type == 'custom':
+             return self._create_custom_action(
+                 action, resource_name, resource_model, service_context,
+                 event_emitter)
+         else:
+             return self._create_modeled_action(
+                 action, resource_name, resource_model, service_context,
+                 event_emitter)
+ 
+     def _create_getatt_action(self, action, resource_name, resource_model,
+                               service_context, event_emitter):
+         """
+         Creates a GetAtt action.
+         """
+         # GetAtt actions are a special case of modeled actions that
+         # return an attribute from the resource's response.
+         # They are defined with a 'resource' and 'attribute' field.
+         resource = action['resource']
+         attribute = action['attribute']
+@@ -153,21 +160,21 @@
+         # Create a modeled action that returns the attribute
+         modeled_action = action.copy()
+         modeled_action['type'] = 'modeled'
+         modeled_action['response'] = {
+             'type': 'structure',
+             'members': {
+                 attribute: {'type': 'string'}
+             }
+         }
+ 
+         return self._create_modeled_action(
+             modeled_action, resource_name, resource_model, service_context,
+             event_emitter)
+ 
+     def _create_custom_action(self, action, resource_name, resource_model,
+                               service_context, event_emitter):
+         """
+         Creates a custom action.
+         """
+         # Custom actions are defined by a 'function' field that
+         # specifies the Python function to call.
+         function_name = action['function']
+@@ -175,21 +182,21 @@
+         # Look up the function in the service context
+         function = service_context.get_action_function(function_name)
+         if function is None:
+             raise ValueError(
+                 'Unknown action function: {}'.format(function_name))
+ 
+         return function
+ 
+     def _create_modeled_action(self, action, resource_name, resource_model,
+                                service_context, event_emitter):
+         """
+         Creates a modeled action.
+         """
+         # Modeled actions are defined by a 'request' and 'response' field.
+         # They correspond to a single AWS API operation.
+         operation_name = action['request']['operation']
+         params = action.get('request', {}).get('params', [])
+         path = action.get('response', {}).get('path')
+         model = action.get('response', {}).get('model')
+ 
+         # Get the operation model from the service model
+@@ -197,21 +204,21 @@
+         operation_model = service_model.operation_model(operation_name)
+ 
+         # Create the action function
+         action_function = self._make_action_function(
+             operation_model, params, path, model, service_context,
+             event_emitter)
+ 
+         return action_function
+ 
+     def _make_action_function(self, operation_model, params, path, model,
+                               service_context, event_emitter):
+         """
+         Creates a function for a modeled action.
+         """
+         # This is a simplified version. The actual implementation
+         # would create a proper action function with the correct
+         # signature and behavior.
+         def action_function(self, **kwargs):
+             # Build the request parameters
+             request_params = {}
+             for param in params:
+@@ -219,21 +226,21 @@
+                 value = param.get('value')
+                 if value is not None:
+                     request_params[name] = value
+                 elif name in kwargs:
+                     request_params[name] = kwargs[name]
+                 else:
+                     raise TypeError(
+                         'Missing required parameter: {}'.format(name))
+ 
+             # Make the request
+             client = self.meta.client
+             response = getattr(client, operation_model.name)(**request_params)
+ 
+             # Extract the response data
+             if path is not None:
+                 # Use JMESPath to extract the data
+                 import jmespath
+                 response_data = jmespath.search(path, response)
+             else:
+                 response_data = response
+ 
+@@ -241,21 +248,21 @@
+             if model is not None:
+                 # Create a resource instance from the response data
+                 resource_cls = service_context.resource_classes.get(model)
+                 if resource_cls is not None:
+                     return resource_cls(
+                         response_data, client=client)
+ 
+             return response_data
+ 
+         # Set the function name for debugging
+         action_function.__name__ = operation_model.name
+ 
+         return action_function
+ 
+     def _load_identifiers(self, resource_name, resource_model, resource_cls):
+         """
+         Loads identifiers onto a resource.
+         """
+         for identifier in resource_model.get('identifiers', []):
+             self._load_identifier(identifier, resource_cls)
+ 
+     def _load_identifier(self, identifier, resource_cls):
+@@ -263,21 +270,21 @@
+         Loads an individual identifier onto a resource.
+         """
+         identifier_name = identifier['name']
+         source = identifier.get('source', 'data')
+         path = identifier.get('path')
+ 
+         # Create a property that returns the identifier value
+         def identifier_property(self):
+             if source == 'data':
+                 # Get from the resource's data
+                 if path is not None:
+                     # Use JMESPath to extract the data
+                     import jmespath
+                     return jmespath.search(path, self.meta.data)
+                 else:
+                     return self.meta.data.get(identifier_name)
+             elif source == 'instance':
+                 # Get from the instance's attributes
+                 return getattr(self, identifier_name)
+             elif source == 'client':
+                 # Get from the client's configuration
+@@ -285,21 +292,21 @@
+             else:
+                 raise ValueError(
+                     'Unknown identifier source: {}'.format(source))
+ 
+         # Add the identifier to the class as a property
+         inject_attribute(resource_cls, identifier_name,
+                          property(identifier_property))
+ 
+     def _load_attributes(self, resource_name, resource_model, resource_cls):
+         """
+         Loads attributes onto a resource.
+         """
+         for attribute in resource_model.get('attributes', []):
+             self._load_attribute(attribute, resource_cls)
+ 
+     def _load_attribute(self, attribute, resource_cls):
+         """
+         Loads an individual attribute onto a resource.
+         """
+         attribute_name = attribute['name']
+         path = attribute.get('path', attribute_name)
+ 
+@@ -307,21 +314,21 @@
+         def attribute_property(self):
+             # Use JMESPath to extract the data
+             import jmespath
+             return jmespath.search(path, self.meta.data)
+ 
+         # Add the attribute to the class as a property
+         inject_attribute(resource_cls, attribute_name,
+                          property(attribute_property))
+ 
+     def _load_references(self, resource_name, resource_model, resource_cls):
+         """
+         Loads references onto a resource.
+         """
+         for reference in resource_model.get('references', []):
+             self._load_reference(reference, resource_model, resource_cls)
+ 
+     def _load_reference(self, reference, resource_model, resource_cls):
+         """
+         Loads an individual reference onto a resource.
+         """
+         reference_name = reference['name']
+         resource = reference['resource']
+@@ -329,21 +336,21 @@
+         # Find the referenced resource class
+         # This is a simplified lookup. In practice, we would need
+         # to search through the service context.
+         referenced_resource_cls = None
+         for cls in resource_cls.__bases__:
+             if hasattr(cls, '__name__') and cls.__name__ == resource:
+                 referenced_resource_cls = cls
+                 break
+ 
+         if referenced_resource_cls is None:
+             raise ValueError(
+                 'Unknown referenced resource: {}'.format(resource))
+ 
+         # Create a reference instance
+         reference_instance = Reference(
+             reference_name, path, resource_cls, referenced_resource_cls)
+ 
+         # Add the reference to the class
+         inject_attribute(resource_cls, reference_name, reference_instance)
+ 
+     def _load_collections(self, resource_name, resource_model, service_context,
+@@ -351,21 +358,21 @@
+         """
+         Loads collections onto a resource.
+         """
+         collection_factory = CollectionFactory()
+         for collection in resource_model.get('collections', []):
+             self._load_collection(
+                 collection, resource_name, resource_model, service_context,
+                 resource_cls, event_emitter, collection_factory)
+ 
+     def _load_collection(self, collection, resource_name, resource_model,
+                          service_context, resource_cls, event_emitter,
+                          collection_factory):
+         """
+         Loads an individual collection onto a resource.
+         """
+         collection_name = collection['name']
+         collection_model = Collection(
+             collection_name, collection.get('resource', {}),
+             collection.get('request', {}), collection.get('response', {}),
+             collection.get('filters', []), collection.get('batch', []),
+             collection.get('actions', []))
+ 
+@@ -373,21 +380,21 @@
+         collection_instance = collection_factory.create_collection(
+             collection_name, collection_model, resource_cls, service_context,
+             event_emitter)
+ 
+         # Add the collection to the class
+         inject_attribute(resource_cls, collection_name, collection_instance)
+ 
+     def _load_waiter_actions(self, resource_name, resource_model,
+                              service_context, resource_cls, event_emitter):
+         """
+         Loads waiter actions onto a resource.
+         """
+         for waiter in resource_model.get('waiters', []):
+             self._load_waiter_action(
+                 waiter, resource_name, resource_model, service_context,
+                 resource_cls, event_emitter)
+ 
+     def _load_waiter_action(self, waiter, resource_name, resource_model,
+                             service_context, resource_cls, event_emitter):
+         """
+         Loads an individual waiter action onto a resource.
+@@ -395,21 +402,21 @@
+         waiter_name = waiter['name']
+         waiter_model = waiter['waiter']
+ 
+         # Create the waiter action
+         waiter_action = WaiterAction(waiter_name, waiter_model, service_context)
+ 
+         # Add the waiter action to the class as a method
+         inject_attribute(resource_cls, waiter_name, waiter_action)
+ 
+ 
+ class Reference:
+     """
+     A descriptor that provides access to a referenced resource.
+     """
+-    def __init__(self, name, resource_path, parent, resource):
++    def __init__(self, name, resource_path, parent, resource, session=None):
+         self.name = name
+         self.resource_path = resource_path
+         self.parent = parent
+         self.resource = resource
++        self.session = session
+         self._value = None
+ 
+@@ -417,21 +424,21 @@
+         if instance is None:
+             return self
+ 
+         if self._value is None:
+-            # The reference hasn't been resolved yet.
+-            # In a real implementation, this would attempt to load
+-            # the referenced resource from the parent's data.
+-            # For now, we'll just return None.
+-            pass
++            # NEW: Attempt to load from parent meta data
++            self._value = self._load_from_parent_data(instance)
+ 
+         return self._value
+ 
+-    def __set__(self, instance, value):
+-        # References are read-only
+-        raise AttributeError(
+-            "Cannot set reference '{}'".format(self.name))
++    def _load_from_parent_data(self, instance):
++        """
++        Attempt to load reference data from parent's meta.data using JMESPath.
++        If data is not available and parent is loadable, trigger load operation.
++        """
++        parent = self.parent
+ 
++        # Check if parent has loaded data in meta.data
++        if hasattr(parent, 'meta') and hasattr(parent.meta, 'data'):
++            parent_data = parent.meta.data
++            if parent_data:
++                # Apply JMESPath query if resource_path is defined
++                if self.resource_path and jmespath is not None:
++                    try:
++                        result = jmespath.search(self.resource_path, parent_data)
++                        if result is not None:
++                            return result
++                    except Exception:
++                        # If JMESPath query fails, continue to try loading
++                        pass
++
++        #

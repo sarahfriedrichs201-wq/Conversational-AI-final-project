@@ -1,0 +1,456 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,4 +1,5 @@
+ import argparse
++import sys
+ import logging
+ import os
+ import pprint
+@@ -8,6 +9,7 @@
+ from lm_eval import evaluator, utils
+ from lm_eval.api.registry import get_model
+ from lm_eval.tasks import TaskManager
++from typing import Any, Dict, List, Optional, Tuple, Union
+ 
+ 
+ def check_argument_types(parser: argparse.ArgumentParser):
+@@ -15,6 +17,7 @@
+     Check to make sure all CLI args are typed, raises error if not
+     """
+     for action in parser._actions:
++        # Skip help and other non-argument actions
+         if action.dest == "help":
+             continue
+         if action.type is None:
+@@ -22,6 +25,7 @@
+                 f"Argument '{action.dest}' is missing a type annotation. "
+                 "Please add a type to the argument parser."
+             )
++    return None
+ 
+ 
+ def setup_parser() -> argparse.ArgumentParser:
+@@ -29,6 +33,7 @@
+     parser = argparse.ArgumentParser(
+         formatter_class=argparse.RawTextHelpFormatter
+     )
++    # Model arguments
+     parser.add_argument(
+         "--model",
+         required=True,
+@@ -36,6 +41,7 @@
+         help="Name of model e.g. `hf` (for causal HuggingFace models), `openai-completions`, `openai-chat-completions`",
+     )
+     parser.add_argument(
++        "--model_args",
+         default="",
+         help="Comma separated string arguments for model, e.g. `pretrained=EleutherAI/pythia-160m,dtype=float`",
+     )
+@@ -43,6 +49,7 @@
+         "--tasks",
+         default=None,
+         help="To get full list of tasks, use `lm_eval --tasks list`",
++        type=str,
+     )
+     parser.add_argument(
+         "--model_args",
+@@ -50,6 +57,7 @@
+         help="Comma separated string arguments for model, e.g. `pretrained=EleutherAI/pythia-160m,dtype=float`",
+     )
+     parser.add_argument(
++        "--num_fewshot",
+         type=int,
+         default=None,
+         help="Number of examples in few-shot context",
+@@ -60,6 +68,7 @@
+         help="Number of examples to evaluate (if None, use all)",
+     )
+     parser.add_argument(
++        "--batch_size",
+         type=str,
+         default=1,
+         help="Batch size for evaluation (if 'auto', will auto-detect largest batch size that fits)",
+@@ -70,6 +79,7 @@
+         help="Device to use (e.g. cuda, cuda:0, cpu)",
+     )
+     parser.add_argument(
++        "--output_path",
+         default=None,
+         help="The path to the output file where results will be stored",
+     )
+@@ -80,6 +90,7 @@
+         help="Whether to log example-level model outputs",
+     )
+     parser.add_argument(
++        "--use_cache",
+         default=None,
+         help="Path to a sqlite db file for caching model responses. `None` if not caching.",
+     )
+@@ -90,6 +101,7 @@
+         help="Whether to compute task integrity checks (slow)",
+     )
+     parser.add_argument(
++        "--write_out",
+         action="store_true",
+         default=False,
+         help="If True, write out an example document and model input to check for prompt sanity",
+@@ -100,6 +112,7 @@
+         help="If True, only compute and return the predictions",
+     )
+     parser.add_argument(
++        "--wandb_args",
+         default="",
+         help="Comma separated string arguments for wandb, e.g. `project=lm-eval-harness-integration`",
+     )
+@@ -110,6 +123,7 @@
+         help="Comma separated string arguments for huggingface hub logging, e.g. `hub_results_org=EleutherAI,hub_repo_name=lm-eval-results`",
+     )
+     parser.add_argument(
++        "--verbosity",
+         type=str,
+         default="INFO",
+         help="Log error when tasks are not registered.",
+@@ -120,6 +134,7 @@
+         help="Path to additional task config YAMLs to include",
+     )
+     parser.add_argument(
++        "--trust_remote_code",
+         action="store_true",
+         default=False,
+         help="If True, allow custom code in tasks and models",
+@@ -130,6 +145,7 @@
+         help="If True, track memory usage",
+     )
+     parser.add_argument(
++        "--seed",
+         type=int,
+         default=1234,
+         help="Random seed for few-shot sampling",
+@@ -140,6 +156,7 @@
+         help="If True, use deterministic few-shot sampling",
+     )
+     parser.add_argument(
++        "--decontamination_ngrams_path",
+         default=None,
+         help="Path to ngrams for decontamination",
+     )
+@@ -150,6 +167,7 @@
+         help="If True, show progress bar",
+     )
+     parser.add_argument(
++        "--auto_batch_size",
+         action="store_true",
+         default=False,
+         help="If True, automatically find the largest batch size that fits",
+@@ -160,6 +178,7 @@
+         help="If True, use the vLLM backend for faster inference",
+     )
+     parser.add_argument(
++        "--vllm_args",
+         default="",
+         help="Comma separated string arguments for vLLM, e.g. `tensor_parallel_size=2`",
+     )
+@@ -170,6 +189,7 @@
+         help="If True, use the Mamba backend for state space models",
+     )
+     parser.add_argument(
++        "--mamba_args",
+         default="",
+         help="Comma separated string arguments for Mamba, e.g. `d_state=16`",
+     )
+@@ -180,6 +200,7 @@
+         help="If True, use the DeepSparse backend for sparse models",
+     )
+     parser.add_argument(
++        "--deepsparse_args",
+         default="",
+         help="Comma separated string arguments for DeepSparse, e.g. `num_cores=4`",
+     )
+@@ -190,6 +211,7 @@
+         help="If True, use the SparseML backend for quantized sparse models",
+     )
+     parser.add_argument(
++        "--sparseml_args",
+         default="",
+         help="Comma separated string arguments for SparseML, e.g. `recipe=recipe.yaml`",
+     )
+@@ -200,6 +222,7 @@
+         help="If True, use the OpenVINO backend for Intel models",
+     )
+     parser.add_argument(
++        "--openvino_args",
+         default="",
+         help="Comma separated string arguments for OpenVINO, e.g. `device=CPU`",
+     )
+@@ -210,6 +233,7 @@
+         help="If True, use the Neuron backend for AWS inf2 instances",
+     )
+     parser.add_argument(
++        "--neuronx_args",
+         default="",
+         help="Comma separated string arguments for Neuron, e.g. `num_cores=2`",
+     )
+@@ -220,6 +244,7 @@
+         help="If True, use the GGUF backend for llama.cpp models",
+     )
+     parser.add_argument(
++        "--gguf_args",
+         default="",
+         help="Comma separated string arguments for GGUF, e.g. `n_gpu_layers=20`",
+     )
+@@ -230,6 +255,7 @@
+         help="If True, use the Anthropic API for Claude models",
+     )
+     parser.add_argument(
++        "--anthropic_args",
+         default="",
+         help="Comma separated string arguments for Anthropic, e.g. `model=claude-3-opus-20240229`",
+     )
+@@ -240,6 +266,7 @@
+         help="If True, use the OpenAI API for GPT models",
+     )
+     parser.add_argument(
++        "--openai_args",
+         default="",
+         help="Comma separated string arguments for OpenAI, e.g. `model=gpt-4`",
+     )
+@@ -250,6 +277,7 @@
+         help="If True, use the TextSynth API for TextSynth models",
+     )
+     parser.add_argument(
++        "--textsynth_args",
+         default="",
+         help="Comma separated string arguments for TextSynth, e.g. `engine=granite-3b`",
+     )
+@@ -260,6 +288,7 @@
+         help="If True, use the Cohere API for Cohere models",
+     )
+     parser.add_argument(
++        "--cohere_args",
+         default="",
+         help="Comma separated string arguments for Cohere, e.g. `model=command`",
+     )
+@@ -270,6 +299,7 @@
+         help="If True, use the Local API for local models",
+     )
+     parser.add_argument(
++        "--local_args",
+         default="",
+         help="Comma separated string arguments for Local API, e.g. `base_url=http://localhost:8000`",
+     )
+@@ -280,6 +310,7 @@
+         help="If True, use the Nemo backend for NVIDIA Nemo models",
+     )
+     parser.add_argument(
++        "--nemo_args",
+         default="",
+         help="Comma separated string arguments for Nemo, e.g. `path=/path/to/model.nemo`",
+     )
+@@ -290,6 +321,7 @@
+         help="If True, use the VLLM backend for vLLM models",
+     )
+     parser.add_argument(
++        "--vllm_backend_args",
+         default="",
+         help="Comma separated string arguments for VLLM backend, e.g. `tensor_parallel_size=2`",
+     )
+@@ -300,6 +332,7 @@
+         help="If True, use the Mamba backend for Mamba models",
+     )
+     parser.add_argument(
++        "--mamba_backend_args",
+         default="",
+         help="Comma separated string arguments for Mamba backend, e.g. `d_state=16`",
+     )
+@@ -310,6 +343,7 @@
+         help="If True, use the DeepSparse backend for DeepSparse models",
+     )
+     parser.add_argument(
++        "--deepsparse_backend_args",
+         default="",
+         help="Comma separated string arguments for DeepSparse backend, e.g. `num_cores=4`",
+     )
+@@ -320,6 +354,7 @@
+         help="If True, use the SparseML backend for SparseML models",
+     )
+     parser.add_argument(
++        "--sparseml_backend_args",
+         default="",
+         help="Comma separated string arguments for SparseML backend, e.g. `recipe=recipe.yaml`",
+     )
+@@ -330,6 +365,7 @@
+         help="If True, use the OpenVINO backend for OpenVINO models",
+     )
+     parser.add_argument(
++        "--openvino_backend_args",
+         default="",
+         help="Comma separated string arguments for OpenVINO backend, e.g. `device=CPU`",
+     )
+@@ -340,6 +376,7 @@
+         help="If True, use the Neuron backend for Neuron models",
+     )
+     parser.add_argument(
++        "--neuron_backend_args",
+         default="",
+         help="Comma separated string arguments for Neuron backend, e.g. `num_cores=2`",
+     )
+@@ -350,6 +387,7 @@
+         help="If True, use the GGUF backend for GGUF models",
+     )
+     parser.add_argument(
++        "--gguf_backend_args",
+         default="",
+         help="Comma separated string arguments for GGUF backend, e.g. `n_gpu_layers=20`",
+     )
+@@ -360,6 +398,7 @@
+         help="If True, use the Anthropic backend for Anthropic models",
+     )
+     parser.add_argument(
++        "--anthropic_backend_args",
+         default="",
+         help="Comma separated string arguments for Anthropic backend, e.g. `model=claude-3-opus-20240229`",
+     )
+@@ -370,6 +409,7 @@
+         help="If True, use the OpenAI backend for OpenAI models",
+     )
+     parser.add_argument(
++        "--openai_backend_args",
+         default="",
+         help="Comma separated string arguments for OpenAI backend, e.g. `model=gpt-4`",
+     )
+@@ -380,6 +420,7 @@
+         help="If True, use the TextSynth backend for TextSynth models",
+     )
+     parser.add_argument(
++        "--textsynth_backend_args",
+         default="",
+         help="Comma separated string arguments for TextSynth backend, e.g. `engine=granite-3b`",
+     )
+@@ -390,6 +431,7 @@
+         help="If True, use the Cohere backend for Cohere models",
+     )
+     parser.add_argument(
++        "--cohere_backend_args",
+         default="",
+         help="Comma separated string arguments for Cohere backend, e.g. `model=command`",
+     )
+@@ -400,6 +442,7 @@
+         help="If True, use the Local backend for Local models",
+     )
+     parser.add_argument(
++        "--local_backend_args",
+         default="",
+         help="Comma separated string arguments for Local backend, e.g. `base_url=http://localhost:8000`",
+     )
+@@ -410,6 +453,7 @@
+         help="If True, use the Nemo backend for Nemo models",
+     )
+     parser.add_argument(
++        "--nemo_backend_args",
+         default="",
+         help="Comma separated string arguments for Nemo backend, e.g. `path=/path/to/model.nemo`",
+     )
+@@ -420,6 +464,7 @@
+         help="If True, use the VLLM backend for VLLM models",
+     )
+     parser.add_argument(
++        "--vllm_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for VLLM backend, e.g. `tensor_parallel_size=2`",
+     )
+@@ -430,6 +475,7 @@
+         help="If True, use the Mamba backend for Mamba models",
+     )
+     parser.add_argument(
++        "--mamba_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for Mamba backend, e.g. `d_state=16`",
+     )
+@@ -440,6 +486,7 @@
+         help="If True, use the DeepSparse backend for DeepSparse models",
+     )
+     parser.add_argument(
++        "--deepsparse_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for DeepSparse backend, e.g. `num_cores=4`",
+     )
+@@ -450,6 +497,7 @@
+         help="If True, use the SparseML backend for SparseML models",
+     )
+     parser.add_argument(
++        "--sparseml_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for SparseML backend, e.g. `recipe=recipe.yaml`",
+     )
+@@ -460,6 +508,7 @@
+         help="If True, use the OpenVINO backend for OpenVINO models",
+     )
+     parser.add_argument(
++        "--openvino_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for OpenVINO backend, e.g. `device=CPU`",
+     )
+@@ -470,6 +519,7 @@
+         help="If True, use the Neuron backend for Neuron models",
+     )
+     parser.add_argument(
++        "--neuron_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for Neuron backend, e.g. `num_cores=2`",
+     )
+@@ -480,6 +530,7 @@
+         help="If True, use the GGUF backend for GGUF models",
+     )
+     parser.add_argument(
++        "--gguf_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for GGUF backend, e.g. `n_gpu_layers=20`",
+     )
+@@ -490,6 +541,7 @@
+         help="If True, use the Anthropic backend for Anthropic models",
+     )
+     parser.add_argument(
++        "--anthropic_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for Anthropic backend, e.g. `model=claude-3-opus-20240229`",
+     )
+@@ -500,6 +552,7 @@
+         help="If True, use the OpenAI backend for OpenAI models",
+     )
+     parser.add_argument(
++        "--openai_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for OpenAI backend, e.g. `model=gpt-4`",
+     )
+@@ -510,6 +563,7 @@
+         help="If True, use the TextSynth backend for TextSynth models",
+     )
+     parser.add_argument(
++        "--textsynth_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for TextSynth backend, e.g. `engine=granite-3b`",
+     )
+@@ -520,6 +574,7 @@
+         help="If True, use the Cohere backend for Cohere models",
+     )
+     parser.add_argument(
++        "--cohere_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for Cohere backend, e.g. `model=command`",
+     )
+@@ -530,6 +585,7 @@
+         help="If True, use the Local backend for Local models",
+     )
+     parser.add_argument(
++        "--local_backend_backend_args",
+         default="",
+         help="Comma separated string arguments for Local backend, e.g. `base_url=http://localhost:8000`",
+     )
+@@ -540,6 +596,7 @@
+         help="If True, use the Nemo backend for Nemo models",
+     )
+     parser.add_argument(
++        "--nemo_backend_backend_args",
+         default="",
+         help="Comma separated string

@@ -1,0 +1,349 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -1,6 +1,7 @@
+ import inspect
+ import json
+ from functools import wraps
++from typing import Any, Callable, Type
+ 
+ from .api_gateway import Response
+ from .exceptions import BadRequestError, NotFoundError
+@@ -29,6 +30,7 @@ class AppSyncResolver:
+         self._resolvers: dict = {}
+         self._resolver_types: dict = {}
+         self._current_event: dict | None = None
++        self._exception_handlers: dict[Type[Exception], Callable] = {}
+ 
+     @property
+     def current_event(self) -> dict | None:
+@@ -36,6 +38,56 @@ class AppSyncResolver:
+         """Get the current AppSync event being processed."""
+         return self._current_event
+ 
++    def exception_handler(self, exc_class: Type[Exception] | list[Type[Exception]]):
++        """
++        Decorator to register an exception handler for one or more exception types.
++
++        Args:
++            exc_class: A single exception type or list of exception types to handle
++
++        Returns:
++            Decorator function that registers the exception handler
++
++        Example:
++            @app.exception_handler(ValueError)
++            def handle_value_error(ex: ValueError):
++                return {"message": "Custom error message"}
++        """
++        def register_exception_handler(func: Callable):
++            # Handle single exception type
++            if isinstance(exc_class, type) and issubclass(exc_class, Exception):
++                self._exception_handlers[exc_class] = func
++            # Handle list of exception types
++            elif isinstance(exc_class, list):
++                for exc_type in exc_class:
++                    if isinstance(exc_type, type) and issubclass(exc_type, Exception):
++                        self._exception_handlers[exc_type] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: Type[Exception]) -> Callable | None:
++        """
++        Look up the registered exception handler for the given exception type.
++
++        This method checks for exact matches first, then looks for handlers
++        registered for base classes of the exception.
++
++        Args:
++            exp_type: The exception type to look up
++
++        Returns:
++            Registered exception handler function if found, None otherwise
++        """
++        # Check for exact match first
++        if exp_type in self._exception_handlers:
++            return self._exception_handlers[exp_type]
++
++        # Check for base class handlers
++        for handler_type, handler_func in self._exception_handlers.items():
++            if issubclass(exp_type, handler_type):
++                return handler_func
++
++        return None
++
+     def resolver(self, field_name: str | None = None, type_name: str | None = None):
+         """
+         Decorator to register a function as an AppSync resolver.
+@@ -176,7 +228,7 @@ class AppSyncResolver:
+ 
+         return decorator
+ 
+-    def resolve(self, event: dict, context) -> dict:
++    def resolve(self, event: dict, context: Any) -> dict:
+         """
+         Resolve the AppSync event.
+ 
+@@ -186,6 +238,16 @@ class AppSyncResolver:
+             context: Lambda context object
+         """
+         self._current_event = event
++
++        try:
++            return self._resolve_event(event, context)
++        except Exception as e:
++            # Look up exception handler
++            handler = self._lookup_exception_handler(type(e))
++            if handler:
++                return handler(e)
++            # Re-raise if no handler found
++            raise
+ 
+         return self._resolve_event(event, context)
+ 
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,37 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    """Handle ValueError exceptions in AppSync resolvers."""
++    return {
++        "message": f"Validation error: {str(ex)}",
++        "errorType": "VALIDATION_ERROR"
++    }
++
++
++@app.exception_handler([KeyError, AttributeError])
++def handle_key_attribute_error(ex: Exception):
++    """Handle both KeyError and AttributeError exceptions."""
++    return {
++        "message": f"Data access error: {str(ex)}",
++        "errorType": "DATA_ACCESS_ERROR"
++    }
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    """Example resolver that may raise exceptions."""
++    if not id:
++        raise ValueError("ID cannot be empty")
++
++    # Business logic that might raise other exceptions
++    data_store = {"required_key": "value"}
++    return data_store[id]  # This might raise KeyError
++
++
++def lambda_handler(event, context):
++    """Lambda handler entry point."""
++    return app.resolve(event, context)
+diff --git a/tests/functional/event_handler/test_appsync_exception_handling.py b/tests/functional/event_handler/test_appsync_exception_handling.py
+new file mode 100644
+--- /dev/null
++++ b/tests/functional/event_handler/test_appsync_exception_handling.py
+@@ -0,0 +1,94 @@
++import pytest
++from aws_lambda_powertools.event_handler import AppSyncResolver
++
++
++class TestAppSyncExceptionHandling:
++    def setup_method(self):
++        self.app = AppSyncResolver()
++
++    def test_exception_handler_registration(self):
++        """Test that exception handlers can be registered."""
++        @self.app.exception_handler(ValueError)
++        def handle_value_error(ex):
++            return {"handled": True}
++
++        assert ValueError in self.app._exception_handlers
++
++    def test_exception_handler_execution(self):
++        """Test that registered exception handlers are executed."""
++        @self.app.exception_handler(ValueError)
++        def handle_value_error(ex):
++            return {"message": "Handled ValueError"}
++
++        @self.app.resolver(field_name="testField")
++        def test_resolver():
++            raise ValueError("Test error")
++
++        # Mock AppSync event
++        event = {
++            "fieldName": "testField",
++            "arguments": {}
++        }
++
++        result = self.app.resolve(event, {})
++        assert result == {"message": "Handled ValueError"}
++
++    def test_multiple_exception_types(self):
++        """Test handling multiple exception types with one handler."""
++        @self.app.exception_handler([ValueError, TypeError])
++        def handle_errors(ex):
++            return {"message": f"Handled {type(ex).__name__}"}
++
++        @self.app.resolver(field_name="testField")
++        def test_resolver():
++            raise ValueError("Test error")
++
++        event = {"fieldName": "testField", "arguments": {}}
++        result = self.app.resolve(event, {})
++        assert "Handled ValueError" in result["message"]
++
++    def test_no_handler_found(self):
++        """Test that unhandled exceptions are re-raised."""
++        @self.app.resolver(field_name="testField")
++        def test_resolver():
++            raise ValueError("Unhandled error")
++
++        event = {"fieldName": "testField", "arguments": {}}
++
++        with pytest.raises(ValueError):
++            self.app.resolve(event, {})
++
++    def test_inheritance_handling(self):
++        """Test that handlers for base classes catch derived exceptions."""
++        class CustomError(ValueError):
++            pass
++
++        @self.app.exception_handler(ValueError)
++        def handle_value_error(ex):
++            return {"message": "Base handler called"}
++
++        @self.app.resolver(field_name="testField")
++        def test_resolver():
++            raise CustomError("Derived error")
++
++        event = {"fieldName": "testField", "arguments": {}}
++        result = self.app.resolve(event, {})
++        assert result == {"message": "Base handler called"}
++
++    def test_exception_handler_with_arguments(self):
++        """Test that exception handlers work with resolvers that have arguments."""
++        @self.app.exception_handler(ValueError)
++        def handle_value_error(ex):
++            return {"message": "Handled", "error": str(ex)}
++
++        @self.app.resolver(field_name="testField")
++        def test_resolver(arg1: str):
++            if arg1 == "error":
++                raise ValueError("Argument caused error")
++            return {"result": arg1}
++
++        event = {
++            "fieldName": "testField",
++            "arguments": {"arg1": "error"}
++        }
++        result = self.app.resolve(event, {})
++        assert result["message"] == "Handled"
+diff --git a/docs/content/event-handler/appsync.md b/docs/content/event-handler/appsync.md
+--- a/docs/content/event-handler/appsync.md
++++ b/docs/content/event-handler/appsync.md
+@@ -1,5 +1,5 @@
+ ---
+-description: How to use AppSyncResolver to build AppSync GraphQL resolvers
++description: How to use AppSyncResolver to build AppSync GraphQL resolvers with exception handling
+ ---
+ 
+ # AppSync
+@@ -7,6 +7,7 @@ description: How to use AppSyncResolver to build AppSync GraphQL resolvers
+ The `AppSyncResolver` allows you to focus on your business logic, instead of having to deal with the boilerplate around extracting arguments, performing serialization, etc.
+ 
+ ## Key features
++
+ * Focus on writing your business logic
+ * Auto-deserialize AppSync arguments
+ * Built-in error handling
+@@ -14,6 +15,7 @@ The `AppSyncResolver` allows you to focus on your business logic, instead of hav
+ * Support for pipeline resolvers
+ 
+ ## Defining resolvers
++
+ You can define a resolver using the `resolver` decorator.
+ 
+ ```python hl_lines="6"
+@@ -31,6 +33,7 @@ def get_todo(id: str) -> dict:
+ ```
+ 
+ ## Resolver types
++
+ You can also define a resolver for a specific GraphQL type using the `resolver_type` decorator.
+ 
+ ```python hl_lines="6"
+@@ -48,6 +51,7 @@ def resolve_type(obj: dict) -> str:
+ ```
+ 
+ ## Pipeline resolvers
++
+ You can define a pipeline resolver using the `resolver` decorator with a `type_name` argument.
+ 
+ ```python hl_lines="6 12"
+@@ -71,6 +75,7 @@ def after_function(prev_result: dict) -> dict:
+ ```
+ 
+ ## Accessing the current event
++
+ You can access the current AppSync event being processed via the `current_event` property.
+ 
+ ```python hl_lines="8"
+@@ -88,6 +93,7 @@ def get_todo(id: str) -> dict:
+ ```
+ 
+ ## Built-in error handling
++
+ The resolver automatically handles known errors and returns the appropriate AppSync error response.
+ 
+ ```python hl_lines="8"
+@@ -103,6 +109,44 @@ def get_todo(id: str) -> dict:
+     return {"id": id, "title": "My todo"}
+ ```
+ 
++## Exception Handling
++
++The `AppSyncResolver` supports custom exception handling through the `@app.exception_handler` decorator.
++
++### Basic Usage
++
++```python
++from aws_lambda_powertools.event_handler import AppSyncResolver
++
++app = AppSyncResolver()
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    return {"message": "A validation error occurred"}
++
++@app.resolver(field_name="createItem")
++def create_item():
++    raise ValueError("Invalid input")
++```
++
++### Handling Multiple Exception Types
++
++```python
++@app.exception_handler([ValueError, TypeError])
++def handle_multiple_errors(ex: Exception):
++    return {"message": f"Error: {str(ex)}"}
++```
++
++### Important Notes
++
++- Exception handlers are only supported for synchronous resolvers
++- If no handler is found for an exception, it will be re-raised
++- Handlers registered for base exception classes will also handle derived exceptions
++
++## Advanced
++
++### Accessing the current event
++
+ You can also access the current event from within your resolver functions:
+ 
+ ```python hl_lines="8"

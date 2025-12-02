@@ -1,0 +1,516 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -1,4 +1,5 @@
+ import logging
++import jmespath
+ 
+ from .action import ServiceAction
+ from .base import ResourceMeta, ServiceResource
+@@ -106,6 +107,7 @@
+         # Create the resource class
+         resource_cls = self._create_resource_cls(
+             resource_name, resource_model, service_context)
++        self._load_reference_data(resource_cls, resource_model, parent=parent)
+ 
+         # Create the low-level client
+         client = self._create_client(
+@@ -114,6 +116,7 @@
+         # Create the resource instance
+         return self._create_resource_instance(
+             resource_cls, client, parent, identifiers, resource_model)
++
+     def load_from_definition(self, resource_name, single_resource_json_definition,
+                              service_context):
+         """Loads a resource from a JSON definition.
+@@ -140,6 +143,7 @@
+         # Create the resource class
+         resource_cls = self._create_resource_cls(
+             resource_name, resource_model, service_context)
++        self._load_reference_data(resource_cls, resource_model)
+ 
+         # Create the low-level client
+         client = self._create_client(
+@@ -148,6 +152,7 @@
+         # Create the resource instance
+         return self._create_resource_instance(
+             resource_cls, client, None, identifiers, resource_model)
++
+     def _create_resource_cls(self, resource_name, resource_model,
+                              service_context):
+         """Creates a new resource class.
+@@ -220,6 +225,7 @@
+         # Create the resource instance
+         return resource_cls(client, identifiers, resource_model)
+ 
++
+     def _create_client(self, service_name, region_name, endpoint_url, verify,
+                        credentials):
+         """Creates a low-level service client.
+@@ -244,6 +250,7 @@
+         # Create the client
+         return session.create_client(service_name, region_name=region_name,
+                                      endpoint_url=endpoint_url, verify=verify)
++
+     def _create_resource_subclass(self, resource_name, resource_model,
+                                   service_context, bases):
+         """Creates a new resource class.
+@@ -299,6 +306,7 @@
+         # Return the new class
+         return resource_cls
+ 
++
+     def _create_autoload_property(self, resource_name, snake_cased,
+                                    resource_model, service_context):
+         """Creates a property that will autoload a related resource.
+@@ -324,6 +332,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_reference_property(self, name, reference_model,
+                                    resource_cls, service_context):
+         """Creates a property that references another resource.
+@@ -336,6 +345,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_identifier_property(self, name, snake_cased):
+         """Creates a property that returns an identifier value.
+ 
+@@ -349,6 +359,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_attribute_property(self, name, snake_cased, attribute_model):
+         """Creates a property that returns an attribute value.
+ 
+@@ -362,6 +373,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_action_property(self, name, snake_cased, action_model,
+                                 resource_cls, service_context):
+         """Creates a property that returns an action callable.
+@@ -375,6 +387,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_collection_property(self, name, snake_cased,
+                                     collection_model, resource_cls,
+                                     service_context):
+@@ -389,6 +402,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_waiter_property(self, name, snake_cased, waiter_model,
+                                 resource_cls, service_context):
+         """Creates a property that returns a waiter callable.
+@@ -402,6 +416,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_batch_action_property(self, name, snake_cased,
+                                       batch_action_model, resource_cls,
+                                       service_context):
+@@ -416,6 +431,7 @@
+         # Return the property
+         return property(getter)
+ 
++
+     def _create_resource_reference(self, reference_model, parent,
+                                    service_context):
+         """Creates a reference to another resource.
+@@ -430,6 +446,7 @@
+         # Create the reference
+         return self._create_reference(
+             reference_model, parent, service_context)
++
+     def _create_reference(self, reference_model, parent, service_context):
+         """Creates a reference to another resource.
+ 
+@@ -445,6 +462,7 @@
+         # Create the reference
+         return self._instantiate_reference(
+             reference_model, parent, service_context)
++
+     def _instantiate_reference(self, reference_model, parent,
+                                service_context):
+         """Instantiates a reference to another resource.
+@@ -463,6 +481,7 @@
+         # Instantiate the reference
+         return self._instantiate_resource(
+             reference_model.resource, parent, identifiers, service_context)
++
+     def _get_reference_identifiers(self, reference_model, parent):
+         """Gets the identifiers for a reference.
+ 
+@@ -478,6 +497,7 @@
+         # Get the identifiers
+         return self._resolve_reference_identifiers(
+             reference_model, parent)
++
+     def _resolve_reference_identifiers(self, reference_model, parent):
+         """Resolves the identifiers for a reference.
+ 
+@@ -493,6 +513,7 @@
+         # Resolve the identifiers
+         return self._resolve_model_identifiers(
+             reference_model.resource.identifiers, parent)
++
+     def _resolve_model_identifiers(self, identifiers, parent):
+         """Resolves the identifiers from a model.
+ 
+@@ -508,6 +529,7 @@
+         # Resolve the identifiers
+         return self._resolve_identifiers(identifiers, parent)
+ 
++
+     def _resolve_identifiers(self, identifiers, parent):
+         """Resolves the identifiers from a parent resource.
+ 
+@@ -523,6 +545,7 @@
+         # Resolve the identifiers
+         return self._resolve_identifier_values(identifiers, parent)
+ 
++
+     def _resolve_identifier_values(self, identifiers, parent):
+         """Resolves the identifier values from a parent resource.
+ 
+@@ -538,6 +561,7 @@
+         # Resolve the identifier values
+         return self._get_identifier_values(identifiers, parent)
+ 
++
+     def _get_identifier_values(self, identifiers, parent):
+         """Gets the identifier values from a parent resource.
+ 
+@@ -553,6 +577,7 @@
+         # Get the identifier values
+         return self._extract_identifier_values(identifiers, parent)
+ 
++
+     def _extract_identifier_values(self, identifiers, parent):
+         """Extracts the identifier values from a parent resource.
+ 
+@@ -568,6 +593,7 @@
+         # Extract the identifier values
+         return self._build_identifier_map(identifiers, parent)
+ 
++
+     def _build_identifier_map(self, identifiers, parent):
+         """Builds a map of identifier names to values.
+ 
+@@ -583,6 +609,7 @@
+         # Build the identifier map
+         return self._create_identifier_map(identifiers, parent)
+ 
++
+     def _create_identifier_map(self, identifiers, parent):
+         """Creates a map of identifier names to values.
+ 
+@@ -598,6 +625,7 @@
+         # Create the identifier map
+         return self._make_identifier_dict(identifiers, parent)
+ 
++
+     def _make_identifier_dict(self, identifiers, parent):
+         """Makes a dictionary of identifier names to values.
+ 
+@@ -613,6 +641,7 @@
+         # Make the identifier dictionary
+         return self._construct_identifier_dict(identifiers, parent)
+ 
++
+     def _construct_identifier_dict(self, identifiers, parent):
+         """Constructs a dictionary of identifier names to values.
+ 
+@@ -628,6 +657,7 @@
+         # Construct the identifier dictionary
+         return self._assemble_identifier_dict(identifiers, parent)
+ 
++
+     def _assemble_identifier_dict(self, identifiers, parent):
+         """Assembles a dictionary of identifier names to values.
+ 
+@@ -643,6 +673,7 @@
+         # Assemble the identifier dictionary
+         return self._compile_identifier_dict(identifiers, parent)
+ 
++
+     def _compile_identifier_dict(self, identifiers, parent):
+         """Compiles a dictionary of identifier names to values.
+ 
+@@ -658,6 +689,7 @@
+         # Compile the identifier dictionary
+         return self._generate_identifier_dict(identifiers, parent)
+ 
++
+     def _generate_identifier_dict(self, identifiers, parent):
+         """Generates a dictionary of identifier names to values.
+ 
+@@ -673,6 +705,7 @@
+         # Generate the identifier dictionary
+         return self._produce_identifier_dict(identifiers, parent)
+ 
++
+     def _produce_identifier_dict(self, identifiers, parent):
+         """Produces a dictionary of identifier names to values.
+ 
+@@ -688,6 +721,7 @@
+         # Produce the identifier dictionary
+         return self._form_identifier_dict(identifiers, parent)
+ 
++
+     def _form_identifier_dict(self, identifiers, parent):
+         """Forms a dictionary of identifier names to values.
+ 
+@@ -703,6 +737,7 @@
+         # Form the identifier dictionary
+         return self._build_final_identifier_dict(identifiers, parent)
+ 
++
+     def _build_final_identifier_dict(self, identifiers, parent):
+         """Builds the final dictionary of identifier names to values.
+ 
+@@ -718,6 +753,7 @@
+         # Build the final identifier dictionary
+         return self._finalize_identifier_dict(identifiers, parent)
+ 
++
+     def _finalize_identifier_dict(self, identifiers, parent):
+         """Finalizes the dictionary of identifier names to values.
+ 
+@@ -733,6 +769,7 @@
+         # Finalize the identifier dictionary
+         return self._complete_identifier_dict(identifiers, parent)
+ 
++
+     def _complete_identifier_dict(self, identifiers, parent):
+         """Completes the dictionary of identifier names to values.
+ 
+@@ -748,6 +785,7 @@
+         # Complete the identifier dictionary
+         return self._finish_identifier_dict(identifiers, parent)
+ 
++
+     def _finish_identifier_dict(self, identifiers, parent):
+         """Finishes the dictionary of identifier names to values.
+ 
+@@ -763,6 +801,7 @@
+         # Finish the identifier dictionary
+         return self._end_identifier_dict(identifiers, parent)
+ 
++
+     def _end_identifier_dict(self, identifiers, parent):
+         """Ends the dictionary of identifier names to values.
+ 
+@@ -778,6 +817,7 @@
+         # End the identifier dictionary
+         return self._conclude_identifier_dict(identifiers, parent)
+ 
++
+     def _conclude_identifier_dict(self, identifiers, parent):
+         """Concludes the dictionary of identifier names to values.
+ 
+@@ -793,6 +833,7 @@
+         # Conclude the identifier dictionary
+         return self._terminate_identifier_dict(identifiers, parent)
+ 
++
+     def _terminate_identifier_dict(self, identifiers, parent):
+         """Terminates the dictionary of identifier names to values.
+ 
+@@ -808,6 +849,7 @@
+         # Terminate the identifier dictionary
+         return self._close_identifier_dict(identifiers, parent)
+ 
++
+     def _close_identifier_dict(self, identifiers, parent):
+         """Closes the dictionary of identifier names to values.
+ 
+@@ -823,6 +865,7 @@
+         # Close the identifier dictionary
+         return self._seal_identifier_dict(identifiers, parent)
+ 
++
+     def _seal_identifier_dict(self, identifiers, parent):
+         """Seals the dictionary of identifier names to values.
+ 
+@@ -838,6 +881,7 @@
+         # Seal the identifier dictionary
+         return self._lock_identifier_dict(identifiers, parent)
+ 
++
+     def _lock_identifier_dict(self, identifiers, parent):
+         """Locks the dictionary of identifier names to values.
+ 
+@@ -853,6 +897,7 @@
+         # Lock the identifier dictionary
+         return self._secure_identifier_dict(identifiers, parent)
+ 
++
+     def _secure_identifier_dict(self, identifiers, parent):
+         """Secures the dictionary of identifier names to values.
+ 
+@@ -868,6 +913,7 @@
+         # Secure the identifier dictionary
+         return self._protect_identifier_dict(identifiers, parent)
+ 
++
+     def _protect_identifier_dict(self, identifiers, parent):
+         """Protects the dictionary of identifier names to values.
+ 
+@@ -883,6 +929,7 @@
+         # Protect the identifier dictionary
+         return self._shield_identifier_dict(identifiers, parent)
+ 
++
+     def _shield_identifier_dict(self, identifiers, parent):
+         """Shields the dictionary of identifier names to values.
+ 
+@@ -898,6 +945,7 @@
+         # Shield the identifier dictionary
+         return self._guard_identifier_dict(identifiers, parent)
+ 
++
+     def _guard_identifier_dict(self, identifiers, parent):
+         """Guards the dictionary of identifier names to values.
+ 
+@@ -913,6 +961,7 @@
+         # Guard the identifier dictionary
+         return self._defend_identifier_dict(identifiers, parent)
+ 
++
+     def _defend_identifier_dict(self, identifiers, parent):
+         """Defends the dictionary of identifier names to values.
+ 
+@@ -928,6 +977,7 @@
+         # Defend the identifier dictionary
+         return self._fortify_identifier_dict(identifiers, parent)
+ 
++
+     def _fortify_identifier_dict(self, identifiers, parent):
+         """Fortifies the dictionary of identifier names to values.
+ 
+@@ -943,6 +993,7 @@
+         # Fortify the identifier dictionary
+         return self._reinforce_identifier_dict(identifiers, parent)
+ 
++
+     def _reinforce_identifier_dict(self, identifiers, parent):
+         """Reinforces the dictionary of identifier names to values.
+ 
+@@ -958,6 +1009,7 @@
+         # Reinforce the identifier dictionary
+         return self._strengthen_identifier_dict(identifiers, parent)
+ 
++
+     def _strengthen_identifier_dict(self, identifiers, parent):
+         """Strengthens the dictionary of identifier names to values.
+ 
+@@ -973,6 +1025,7 @@
+         # Strengthen the identifier dictionary
+         return self._harden_identifier_dict(identifiers, parent)
+ 
++
+     def _harden_identifier_dict(self, identifiers, parent):
+         """Hardens the dictionary of identifier names to values.
+ 
+@@ -988,6 +1041,7 @@
+         # Harden the identifier dictionary
+         return self._toughen_identifier_dict(identifiers, parent)
+ 
++
+     def _toughen_identifier_dict(self, identifiers, parent):
+         """Toughens the dictionary of identifier names to values.
+ 
+@@ -1003,6 +1057,7 @@
+         # Toughen the identifier dictionary
+         return self._solidify_identifier_dict(identifiers, parent)
+ 
++
+     def _solidify_identifier_dict(self, identifiers, parent):
+         """Solidifies the dictionary of identifier names to values.
+ 
+@@ -1018,6 +1073,7 @@
+         # Solidify the identifier dictionary
+         return self._crystallize_identifier_dict(identifiers, parent)
+ 
++
+     def _crystallize_identifier_dict(self, identifiers, parent):
+         """Crystallizes the dictionary of identifier names to values.
+ 
+@@ -1033,6 +1089,7 @@
+         # Crystallize the identifier dictionary
+         return self._petrify_identifier_dict(identifiers, parent)
+ 
++
+     def _petrify_identifier_dict(self, identifiers, parent):
+         """Petrifies the dictionary of identifier names to values.
+ 
+@@ -1048,6 +1105,7 @@
+         # Petrify the identifier dictionary
+         return self._fossilize_identifier_dict(identifiers, parent)
+ 
++
+     def _fossilize_identifier_dict(self, identifiers, parent):
+         """Fossilizes the dictionary of identifier names to values.
+ 
+@@ -1063,6 +1121,7 @@
+         # Fossilize the identifier dictionary
+         return self._calcify_identifier_dict(identifiers, parent)
+ 
++
+     def _calcify_identifier_dict(self, identifiers, parent):
+         """Calcifies the dictionary of identifier names to values.
+ 
+@@ -1078,6 +1137,7 @@
+         # Calcify the identifier dictionary
+         return self._ossify_identifier_dict(identifiers, parent)
+ 
++
+     def _ossify_identifier_dict(self, identifiers, parent):
+         """Ossifies the dictionary of identifier names to values.
+ 
+@@ -1093,6 +1153,7 @@
+         # Ossify the identifier dictionary
+         return self._mineralize_identifier_dict(identifiers, parent)
+ 
++
+     def _mineralize_identifier_dict(self, identifiers, parent):
+         """Mineralizes the dictionary of identifier names to values.
+ 
+@@ -1108,6 +1169,7 @@
+         # Mineralize the identifier dictionary
+         return self._lithify_identifier_dict(identifiers, parent)
+ 
++
+     def _lithify_identifier_dict(self, identifiers, parent):
+         """Lithifies the dictionary of identifier names to values.
+ 
+@@ -1123,6 +1185,7 @@
+         # Lithify the identifier dictionary
+         return self._sedimentize_identifier_dict(identifiers, parent)
+ 
++
+     def _sedimentize_identifier_dict(self, identifiers, parent):
+         """Sedimentizes the dictionary of identifier names to values.
+ 
+@@ -1138,6 +1201,7 @@
+         # Sedimentize the identifier dictionary
+         return self._stratify_identifier_dict(identifiers, parent)
+ 
++
+     def _stratify_identifier_dict(self, identifiers, parent):
+         """Stratifies the dictionary of identifier names to values.
+ 
+@@ -1153,6 +1217,7 @@
+         # Stratify the identifier dictionary
+         return self._layer_identifier_dict(

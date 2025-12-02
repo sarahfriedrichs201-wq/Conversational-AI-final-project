@@ -1,0 +1,105 @@
+diff --git a/graphene/types/inputobjecttype.py b/graphene/types/inputobjecttype.py
+--- a/graphene/types/inputobjecttype.py
++++ b/graphene/types/inputobjecttype.py
+@@ -1,3 +1,4 @@
++"""
+ InputObjectType implementation for Graphene.
+ 
+ This module provides InputObjectType which allows defining input types for GraphQL mutations
+@@ -5,6 +6,7 @@
+ """
+ 
+ from .base import BaseOptions, BaseType
++from ..utils.subclass_with_meta import SubclassWithMeta_Meta
+ 
+ 
+ class InputObjectTypeOptions(BaseOptions):
+@@ -12,6 +14,18 @@
+     pass
+ 
+ 
++# Module-level configuration
++_INPUT_OBJECT_TYPE_DEFAULT_VALUE = None
++
++def set_input_object_type_default_value(default_value):
++    """
++    Change the sentinel value returned by non-specified fields in an InputObjectType.
++    
++    Useful to differentiate between a field not being set and a field being set to None
++    by using a sentinel value (e.g., Undefined is a good sentinel value for this purpose).
++    
++    This function should be called at the beginning of the app or in some other place 
++    where it is guaranteed to be called before any InputObjectType is defined.
++    
++    Args:
++        default_value: The value to return for non-specified input fields
++    """
++    global _INPUT_OBJECT_TYPE_DEFAULT_VALUE
++    _INPUT_OBJECT_TYPE_DEFAULT_VALUE = default_value
++
++
+ class InputObjectType(BaseType):
+     """
+     Input Object Type Definition
+@@ -20,6 +34,7 @@
+     """
+ 
+     @classmethod
++    def __init_subclass_with_meta__(cls, _meta=None, **options):
+     def __init_subclass_with_meta__(cls, _meta=None, **options):
+         if _meta is None:
+             _meta = InputObjectTypeOptions(cls)
+@@ -32,6 +47,7 @@
+         super(InputObjectType, cls).__init_subclass_with_meta__(_meta=_meta, **options)
+ 
+     def __init__(self, **kwargs):
++        from .inputobjecttype import _INPUT_OBJECT_TYPE_DEFAULT_VALUE
+         for field_name in self._meta.fields:
+             if field_name in kwargs:
+                 setattr(self, field_name, kwargs[field_name])
+             else:
+-                setattr(self, field_name, None)
++                setattr(self, field_name, _INPUT_OBJECT_TYPE_DEFAULT_VALUE)
+diff --git a/tests/types/test_inputobjecttype.py b/tests/types/test_inputobjecttype.py
+--- a/tests/types/test_inputobjecttype.py
++++ b/tests/types/test_inputobjecttype.py
+@@ -1,6 +1,8 @@
+ import pytest
+ 
+ from graphene import InputObjectType, String
++from graphene.types.inputobjecttype import set_input_object_type_default_value
++from graphql import Undefined
+ 
+ 
+ def test_inputobjecttype_can_be_initialized():
+@@ -21,3 +23,30 @@
+     assert input_instance.field1 == "foo"
+     assert input_instance.field2 == "bar"
+     assert input_instance.field3 is None
++
++
++def test_set_input_object_type_default_value():
++    """Test that set_input_object_type_default_value changes the default value."""
++    
++    # Test default behavior (None)
++    class TestInput(InputObjectType):
++        optional_field = String()
++    
++    input_instance = TestInput()
++    assert input_instance.optional_field is None
++    
++    # Test custom sentinel value
++    set_input_object_type_default_value(Undefined)
++    
++    class TestInput2(InputObjectType):
++        optional_field = String()
++    
++    input_instance2 = TestInput2()
++    assert input_instance2.optional_field is Undefined
++    
++    # Test explicit None vs unset
++    input_instance_explicit_none = TestInput2(optional_field=None)
++    assert input_instance_explicit_none.optional_field is None
++    
++    # Reset to default for other tests
++    set_input_object_type_default_value(None)

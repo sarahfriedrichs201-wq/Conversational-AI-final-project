@@ -1,0 +1,439 @@
+diff --git a/src/datasets/arrow_dataset.py b/src/datasets/arrow_dataset.py
+--- a/src/datasets/arrow_dataset.py
++++ b/src/datasets/arrow_dataset.py
+@@ -1,4 +1,5 @@
+ import copy
++import warnings
+ from dataclasses import dataclass, field
+ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+ 
+@@ -8,6 +9,7 @@
+ from . import config
+ from .features import Features
+ from .formatting import PythonFormatter, get_formatter
++from .info import DatasetInfo
+ from .table import ConcatenationTable, InMemoryTable, MemoryMappedTable, Table
+ from .utils import logging
+ from .utils.py_utils import first_non_null_value, zip_dict
+@@ -16,6 +18,7 @@
+ if TYPE_CHECKING:
+     import pandas as pd
+     import pyarrow as pa
++    from multiprocessing import Pool
+ 
+ 
+ logger = logging.get_logger(__name__)
+@@ -1848,6 +1851,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -1860,6 +1864,7 @@
+         fn_kwargs: Optional[dict] = None,
+         num_proc: Optional[int] = None,
+         desc: Optional[str] = None,
++        **kwargs,
+     ) -> "Dataset":
+         """
+         Apply a filter function to all elements in the dataset and return a new dataset
+@@ -1871,6 +1876,7 @@
+                 - `function(example: Dict) -> bool` if `with_indices=False` and `batched=False`
+                 - `function(example: Dict, indices: int) -> bool` if `with_indices=True` and `batched=False`
+                 - `function(batch: Dict[str, List]) -> List[bool]` if `batched=True` and `with_indices=False`
++                - `function(batch: Dict[str, List], indices: List[int]) -> List[bool]` if `batched=True` and `with_indices=True`
+         with_indices (`bool`, defaults to `False`): Provide example indices to `function`.
+         input_columns (`Optional[Union[str, List[str]]]`, defaults to `None`): Columns to be passed to `function` as positional arguments.
+         batched (`bool`, defaults to `False`): Provide batches of examples to `function`.
+@@ -1891,6 +1897,7 @@
+         Returns:
+             `Dataset`: A new dataset with filtered examples.
+         """
++        # TODO: Implement filter method
+         raise NotImplementedError
+ 
+     def flatten_indices(
+@@ -1900,6 +1907,7 @@
+         """
+         self._data = self._data.flatten_indices()
+         return self
++
+ 
+ class Dataset(DatasetMixin):
+     """A Dataset backed by an Arrow table."""
+@@ -2008,6 +2016,7 @@
+         self,
+         function: Optional[Callable] = None,
+         with_indices: bool = False,
++        input_columns: Optional[Union[str, List[str]]] = None,
+         batched: bool = False,
+         batch_size: Optional[int] = 1000,
+         remove_columns: Optional[List[str]] = None,
+@@ -2020,6 +2029,7 @@
+         fn_kwargs: Optional[dict] = None,
+         num_proc: Optional[int] = None,
+         desc: Optional[str] = None,
++        **kwargs,
+     ) -> "Dataset":
+         """
+         Apply a filter function to all elements in the dataset and return a new dataset
+@@ -2031,6 +2041,7 @@
+                 - `function(example: Dict) -> bool` if `with_indices=False` and `batched=False`
+                 - `function(example: Dict, indices: int) -> bool` if `with_indices=True` and `batched=False`
+                 - `function(batch: Dict[str, List]) -> List[bool]` if `batched=True` and `with_indices=False`
++                - `function(batch: Dict[str, List], indices: List[int]) -> List[bool]` if `batched=True` and `with_indices=True`
+         with_indices (`bool`, defaults to `False`): Provide example indices to `function`.
+         input_columns (`Optional[Union[str, List[str]]]`, defaults to `None`): Columns to be passed to `function` as positional arguments.
+         batched (`bool`, defaults to `False`): Provide batches of examples to `function`.
+@@ -2051,7 +2062,365 @@
+         Returns:
+             `Dataset`: A new dataset with filtered examples.
+         """
+-        raise NotImplementedError
++        # Input validation
++        if function is None:
++            raise ValueError("Filter function cannot be None")
++
++        # Handle input_columns by creating a wrapper function
++        if input_columns is not None:
++            if isinstance(input_columns, str):
++                input_columns = [input_columns]
++
++            original_function = function
++
++            def select_columns_wrapper(*args, **fn_kwargs):
++                if batched:
++                    if with_indices:
++                        batch, indices = args[0], args[1]
++                        selected_batch = {col: batch[col] for col in input_columns}
++                        return original_function(selected_batch, indices, **fn_kwargs)
++                    else:
++                        batch = args[0]
++                        selected_batch = {col: batch[col] for col in input_columns}
++                        return original_function(selected_batch, **fn_kwargs)
++                else:
++                    if with_indices:
++                        example, idx = args[0], args[1]
++                        selected_example = {col: example[col] for col in input_columns}
++                        return original_function(selected_example, idx, **fn_kwargs)
++                    else:
++                        example = args[0]
++                        selected_example = {col: example[col] for col in input_columns}
++                        return original_function(selected_example, **fn_kwargs)
++
++            function = select_columns_wrapper
++
++        # Prepare kwargs for internal implementation
++        filter_kwargs = {
++            "with_indices": with_indices,
++            "batched": batched,
++            "batch_size": batch_size,
++            "remove_columns": remove_columns,
++            "keep_in_memory": keep_in_memory,
++            "load_from_cache_file": load_from_cache_file,
++            "cache_file_name": cache_file_name,
++            "writer_batch_size": writer_batch_size,
++            "disable_nullable": disable_nullable,
++            "fn_kwargs": fn_kwargs,
++            "num_proc": num_proc,
++            "desc": desc or "Filtering",
++        }
++
++        # Use the Arrow implementation for better performance
++        return self._filter_with_arrow(function, **filter_kwargs)
++
++    def _filter_with_arrow(
++        self,
++        function: Callable,
++        with_indices: bool = False,
++        batched: bool = False,
++        batch_size: Optional[int] = 1000,
++        remove_columns: Optional[List[str]] = None,
++        keep_in_memory: bool = False,
++        load_from_cache_file: bool = True,
++        cache_file_name: Optional[str] = None,
++        writer_batch_size: Optional[int] = 1000,
++        disable_nullable: bool = True,
++        fn_kwargs: Optional[dict] = None,
++        num_proc: Optional[int] = None,
++        desc: Optional[str] = None,
++    ) -> "Dataset":
++        """
++        Filter implementation using direct Arrow table operations for better performance.
++        """
++        import pyarrow as pa
++
++        # Get the underlying Arrow table
++        table = self._data
++
++        # Remove columns if specified
++        if remove_columns:
++            table = table.drop_columns(remove_columns)
++
++        fn_kwargs = fn_kwargs or {}
++
++        if num_proc is not None and num_proc > 1:
++            # Multiprocessing implementation
++            return self._filter_multiprocess(
++                function=function,
++                with_indices=with_indices,
++                batched=batched,
++                batch_size=batch_size,
++                fn_kwargs=fn_kwargs,
++                num_proc=num_proc,
++                desc=desc,
++                table=table,
++                keep_in_memory=keep_in_memory,
++                load_from_cache_file=load_from_cache_file,
++                cache_file_name=cache_file_name,
++                writer_batch_size=writer_batch_size,
++                disable_nullable=disable_nullable,
++            )
++
++        all_indices_to_keep = []
++
++        if batched:
++            # Process in batches
++            batch_size = batch_size or 1000
++
++            for i in range(0, len(table), batch_size):
++                batch_end = min(i + batch_size, len(table))
++                batch_indices = list(range(i, batch_end))
++
++                # Extract batch
++                batch = table.slice(i, batch_end - i)
++                batch_dict = batch.to_pydict()
++
++                if with_indices:
++                    filter_results = function(batch_dict, batch_indices, **fn_kwargs)
++                else:
++                    filter_results = function(batch_dict, **fn_kwargs)
++
++                # Validate filter results
++                if not isinstance(filter_results, list):
++                    raise TypeError(
++                        f"When using batched=True, the filter function must return a list of booleans, but got {type(filter_results)}"
++                    )
++                if len(filter_results) != len(batch_indices):
++                    raise ValueError(
++                        f"When using batched=True, the filter function must return a list of length {len(batch_indices)} (batch size), but got length {len(filter_results)}"
++                    )
++
++                # Get indices to keep from this batch
++                batch_keep_indices = [
++                    batch_indices[j] for j, keep in enumerate(filter_results) if keep
++                ]
++                all_indices_to_keep.extend(batch_keep_indices)
++
++                if desc:
++                    # Update progress bar if needed
++                    pass
++        else:
++            # Process individual examples
++            for i in range(len(table)):
++                example = table.slice(i, 1).to_pydict()
++                # Convert single example from batch format
++                single_example = {k: v[0] for k, v in example.items()}
++
++                if with_indices:
++                    keep = function(single_example, i, **fn_kwargs)
++                else:
++                    keep = function(single_example, **fn_kwargs)
++
++                if not isinstance(keep, bool):
++                    raise TypeError(
++                        f"When using batched=False, the filter function must return a boolean, but got {type(keep)}"
++                    )
++
++                if keep:
++                    all_indices_to_keep.append(i)
++
++                if desc and i % 1000 == 0:
++                    # Update progress bar periodically
++                    pass
++
++        # Create new dataset with filtered indices
++        if not all_indices_to_keep:
++            # Return empty dataset if nothing matches
++            empty_table = table.slice(0, 0)
++            return Dataset(
++                empty_table,
++                info=self.info.copy(),
++                split=self.split,
++            )
++
++        # Sort indices to maintain original order
++        all_indices_to_keep.sort()
++
++        # Create filtered table
++        filtered_table = table.take(all_indices_to_keep)
++
++        # Create new dataset
++        filtered_dataset = Dataset(
++            filtered_table,
++            info=self.info.copy(),
++            split=self.split,
++        )
++
++        return filtered_dataset
++
++    def _filter_multiprocess(
++        self,
++        function: Callable,
++        with_indices: bool,
++        batched: bool,
++        batch_size: Optional[int],
++        fn_kwargs: Optional[dict],
++        num_proc: int,
++        desc: Optional[str],
++        table: "pa.Table",
++        keep_in_memory: bool,
++        load_from_cache_file: bool,
++        cache_file_name: Optional[str],
++        writer_batch_size: Optional[int],
++        disable_nullable: bool,
++    ) -> "Dataset":
++        """
++        Multiprocessing implementation of filter.
++        """
++        import pyarrow as pa
++        from multiprocessing import Pool
++
++        fn_kwargs = fn_kwargs or {}
++        batch_size = batch_size or 1000
++
++        # Split the table into chunks for each process
++        chunk_size = len(table) // num_proc
++        if len(table) % num_proc != 0:
++            chunk_size += 1
++
++        chunks = []
++        for i in range(0, len(table), chunk_size):
++            chunk_end = min(i + chunk_size, len(table))
++            chunks.append((i, chunk_end))
++
++        # Prepare arguments for each chunk
++        chunk_args = []
++        for chunk_start, chunk_end in chunks:
++            chunk_table = table.slice(chunk_start, chunk_end - chunk_start)
++            chunk_args.append(
++                (
++                    chunk_table,
++                    function,
++                    with_indices,
++                    batched,
++                    batch_size,
++                    fn_kwargs,
++                    chunk_start,
++                )
++            )
++
++        # Process chunks in parallel
++        with Pool(num_proc) as pool:
++            chunk_results = pool.map(_process_filter_chunk, chunk_args)
++
++        # Combine results from all chunks
++        all_indices_to_keep = []
++        for chunk_start, chunk_keep_indices in chunk_results:
++            # Adjust indices to global indices
++            adjusted_indices = [chunk_start + idx for idx in chunk_keep_indices]
++            all_indices_to_keep.extend(adjusted_indices)
++
++        # Sort indices to maintain original order
++        all_indices_to_keep.sort()
++
++        # Create filtered table
++        filtered_table = table.take(all_indices_to_keep)
++
++        # Create new dataset
++        filtered_dataset = Dataset(
++            filtered_table,
++            info=self.info.copy(),
++            split=self.split,
++        )
++
++        return filtered_dataset
++
++    def _filter_implementation(
++        self,
++        function: Callable,
++        with_indices: bool = False,
++        batched: bool = False,
++        batch_size: Optional[int] = 1000,
++        **kwargs,
++    ) -> "Dataset":
++        """
++        Internal implementation of the filter operation using map.
++        This is kept for backward compatibility but _filter_with_arrow is preferred.
++        """
++        warnings.warn(
++            "_filter_implementation is deprecated, use _filter_with_arrow instead",
++            DeprecationWarning,
++        )
++
++        # Create a wrapper function that converts filter results to the format expected by map
++        def filter_wrapper(*args, **wrapper_kwargs):
++            if batched:
++                # For batched processing
++                if with_indices:
++                    batch, indices = args[0], args[1]
++                    filter_results = function(batch, indices, **wrapper_kwargs)
++                else:
++                    batch = args[0]
++                    filter_results = function(batch, **wrapper_kwargs)
++
++                # Convert boolean list to indices of examples to keep
++                indices_to_keep = [i for i, keep in enumerate(filter_results) if keep]
++
++                if indices_to_keep:
++                    # Filter the batch to only include kept examples
++                    filtered_batch = {}
++                    for key in batch:
++                        filtered_batch[key] = [batch[key][i] for i in indices_to_keep]
++                    return filtered_batch
++                else:
++                    # Return empty batch if no examples are kept
++                    return {key: [] for key in batch}
++            else:
++                # For single example processing
++                if with_indices:
++                    example, idx = args[0], args[1]
++                    keep = function(example, idx, **wrapper_kwargs)
++                else:
++                    example = args[0]
++                    keep = function(example, **wrapper_kwargs)
++
++                # Return the example if it should be kept, None otherwise
++                return example if keep else None
++
++        # Use map with the wrapper function
++        filtered_dataset = self.map(
++            filter_wrapper,
++            with_indices=with_indices,
++            batched=batched,
++            batch_size=batch_size,
++            remove_columns=kwargs.get("remove_columns"),
++            keep_in_memory=kwargs.get("keep_in_memory", False),
++            load_from_cache_file=kwargs.get("load_from_cache_file", True),
++            cache_file_name=kwargs.get("cache_file_name"),
++            writer_batch_size=kwargs.get("writer_batch_size", 1000),
++            disable_nullable=kwargs.get("disable_nullable", True),
++            fn_kwargs=kwargs.get("fn_kwargs"),
++            num_proc=kwargs.get("num_proc"),
++            desc=kwargs.get("desc", "Filtering"),
++        )
++
++        # Remove None values (filtered out examples)
++        # Find indices of non-empty examples
++        valid_indices = []
++        for i in range(len(filtered_dataset)):
++            example = filtered_dataset[i]
++            # Check if the example is valid (not filtered out)
++            if example and any(
++                value is not None for value in example.values()
++            ):  # Simple check for non-empty
++                valid_indices.append(i)
++
++        # Create a new dataset

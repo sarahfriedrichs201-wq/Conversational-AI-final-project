@@ -1,0 +1,64 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -274,6 +274,25 @@
+         except OSError:
+             return False
+ 
++    def url(self, path: str, revision: Optional[str] = None) -> str:
++        """Get the HTTP URL of the given path.
++
++        Args:
++            path (`str`):
++                The path to the file or directory.
++            revision (`str`, *optional*):
++                The revision (e.g., branch, tag, or commit hash) of the repository.
++
++        Returns:
++            `str`: The HTTP URL of the given path.
++        """
++        resolved_path = self.resolve_path(path, revision=revision)
++        return hf_hub_url(
++            repo_id=resolved_path.repo_id,
++            revision=resolved_path.revision,
++            filename=resolved_path.path_in_repo,
++            repo_type=resolved_path.repo_type,
++            endpoint=self.endpoint,
++        )
+     @property
+     def transaction(self):
+         """A context within which files are committed together upon exit
+@@ -341,6 +360,16 @@
+                 path=self.resolved_path.unresolve(),
+             )
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file."""
++        return hf_hub_url(
++            repo_id=self.resolved_path.repo_id,
++            revision=self.resolved_path.revision,
++            filename=self.resolved_path.path_in_repo,
++            repo_type=self.resolved_path.repo_type,
++            endpoint=self.fs.endpoint,
++        )
++
+ 
+ class HfFileSystemStreamFile(fsspec.spec.AbstractBufferedFile):
+     def __init__(
+@@ -420,6 +449,16 @@
+             return
+         return super().__del__()
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file."""
++        return hf_hub_url(
++            repo_id=self.resolved_path.repo_id,
++            revision=self.resolved_path.revision,
++            filename=self.resolved_path.path_in_repo,
++            repo_type=self.resolved_path.repo_type,
++            endpoint=self.fs.endpoint,
++        )
++
+     def __reduce__(self):
+         return reopen, (self.fs, self.path, self.mode, self.blocksize, self.cache.name)
+ 

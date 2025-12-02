@@ -1,0 +1,143 @@
+diff --git a/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py b/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py
+--- a/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py
++++ b/samples/model-builder/vector_search/vector_search_find_neighbors_sample.py
+@@ -63,6 +63,7 @@
+     return matches
+ 
+ 
++# [START aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]
+ def vector_search_find_neighbors_hybrid_queries(
+     project: str,
+     location: str,
+@@ -70,7 +71,7 @@
+     deployed_index_id: str,
+     num_neighbors: int,
+ ) -> List[
+-    List[aiplatform.matching_engine.matching_engine_index_endpoint.MatchNeighbor]
++    List[aiplatform.matching_engine.matching_engine_index_endpoint.MatchNeighbor],
+ ]:
+     """Query the vector search index using example hybrid queries.
+ 
+@@ -127,6 +128,7 @@
+     return matches
+ 
+ 
++# [START aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
+ def vector_search_find_neighbors_filtering_crowding(
+     project: str,
+     location: str,
+@@ -134,9 +136,9 @@
+     deployed_index_id: str,
+     queries: List[List[float]],
+     num_neighbors: int,
+-    filter: List[aiplatform.matching_engine.matching_engine_index_endpoint.Namespace],
++    filter: List[aiplatform.matching_engine.matching_engine_index_endpoint.Namespace],  # pylint: disable=redefined-builtin
+     numeric_filter: List[
+-        aiplatform.matching_engine.matching_engine_index_endpoint.NumericNamespace
++        aiplatform.matching_engine.matching_engine_index_endpoint.NumericNamespace,
+     ],
+     per_crowding_attribute_neighbor_count: int,
+ ) -> List[
+@@ -195,6 +197,7 @@
+     return matches
+ 
+ 
++# [END aiplatform_sdk_vector_search_find_neighbors_filtering_crowding_sample]
+ if __name__ == "__main__":
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--project", help="Project ID", required=True)
+@@ -203,7 +206,7 @@
+         "--index_endpoint_name",
+         help="Your index endpoint name",
+         required=True,
+-        type=str
++        type=str,
+     )
+     parser.add_argument(
+         "--deployed_index_id",
+@@ -216,7 +219,7 @@
+         "--num_neighbors",
+         help="Number of neighbors to return",
+         required=True,
+-        type=int
++        type=int,
+     )
+     parser.add_argument(
+         "--queries",
+@@ -224,7 +227,7 @@
+         required=False,
+         type=str,
+         default="[[0.1, 0.2, 0.3, 0.4, 0.5], [0.2, 0.3, 0.4, 0.5, 0.6]]",
+-        help="List of queries. Each query is a list of floats, representing a single embedding."
++        help="List of queries. Each query is a list of floats, representing a single embedding.",
+     )
+     parser.add_argument(
+         "--filter",
+@@ -232,7 +235,7 @@
+         required=False,
+         type=str,
+         default="[]",
+-        help="A list of Namespaces for filtering the matching results."
++        help="A list of Namespaces for filtering the matching results.",
+     )
+     parser.add_argument(
+         "--numeric_filter",
+@@ -240,7 +243,7 @@
+         required=False,
+         type=str,
+         default="[]",
+-        help="A list of NumericNamespaces for filtering the matching results."
++        help="A list of NumericNamespaces for filtering the matching results.",
+     )
+     parser.add_argument(
+         "--per_crowding_attribute_neighbor_count",
+@@ -248,7 +251,7 @@
+         required=False,
+         type=int,
+         default=2,
+-        help="The maximum number of returned matches with the same crowding tag."
++        help="The maximum number of returned matches with the same crowding tag.",
+     )
+     args = parser.parse_args()
+ 
+@@ -256,7 +259,7 @@
+         project=args.project,
+         location=args.location,
+         index_endpoint_name=args.index_endpoint_name,
+-        deployed_index_id=args.deployed_index_id
++        deployed_index_id=args.deployed_index_id,
+     )
+ 
+     # Example 1: Basic vector search
+@@ -265,7 +268,7 @@
+         location=args.location,
+         index_endpoint_name=args.index_endpoint_name,
+         deployed_index_id=args.deployed_index_id,
+-        queries=eval(args.queries)
++        queries=eval(args.queries),
+     )
+     print("Basic vector search results:")
+     for i, match in enumerate(matches):
+@@ -277,7 +280,7 @@
+         location=args.location,
+         index_endpoint_name=args.index_endpoint_name,
+         deployed_index_id=args.deployed_index_id,
+-        num_neighbors=args.num_neighbors
++        num_neighbors=args.num_neighbors,
+     )
+     print("Hybrid search results:")
+     for i, match in enumerate(matches):
+@@ -290,7 +293,7 @@
+         deployed_index_id=args.deployed_index_id,
+         queries=eval(args.queries),
+         num_neighbors=args.num_neighbors,
+-        filter=eval(args.filter)
++        filter=eval(args.filter),
+         numeric_filter=eval(args.numeric_filter),
+         per_crowding_attribute_neighbor_count=args.per_crowding_attribute_neighbor_count,
+     )
+@@ -298,3 +301,4 @@
+     for i, match in enumerate(matches):
+         print(f"Query {i}: {match}")
+ 
++# [END aiplatform_sdk_vector_search_find_neighbors_hybrid_sample]

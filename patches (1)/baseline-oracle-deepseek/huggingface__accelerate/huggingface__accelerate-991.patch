@@ -1,0 +1,608 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -1,5 +1,6 @@
+ import inspect
+ import os
++import warnings
+ from collections import defaultdict
+ from contextlib import contextmanager, nullcontext
+ from dataclasses import dataclass, field
+@@ -8,6 +9,7 @@
+ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+ 
+ import torch
++import torch.utils.hooks as hooks
+ from torch import nn
+ from torch.utils.data import DataLoader, Dataset, DistributedSampler
+ 
+@@ -15,6 +17,7 @@
+ from accelerate.state import AcceleratorState, GradientState, PartialState
+ from accelerate.utils import (
+     DeepSpeedPlugin,
++    DistributedType,
+     extract_model_from_parallel,
+     gather,
+     get_pretty_name,
+@@ -22,6 +25,7 @@
+     is_tpu_available,
+     pad_across_processes,
+     recursively_apply,
++    save,
+     send_to_device,
+     set_seed,
+ )
+@@ -31,6 +35,7 @@
+     from torch.optim.lr_scheduler import LRScheduler
+     from torch.utils.data import BatchSampler
+ 
++    from accelerate.hooks import ModelHook, remove_hook_module
+     from accelerate.utils.dataclasses import BaseEnum
+ 
+ if is_deepspeed_available():
+@@ -39,6 +44,7 @@
+ if is_tpu_available(check_device=False):
+     import torch_xla.core.xla_model as xm
+ 
++import torch.utils.hooks as hooks
+ 
+ class Accelerator:
+     """
+@@ -119,6 +125,10 @@
+         self.project_dir = project_dir
+         self.logging_dir = logging_dir
+ 
++        # Hooks for save/load state
++        self._save_state_pre_hooks: List[Callable] = []
++        self._load_state_pre_hooks: List[Callable] = []
++
+         # Mixed precision attributes
+         self.native_amp = False
+         self.use_fp16 = fp16
+@@ -246,6 +256,8 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2205,6 +2217,8 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2228,6 +2242,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2251,6 +2266,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2274,6 +2290,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2297,6 +2314,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2320,6 +2338,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2343,6 +2362,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2366,6 +2386,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2389,6 +2410,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2412,6 +2434,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2435,6 +2458,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2458,6 +2482,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2481,6 +2506,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2504,6 +2530,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2527,6 +2554,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2550,6 +2578,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2573,6 +2602,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2596,6 +2626,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2619,6 +2650,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2642,6 +2674,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2665,6 +2698,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2688,6 +2722,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2711,6 +2746,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2734,6 +2770,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2757,6 +2794,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2780,6 +2818,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2803,6 +2842,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2826,6 +2866,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2849,6 +2890,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2872,6 +2914,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2895,6 +2938,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2918,6 +2962,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2941,6 +2986,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2964,6 +3010,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -2987,6 +3034,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3010,6 +3058,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3033,6 +3082,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3056,6 +3106,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3079,6 +3130,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3102,6 +3154,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3125,6 +3178,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3148,6 +3202,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3171,6 +3226,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3194,6 +3250,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3217,6 +3274,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3240,6 +3298,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3263,6 +3322,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3286,6 +3346,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3309,6 +3370,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3332,6 +3394,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3355,6 +3418,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3378,6 +3442,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3401,6 +3466,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3424,6 +3490,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3447,6 +3514,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3470,6 +3538,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3493,6 +3562,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3516,6 +3586,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3539,6 +3610,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3562,6 +3634,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3585,6 +3658,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3608,6 +3682,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3631,6 +3706,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3654,6 +3730,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3677,6 +3754,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3700,6 +3778,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._save_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@ -3723,6 +3802,7 @@
+         self._optimizers = []
+         self._models = []
+         self._schedulers = []
++        self._load_state_pre_hooks = []
+ 
+         self.states = []
+ 
+@@

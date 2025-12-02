@@ -1,0 +1,330 @@
+diff --git a/optax/tree_utils/__init__.py b/optax/tree_utils/__init__.py
+--- a/optax/tree_utils/__init__.py
++++ b/optax/tree_utils/__init__.py
+@@ -16,6 +16,7 @@
+ from optax.tree_utils._tree_utils import tree_update_moment
+ from optax.tree_utils._tree_utils import tree_update_moment_per_elem_norm
+ from optax.tree_utils._tree_utils import tree_zeros_like
++from optax.tree_utils._random import tree_random_split
+ 
+ __all__ = (
+     "tree_add",
+@@ -30,4 +31,5 @@
+     "tree_update_moment",
+     "tree_update_moment_per_elem_norm",
+     "tree_zeros_like",
++    "tree_random_split",
+ )
+diff --git a/optax/tree_utils/_random.py b/optax/tree_utils/_random.py
+--- a/optax/tree_utils/_random.py
++++ b/optax/tree_utils/_random.py
+@@ -12,7 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ # ==============================================================================
+-"""Utilities for random number generation."""
++"""Utilities for random number generation with pytrees."""
+ 
+ from typing import Any
+ 
+@@ -22,7 +22,7 @@
+ import jax.numpy as jnp
+ 
+ 
+-def _tree_rng_keys_split(
++def tree_random_split(
+     rng_key: chex.PRNGKey, target_tree: chex.ArrayTree
+ ) -> chex.ArrayTree:
+   """Split keys to match structure of target tree.
+@@ -35,6 +35,8 @@
+   Returns:
+     a tree of rng keys.
+   """
++  # This function was previously named _tree_rng_keys_split.
++  # It is now exposed as tree_random_split.
+   leaves, treedef = jtu.tree_flatten(target_tree)
+   num_leaves = len(leaves)
+   rng_keys = jax.random.split(rng_key, num_leaves)
+diff --git a/optax/tree_utils/_random_test.py b/optax/tree_utils/_random_test.py
+--- a/optax/tree_utils/_random_test.py
++++ b/optax/tree_utils/_random_test.py
+@@ -12,7 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ # ==============================================================================
+-"""Tests for optax.tree_utils._random."""
++"""Tests for optax.tree_utils._random (including tree_random_split)."""
+ 
+ from absl.testing import absltest
+ from absl.testing import parameterized
+@@ -22,7 +22,7 @@
+ import numpy as np
+ 
+ 
+-class TreeRngKeysSplitTest(chex.TestCase):
++class TreeRandomSplitTest(chex.TestCase):
+ 
+   @chex.all_variants
+   @parameterized.parameters([
+@@ -30,7 +30,7 @@
+       ({"a": 1, "b": (2, 3)},),
+       ([1, 2, 3],),
+   ])
+-  def test_tree_rng_keys_split(self, target_tree):
++  def test_tree_random_split(self, target_tree):
+     rng_key = jax.random.PRNGKey(0)
+ 
+     # Flatten the tree to count leaves.
+@@ -38,7 +38,7 @@
+     num_leaves = len(leaves)
+ 
+     # Split keys.
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+ 
+     # Check that the tree structure matches.
+     leaves_out, treedef_out = jtu.tree_flatten(key_tree)
+@@ -53,7 +53,7 @@
+     # Check that keys are different.
+     self.assertFalse(jnp.allclose(key_tree_1, key_tree_2))
+ 
+-  def test_tree_rng_keys_split_deterministic(self):
++  def test_tree_random_split_deterministic(self):
+     rng_key = jax.random.PRNGKey(42)
+     target_tree = {"x": jnp.ones((3, 4)), "y": (jnp.ones(5), jnp.ones(6))}
+ 
+@@ -61,7 +61,7 @@
+     key_tree_2 = tree_random_split(rng_key, target_tree)
+ 
+     # Both calls should produce the same tree.
+-    chex.assert_trees_all_close(key_tree_1, key_tree_2)
++    chex.assert_trees_all_equal(key_tree_1, key_tree_2)
+ 
+   @chex.all_variants
+   def test_tree_random_split_with_jit(self):
+@@ -69,7 +69,7 @@
+     target_tree = (jnp.ones(2), {"a": jnp.ones(3)})
+ 
+     # JIT-compiled version.
+-    split_fn = self.variant(_tree_rng_keys_split)
++    split_fn = self.variant(tree_random_split)
+     key_tree = split_fn(rng_key, target_tree)
+ 
+     # Check structure.
+@@ -78,7 +78,7 @@
+     self.assertEqual(len(leaves_out), 2)
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_empty(self):
++  def test_tree_random_split_empty(self):
+     rng_key = jax.random.PRNGKey(0)
+     # Empty tuple.
+     target_tree = ()
+@@ -86,7 +86,7 @@
+     # Flatten the tree to count leaves.
+     leaves, _ = jtu.tree_flatten(target_tree)
+     self.assertEqual(len(leaves), 0)
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, treedef_out = jtu.tree_flatten(key_tree)
+     self.assertEqual(len(leaves_out), 0)
+     # The empty tree should be preserved.
+@@ -94,7 +94,7 @@
+ 
+   @chex.all_variants
+   @parameterized.parameters([0, 1, 5])
+-  def test_tree_rng_keys_split_num_leaves(self, num_leaves):
++  def test_tree_random_split_num_leaves(self, num_leaves):
+     rng_key = jax.random.PRNGKey(0)
+     # Create a tree with a given number of leaves.
+     # Use a list of ones.
+@@ -102,7 +102,7 @@
+     # Flatten to verify.
+     leaves, _ = jtu.tree_flatten(target_tree)
+     self.assertEqual(len(leaves), num_leaves)
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, _ = jtu.tree_flatten(key_tree)
+     self.assertEqual(len(leaves_out), num_leaves)
+     # Each leaf should be a PRNGKey (shape (2,)).
+@@ -110,7 +110,7 @@
+       self.assertEqual(leaf.shape, (2,))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_nested(self):
++  def test_tree_random_split_nested(self):
+     rng_key = jax.random.PRNGKey(0)
+     target_tree = {
+         "layer1": {
+@@ -120,7 +120,7 @@
+         "scalar": 5.0,
+     }
+     # Count leaves manually.
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, treedef_out = jtu.tree_flatten(key_tree)
+     # Expected leaves: weight1, bias1, weight2, bias2, scalar.
+     self.assertEqual(len(leaves_out), 5)
+@@ -129,7 +129,7 @@
+ 
+   @chex.all_variants
+   @parameterized.parameters([0, 1, 10])
+-  def test_tree_rng_keys_split_large(self, size):
++  def test_tree_random_split_large(self, size):
+     rng_key = jax.random.PRNGKey(0)
+     # Create a large tree.
+     target_tree = {
+@@ -137,7 +137,7 @@
+         "b": jnp.ones((size, size)),
+     }
+     # Flatten to count leaves.
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, _ = jtu.tree_flatten(key_tree)
+     # Two leaves.
+     self.assertEqual(len(leaves_out), 2)
+@@ -145,7 +145,7 @@
+       self.assertEqual(leaf.shape, (2,))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_same_key_different_trees(self):
++  def test_tree_random_split_same_key_different_trees(self):
+     rng_key = jax.random.PRNGKey(123)
+     tree1 = {"a": 1, "b": 2}
+     tree2 = {"x": 3, "y": 4, "z": 5}
+@@ -153,8 +153,8 @@
+     # Both trees should produce the same sequence of keys for the first two
+     # leaves because the splitting is deterministic based on the key and
+     # the number of leaves.
+-    key_tree1 = self.variant(_tree_rng_keys_split)(rng_key, tree1)
+-    key_tree2 = self.variant(_tree_rng_keys_split)(rng_key, tree2)
++    key_tree1 = self.variant(tree_random_split)(rng_key, tree1)
++    key_tree2 = self.variant(tree_random_split)(rng_key, tree2)
+     leaves1, _ = jtu.tree_flatten(key_tree1)
+     leaves2, _ = jtu.tree_flatten(key_tree2)
+     # The first two keys should be identical.
+@@ -162,7 +162,7 @@
+     self.assertTrue(jnp.allclose(leaves1[1], leaves2[1]))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_vmap(self):
++  def test_tree_random_split_vmap(self):
+     rng_keys = jax.random.split(jax.random.PRNGKey(0), 3)
+     target_tree = {"w": jnp.ones(2), "b": jnp.ones(1)}
+     # vmap over the rng_keys.
+@@ -170,7 +170,7 @@
+     # Each key should produce a tree with the same structure.
+     # We can vmap the function.
+     vmapped_split = jax.vmap(
+-        lambda k: self.variant(_tree_rng_keys_split)(k, target_tree)
++        lambda k: self.variant(tree_random_split)(k, target_tree)
+     )
+     key_trees = vmapped_split(rng_keys)
+     # key_trees should have an extra batch dimension.
+@@ -183,7 +183,7 @@
+     self.assertEqual(leaves[0].shape, (3, 2, 2))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_jacobian(self):
++  def test_tree_random_split_jacobian(self):
+     # The function is deterministic and linear in the key? Actually,
+     # random.split is deterministic but not linear. However, we can check
+     # that the function is differentiable w.r.t. the key (it is, because
+@@ -191,7 +191,7 @@
+     rng_key = jax.random.PRNGKey(0)
+     target_tree = {"a": 1, "b": 2}
+     # Compute Jacobian w.r.t. the key.
+-    jac = jax.jacrev(_tree_rng_keys_split, argnums=0)(rng_key, target_tree)
++    jac = jax.jacrev(tree_random_split, argnums=0)(rng_key, target_tree)
+     # The Jacobian should be a tree with the same structure as the output,
+     # where each leaf is a 2x2 matrix (because rng_key is (2,) and each output
+     # leaf is also (2,)).
+@@ -202,7 +202,7 @@
+       self.assertEqual(jac_leaf.shape, (2, 2))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_composite(self):
++  def test_tree_random_split_composite(self):
+     rng_key = jax.random.PRNGKey(0)
+     # A tree with mixed types: arrays, scalars, nested dicts.
+     target_tree = {
+@@ -210,7 +210,7 @@
+         "params": {"weight": jnp.ones((3, 4)), "bias": jnp.ones(4)},
+         "metadata": {"step": 0, "loss": 0.5},
+     }
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, treedef_out = jtu.tree_flatten(key_tree)
+     # Count leaves: input (1), weight (1), bias (1), step (1), loss (1) = 5.
+     self.assertEqual(len(leaves_out), 5)
+@@ -218,7 +218,7 @@
+       self.assertEqual(leaf.shape, (2,))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_with_custom_struct(self):
++  def test_tree_random_split_with_custom_struct(self):
+     # Define a custom PyTree node.
+     class CustomNode:
+       def __init__(self, a, b):
+@@ -236,7 +236,7 @@
+     target_tree = CustomNode(jnp.ones(2), {"c": jnp.ones(3)})
+     # Register the custom node.
+     jtu.register_pytree_node(CustomNode, custom_flatten, custom_unflatten)
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     # The output tree should have the same CustomNode structure.
+     self.assertIsInstance(key_tree, CustomNode)
+     self.assertIsInstance(key_tree.b, dict)
+@@ -246,7 +246,7 @@
+     jtu.register_pytree_node(CustomNode, custom_flatten, custom_unflatten)
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_with_none(self):
++  def test_tree_random_split_with_none(self):
+     rng_key = jax.random.PRNGKey(0)
+     # None is a leaf.
+     target_tree = {"a": None, "b": jnp.ones(2)}
+@@ -254,7 +254,7 @@
+     leaves, _ = jtu.tree_flatten(target_tree)
+     # None counts as a leaf.
+     self.assertEqual(len(leaves), 2)
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, _ = jtu.tree_flatten(key_tree)
+     self.assertEqual(len(leaves_out), 2)
+     # The leaf for None should still be a PRNGKey.
+@@ -262,7 +262,7 @@
+       self.assertEqual(leaf.shape, (2,))
+ 
+   @chex.all_variants
+-  def test_tree_rng_keys_split_with_zero_dim_array(self):
++  def test_tree_random_split_with_zero_dim_array(self):
+     rng_key = jax.random.PRNGKey(0)
+     # A zero-dimensional array is a leaf.
+     target_tree = jnp.array(5.0)
+@@ -270,7 +270,7 @@
+     leaves, _ = jtu.tree_flatten(target_tree)
+     self.assertEqual(len(leaves), 1)
+     self.assertEqual(leaves[0].shape, ())
+-    key_tree = self.variant(_tree_rng_keys_split)(rng_key, target_tree)
++    key_tree = self.variant(tree_random_split)(rng_key, target_tree)
+     leaves_out, _ = jtu.tree_flatten(key_tree)
+     self.assertEqual(len(leaves_out), 1)
+     self.assertEqual(leaves_out[0].shape, (2,))
+diff --git a/docs/api/tree_utils.rst b/docs/api/tree_utils.rst
+--- a/docs/api/tree_utils.rst
++++ b/docs/api/tree_utils.rst
+@@ -10,6 +10,7 @@
+    tree_update_moment
+    tree_update_moment_per_elem_norm
+    tree_zeros_like
++   tree_random_split
+ 
+ .. autofunction:: tree_add
+ 
+@@ -40,3 +41,5 @@
+ .. autofunction:: tree_update_moment_per_elem_norm
+ 
+ .. autofunction:: tree_zeros_like
++
++.. autofunction:: tree_random_split

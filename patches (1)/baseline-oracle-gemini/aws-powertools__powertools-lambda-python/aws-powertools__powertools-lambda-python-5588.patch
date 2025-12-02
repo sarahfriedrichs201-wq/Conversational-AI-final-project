@@ -1,0 +1,145 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -33,6 +33,7 @@
+         """
+         super().__init__()
+         self.context = {}  # early init as customers might add context before event resolution
++        self._exception_handlers: dict[type[Exception], Callable] = {}
+ 
+     def __call__(
+         self,
+@@ -113,7 +114,14 @@
+         resolver = self._resolver_registry.find_resolver(self.current_event.type_name, self.current_event.field_name)
+         if not resolver:
+             raise ValueError(f"No resolver found for '{self.current_event.type_name}.{self.current_event.field_name}'")
+-        return resolver["func"](**self.current_event.arguments)
++
++        try:
++            return resolver["func"](**self.current_event.arguments)
++        except Exception as e:
++            handler = self._lookup_exception_handler(type(e))
++            if handler:
++                return handler(e)
++            raise e
+ 
+     def _call_sync_batch_resolver(
+         self,
+@@ -324,3 +332,54 @@
+             raise_on_error=raise_on_error,
+             aggregate=aggregate,
+         )
++
++    def exception_handler(self, exc_class: type[Exception] | list[type[Exception]]):
++        """Registers a handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class (type[Exception] | list[type[Exception]])
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable:
++            A decorator function that registers the exception handler.
++
++        Example
++        -------
++        ```python
++        from aws_lambda_powertools.event_handler import AppSyncResolver
++
++        app = AppSyncResolver()
++
++        @app.exception_handler(ValueError)
++        def handle_value_error(ex: ValueError):
++            return {"message": "error"}
++
++        @app.resolver(field_name="createSomething")
++        def create_something(id: str):
++            raise ValueError("Error")
++
++        def lambda_handler(event, context):
++            return app.resolve(event, context)
++        ```
++        """
++
++        def register_exception_handler(func: Callable):
++            if isinstance(exc_class, list):
++                for exc in exc_class:
++                    self._exception_handlers[exc] = func
++            else:
++                self._exception_handlers[exc_class] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: type) -> Callable | None:
++        """Looks up the registered exception handler for the given exception type or its base classes."""
++        for exc_class in exp_type.__mro__:
++            if exc_class in self._exception_handlers:
++                return self._exception_handlers[exc_class]
++        return None
+diff --git a/docs/core/event_handler/appsync.md b/docs/core/event_handler/appsync.md
+--- a/docs/core/event_handler/appsync.md
++++ b/docs/core/event_handler/appsync.md
+@@ -512,6 +512,50 @@
+     --8<-- "examples/event_handler_graphql/src/assert_async_graphql_response.json"
+     ```
+ 
++### Exception Handling
++
++You can register custom exception handlers for your AppSync resolvers using the `@app.exception_handler` decorator. This allows you to define specific logic for different exception types, similar to how HTTP Resolvers handle exceptions.
++
++When an exception is raised within a resolver, the AppSyncResolver will look for a registered handler for that exception type or any of its base classes. If a handler is found, it will be invoked with the exception instance, and its return value will be used as the resolver's result. If no handler is found, the exception will be re-raised.
++
++!!! note
++    This exception handling mechanism is not supported when using single async resolvers.
++
++=== "exception_handling_graphql.py"
++
++    ```python hl_lines="4 6-8 10 12 14"
++    --8<-- "examples/event_handler_graphql/src/exception_handling_graphql.py"
++    ```
++
++1.  **`@app.exception_handler(ValueError)`**: This decorator registers the `handle_value_error` function as the handler for `ValueError` exceptions. You can also pass a list of exception types, e.g., `@app.exception_handler([ValueError, TypeError])`.
++2.  **`handle_value_error(ex: ValueError)`**: This function will be called if a `ValueError` is raised in any resolver. It receives the exception instance as an argument and returns a dictionary, which will be the response for the GraphQL field.
++3.  **`create_something()`**: This resolver intentionally raises a `ValueError`. When this resolver is invoked, the `ValueError` will be caught, and `handle_value_error` will be executed.
++
++**Example Flow:**
++
++1.  A GraphQL mutation `createSomething` is called, which invokes the `create_something` resolver.
++2.  Inside `create_something`, a `ValueError` is raised.
++3.  The `AppSyncResolver` catches the `ValueError`.
++4.  It looks up an exception handler for `ValueError` and finds `handle_value_error`.
++5.  `handle_value_error` is called with the `ValueError` instance.
++6.  `handle_value_error` returns `{"message": "error"}`.
++7.  This dictionary is returned as the result of the `createSomething` mutation.
++
++This mechanism provides a centralized way to manage and respond to errors in your AppSync resolvers, improving the robustness and user experience of your GraphQL API.
++
++
+ ```
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,16 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++from aws_lambda_powertools.utilities.typing import LambdaContext
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    return {"message": "error", "details": str(ex)}
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    raise ValueError(f"Error creating something with ID: {id}")
++
++
++def lambda_handler(event: dict, context: LambdaContext):
++    return app.resolve(event, context)
+```
