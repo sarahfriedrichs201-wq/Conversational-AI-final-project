@@ -1,0 +1,157 @@
+diff --git a/pgmpy/utils/__init__.py b/pgmpy/utils/__init__.py
+--- a/pgmpy/utils/__init__.py
++++ b/pgmpy/utils/__init__.py
+@@ -1,6 +1,6 @@
+ from .mathext import cartesian, sample_discrete
+ from .state_name import StateNameMixin
+ from .check_functions import _check_1d_array_object, _check_length_equal
+ from .optimizer import optimize, pinverse
+-from .utils import get_example_model
++from .utils import get_example_model, discretize
+ 
+@@ -8,3 +8,4 @@ __all__ = [
+     "sample_discrete",
+     "StateNameMixin",
+     "_check_1d_array_object",
+@@ -12,3 +13,4 @@ __all__ = [
+     "optimize",
+     "pinverse",
+     "get_example_model",
++    "discretize",
+ ]
+diff --git a/pgmpy/utils/utils.py b/pgmpy/utils/utils.py
+--- a/pgmpy/utils/utils.py
++++ b/pgmpy/utils/utils.py
+@@ -1,3 +1,4 @@
+ import gzip
++import pandas as pd
+ from importlib import resources
+ 
+@@ -5,3 +6,4 @@ def get_example_model(model_name):
+     """
+     Returns an example Bayesian model.
+ 
+@@ -28,2 +30,94 @@ def get_example_model(model_name):
+     """
+     return resources.read_binary("pgmpy.models", model_name)
++
++
++def discretize(
++    data,
++    cardinality,
++    labels=None,
++    method="rounding",
++):
++    """
++    Discretizes a given continuous dataset.
++    
++    Parameters
++    ----------
++    data : pandas.DataFrame
++        The dataset to discretize. All columns must have continuous values.
++    
++    cardinality : dict
++        A dictionary of the form (str: int) representing the number of bins
++        to create for each of the variables.
++    
++    labels : dict (default: None)
++        A dictionary of the form (str: list) representing the label names for
++        each variable in the discretized dataframe.
++    
++    method : str (default: "rounding")
++        If "rounding", equal width bins are created and data is discretized into 
++        these bins. Refer pandas.cut for more details.
++        If "quantile", creates bins such that each bin has an equal number of 
++        datapoints. Refer pandas.qcut for more details.
++    
++    Returns
++    -------
++    pandas.DataFrame: A discretized dataframe.
++    
++    Examples
++    --------
++    >>> import numpy as np
++    >>> import pandas as pd
++    >>> from pgmpy.utils import discretize
++    >>> rng = np.random.default_rng(42)
++    >>> X = rng.standard_normal(1000)
++    >>> Y = 0.2 * X + rng.standard_normal(1000)
++    >>> Z = 0.4 * X + 0.5 * Y + rng.standard_normal(1000)
++    >>> df = pd.DataFrame({"X": X, "Y": Y, "Z": Z})
++    >>> df_disc = discretize(df, 
++    ...                      cardinality={'X': 3, 'Y': 3, 'Z': 3}, 
++    ...                      labels={'X': ['low', 'mid', 'high'], 
++    ...                              'Y': ['low', 'mid', 'high'], 
++    ...                              'Z': ['low', 'mid', 'high']})
++    >>> df_disc.head()
++    """
++    # Input validation
++    if not isinstance(data, pd.DataFrame):
++        raise ValueError("data must be a pandas DataFrame")
++    
++    if not isinstance(cardinality, dict):
++        raise ValueError("cardinality must be a dictionary")
++    
++    if labels is not None and not isinstance(labels, dict):
++        raise ValueError("labels must be a dictionary or None")
++    
++    # Check that all columns in cardinality exist in data
++    missing_cols = set(cardinality.keys()) - set(data.columns)
++    if missing_cols:
++        raise ValueError(f"Columns {missing_cols} in cardinality not found in data")
++    
++    # Check cardinality values are positive integers
++    for col, n_bins in cardinality.items():
++        if not isinstance(n_bins, int) or n_bins <= 0:
++            raise ValueError(f"Cardinality for {col} must be a positive integer")
++    
++    # Check method is valid
++    if method not in ["rounding", "quantile"]:
++        raise ValueError('method must be either "rounding" or "quantile"')
++    
++    # Initialize labels dict if None
++    if labels is None:
++        labels = {}
++    
++    # Create a copy of the data to avoid modifying the original
++    discretized_data = pd.DataFrame(index=data.index)
++    
++    for col in data.columns:
++        if col in cardinality:
++            n_bins = cardinality[col]
++            col_data = data[col]
++            
++            # Generate labels for this column if not provided
++            if col in labels:
++                col_labels = labels[col]
++                if len(col_labels) != n_bins:
++                    raise ValueError(
++                        f"Number of labels for {col} ({len(col_labels)}) "
++                        f"does not match cardinality ({n_bins})"
++                    )
++            else:
++                # Generate default labels: 0, 1, 2, ... for n_bins
++                col_labels = list(range(n_bins))
++            
++            # Discretize based on method
++            if method == "rounding":
++                discretized = pd.cut(
++                    col_data, 
++                    bins=n_bins, 
++                    labels=col_labels,
++                    include_lowest=True
++                )
++            else:  # method == "quantile"
++                discretized = pd.qcut(
++                    col_data,
++                    q=n_bins,
++                    labels=col_labels,
++                    duplicates="drop"  # Handle duplicate edges
++                )
++            
++            discretized_data[col] = discretized
++        else:
++            # Keep columns not in cardinality as-is
++            discretized_data[col] = data[col]
++    
++    return discretized_data

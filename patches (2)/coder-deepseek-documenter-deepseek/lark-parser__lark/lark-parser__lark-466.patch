@@ -1,0 +1,55 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -56,7 +56,7 @@ class VisitorBase(Generic[_Tree_T]):
+ 
+ class Visitor(VisitorBase):
+     """Bottom-up visitor, non-recursive
+-
++    
+     Visits the tree, starting with the leaves and finally the root (bottom-up)
+     Calls its methods (provided by user via inheritance) according to tree.data
+     """
+@@ -77,6 +77,23 @@ class Visitor(VisitorBase):
+                 stack.append(child)
+         return tree
+ 
++    def visit_topdown(self, tree):
++        """Top-down visitor, non-recursive
++        
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        stack = [tree]
++        while stack:
++            current = stack.pop()
++            self._call_userfunc(current)
++            # Add children in reverse order to maintain left-to-right traversal
++            for child in reversed(current.children):
++                if isinstance(child, Tree):
++                    stack.append(child)
++        return tree
++
++
+ class Visitor_Recursive(VisitorBase):
+     """Bottom-up visitor, recursive
+     
+@@ -91,6 +108,18 @@ class Visitor_Recursive(VisitorBase):
+                 self.visit(child)
+         return tree
+ 
++    def visit_topdown(self, tree):
++        """Top-down visitor, recursive
++        
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        self._call_userfunc(tree)
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
++        return tree
++
+ 
+ class Interpreter(VisitorBase):
+     """Interpreter walks the tree and returns the results of the corresponding methods.

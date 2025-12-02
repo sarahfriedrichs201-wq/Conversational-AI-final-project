@@ -1,0 +1,150 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -21,6 +21,7 @@ import warnings
+ from collections import defaultdict
+ from contextlib import contextmanager, nullcontext
+ from pathlib import Path
++from typing import Callable, Dict, List, Optional, Union
+ 
+ import torch
+ import torch.nn as nn
+@@ -28,6 +29,7 @@ from torch.optim.lr_scheduler import LRScheduler
+ from torch.utils.data import DataLoader, Dataset, IterableDataset, RandomSampler
+ 
+ from accelerate.state import AcceleratorState, GradientState, PartialState
++from accelerate.utils import is_torch_version
+ from accelerate.utils.constants import MODEL_NAME
+ from accelerate.utils.dataclasses import BaseEnum
+ from accelerate.utils.other import (
+@@ -39,6 +41,7 @@ from accelerate.utils.other import (
+     save,
+ )
+ 
++import torch.utils.hooks as hooks
+ 
+ logger = get_logger(__name__)
+ 
+@@ -192,6 +195,10 @@ class Accelerator:
+         self._schedulers = []
+         self._dataloaders = []
+         self._custom_objects = []
++
++        # Hook storage for save/load state
++        self._save_state_pre_hooks: List[Callable] = []
++        self._load_state_pre_hooks: List[Callable] = []
+         # RNG Types
+         self.rng_types = rng_types
+         if self.rng_types is None:
+@@ -1244,6 +1251,64 @@ class Accelerator:
+         """
+         self._custom_objects.append(obj)
+ 
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, `weights`
++        argument are the state dicts of the `models`, and the `input_dir` argument is the `input_dir` argument passed
++        to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already loaded weights from the weights list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._save_state_pre_hooks)
++        self._save_state_pre_hooks.append(hook)
++        return handle
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, and the
++        `input_dir` argument is the `input_dir` argument passed to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the models list.
++
++        </Tip>
++        """
++        handle = hooks.RemovableHandle(self._load_state_pre_hooks)
++        self._load_state_pre_hooks.append(hook)
++        return handle
++
+     def save_state(
+         self,
+         output_dir: Optional[str] = None,
+@@ -1298,6 +1363,13 @@ class Accelerator:
+         else:
+             weights.append(self.get_state_dict(model, unwrap=False))
+ 
++    # Create copies for hooks to modify
++    hook_models = self._models.copy()
++    hook_weights = weights.copy() if weights else []
++
++    # Execute registered save hooks
++    for hook in self._save_state_pre_hooks:
++        hook(hook_models, hook_weights, output_dir)
+     # Save the models taking care of FSDP and DeepSpeed nuances
+     for i, model in enumerate(self._models):
+         if self.distributed_type == DistributedType.FSDP:
+@@ -1320,6 +1392,10 @@ class Accelerator:
+             # The actual saving happens in save_accelerator_state later
+             pass
+ 
++    # Update weights with hook-modified weights for standard models
++    # Filter out None weights (removed by hooks)
++    weights = [w for w in hook_weights if w is not None]
++
+     # Save the optimizers taking care of FSDP and DeepSpeed nuances
+     optimizers = []
+     for i, opt in enumerate(self._optimizers):
+@@ -1406,6 +1482,12 @@ class Accelerator:
+ 
+         logger.info(f"Loading states from {input_dir}")
+ 
++    # Create copies for hooks to modify
++    hook_models = self._models.copy()
++
++    # Execute registered load hooks
++    for hook in self._load_state_pre_hooks:
++        hook(hook_models, input_dir)
+     # Load the models taking care of FSDP and DeepSpeed nuances
+     models = []
+     for i, model in enumerate(self._models):
+@@ -1428,6 +1510,7 @@ class Accelerator:
+             logger.info(f"Megatron-LM Model , Optimizer and Scheduler loaded from input dir {input_dir}")
+         else:
+             models.append(model)
++    models = [model for model in hook_models if model in self._models]  # Keep only models that weren't replaced by hooks
+ 
+     # Load the optimizers taking care of FSDP and DeepSpeed nuances
+     optimizers = []

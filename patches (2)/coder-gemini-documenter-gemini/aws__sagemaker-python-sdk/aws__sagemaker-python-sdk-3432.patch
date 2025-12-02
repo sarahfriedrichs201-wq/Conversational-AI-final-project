@@ -1,0 +1,344 @@
+diff --git a/src/sagemaker/image_uri_config/pytorch.json b/src/sagemaker/image_uri_config/pytorch.json
+--- a/src/sagemaker/image_uri_config/pytorch.json
++++ b/src/sagemaker/image_uri_config/pytorch.json
+@@ -100,5 +100,60 @@
+             }
+         }
+     },
+-    "training": {
+-        "processors": ["cpu", "gpu"],
+-        "versions": {
+-            "1.12.0": {
+-                "py_versions": ["py38"],
+-                "registries": {
+-                    "af-south-1": "626614931356",
+-                    "ap-east-1": "871362719292",
+-                    "ap-northeast-1": "763104351884",
+-                    "ap-northeast-2": "763104351884",
+-                    "ap-northeast-3": "364406365360",
+-                    "ap-south-1": "763104351884",
+-                    "ap-southeast-1": "763104351884",
+-                    "ap-southeast-2": "763104351884",
+-                    "ap-southeast-3": "907027046896",
+-                    "ca-central-1": "763104351884",
+-                    "cn-north-1": "727897471807",
+-                    "cn-northwest-1": "727897471807",
+-                    "eu-central-1": "763104351884",
+-                    "eu-north-1": "763104351884",
+-                    "eu-west-1": "763104351884",
+-                    "eu-west-2": "763104351884",
+-                    "eu-west-3": "763104351884",
+-                    "eu-south-1": "692866216735",
+-                    "me-south-1": "217643126080",
+-                    "sa-east-1": "763104351884",
+-                    "us-east-1": "763104351884",
+-                    "us-east-2": "763104351884",
+-                    "us-gov-west-1": "442386744353",
+-                    "us-iso-east-1": "886529160074",
+-                    "us-west-1": "763104351884",
+-                    "us-west-2": "763104351884"
+-                },
+-                "repository": "pytorch-training"
+-            }
+-        }
+-    }
++    "training": {
++        "processors": ["cpu", "gpu"],
++        "versions": {
++            "1.12.0": {
++                "py_versions": ["py38"],
++                "registries": {
++                    "af-south-1": "626614931356",
++                    "ap-east-1": "871362719292",
++                    "ap-northeast-1": "763104351884",
++                    "ap-northeast-2": "763104351884",
++                    "ap-northeast-3": "364406365360",
++                    "ap-south-1": "763104351884",
++                    "ap-southeast-1": "763104351884",
++                    "ap-southeast-2": "763104351884",
++                    "ap-southeast-3": "907027046896",
++                    "ca-central-1": "763104351884",
++                    "cn-north-1": "727897471807",
++                    "cn-northwest-1": "727897471807",
++                    "eu-central-1": "763104351884",
++                    "eu-north-1": "763104351884",
++                    "eu-west-1": "763104351884",
++                    "eu-west-2": "763104351884",
++                    "eu-west-3": "763104351884",
++                    "eu-south-1": "692866216735",
++                    "me-south-1": "217643126080",
++                    "sa-east-1": "763104351884",
++                    "us-east-1": "763104351884",
++                    "us-east-2": "763104351884",
++                    "us-gov-west-1": "442386744353",
++                    "us-iso-east-1": "886529160074",
++                    "us-west-1": "763104351884",
++                    "us-west-2": "763104351884"
++                },
++                "repository": "pytorch-training"
++            }
++        }
++    },
++    "graviton": {
++        "processors": ["cpu"],
++        "version_aliases": {
++            "1.12": "1.12.1"
++        },
++        "versions": {
++            "1.12.1": {
++                "py_versions": ["py38"],
++                "registries": {
++                    "af-south-1": "626614931356",
++                    "ap-east-1": "871362719292",
++                    "ap-northeast-1": "763104351884",
++                    "ap-northeast-2": "763104351884",
++                    "ap-northeast-3": "364406365360",
++                    "ap-south-1": "763104351884",
++                    "ap-southeast-1": "763104351884",
++                    "ap-southeast-2": "763104351884",
++                    "ap-southeast-3": "907027046896",
++                    "ca-central-1": "763104351884",
++                    "cn-north-1": "727897471807",
++                    "cn-northwest-1": "727897471807",
++                    "eu-central-1": "763104351884",
++                    "eu-north-1": "763104351884",
++                    "eu-west-1": "763104351884",
++                    "eu-west-2": "763104351884",
++                    "eu-west-3": "763104351884",
++                    "eu-south-1": "692866216735",
++                    "me-south-1": "217643126080",
++                    "sa-east-1": "763104351884",
++                    "us-east-1": "763104351884",
++                    "us-east-2": "763104351884",
++                    "us-gov-west-1": "442386744353",
++                    "us-iso-east-1": "886529160074",
++                    "us-west-1": "763104351884",
++                    "us-west-2": "763104351884"
++                },
++                "repository": "pytorch-inference-graviton"
++            }
++        }
++    }
+ }
+diff --git a/src/sagemaker/image_uri_config/tensorflow.json b/src/sagemaker/image_uri_config/tensorflow.json
+--- a/src/sagemaker/image_uri_config/tensorflow.json
++++ b/src/sagemaker/image_uri_config/tensorflow.json
+@@ -100,5 +100,60 @@
+             }
+         }
+     },
+-    "training": {
+-        "processors": ["cpu", "gpu"],
+-        "versions": {
+-            "2.9.1": {
+-                "py_versions": ["py39"],
+-                "registries": {
+-                    "af-south-1": "626614931356",
+-                    "ap-east-1": "871362719292",
+-                    "ap-northeast-1": "763104351884",
+-                    "ap-northeast-2": "763104351884",
+-                    "ap-northeast-3": "364406365360",
+-                    "ap-south-1": "763104351884",
+-                    "ap-southeast-1": "763104351884",
+-                    "ap-southeast-2": "763104351884",
+-                    "ap-southeast-3": "907027046896",
+-                    "ca-central-1": "763104351884",
+-                    "cn-north-1": "727897471807",
+-                    "cn-northwest-1": "727897471807",
+-                    "eu-central-1": "763104351884",
+-                    "eu-north-1": "763104351884",
+-                    "eu-west-1": "763104351884",
+-                    "eu-west-2": "763104351884",
+-                    "eu-west-3": "763104351884",
+-                    "eu-south-1": "692866216735",
+-                    "me-south-1": "217643126080",
+-                    "sa-east-1": "763104351884",
+-                    "us-east-1": "763104351884",
+-                    "us-east-2": "763104351884",
+-                    "us-gov-west-1": "442386744353",
+-                    "us-iso-east-1": "886529160074",
+-                    "us-west-1": "763104351884",
+-                    "us-west-2": "763104351884"
+-                },
+-                "repository": "tensorflow-training"
+-            }
+-        }
+-    }
++    "training": {
++        "processors": ["cpu", "gpu"],
++        "versions": {
++            "2.9.1": {
++                "py_versions": ["py39"],
++                "registries": {
++                    "af-south-1": "626614931356",
++                    "ap-east-1": "871362719292",
++                    "ap-northeast-1": "763104351884",
++                    "ap-northeast-2": "763104351884",
++                    "ap-northeast-3": "364406365360",
++                    "ap-south-1": "763104351884",
++                    "ap-southeast-1": "763104351884",
++                    "ap-southeast-2": "763104351884",
++                    "ap-southeast-3": "907027046896",
++                    "ca-central-1": "763104351884",
++                    "cn-north-1": "727897471807",
++                    "cn-northwest-1": "727897471807",
++                    "eu-central-1": "763104351884",
++                    "eu-north-1": "763104351884",
++                    "eu-west-1": "763104351884",
++                    "eu-west-2": "763104351884",
++                    "eu-west-3": "763104351884",
++                    "eu-south-1": "692866216735",
++                    "me-south-1": "217643126080",
++                    "sa-east-1": "763104351884",
++                    "us-east-1": "763104351884",
++                    "us-east-2": "763104351884",
++                    "us-gov-west-1": "442386744353",
++                    "us-iso-east-1": "886529160074",
++                    "us-west-1": "763104351884",
++                    "us-west-2": "763104351884"
++                },
++                "repository": "tensorflow-training"
++            }
++        }
++    },
++    "graviton": {
++        "processors": ["cpu"],
++        "version_aliases": {
++            "2.9": "2.9.1"
++        },
++        "versions": {
++            "2.9.1": {
++                "py_versions": ["py38"],
++                "registries": {
++                    "af-south-1": "626614931356",
++                    "ap-east-1": "871362719292",
++                    "ap-northeast-1": "763104351884",
++                    "ap-northeast-2": "763104351884",
++                    "ap-northeast-3": "364406365360",
++                    "ap-south-1": "763104351884",
++                    "ap-southeast-1": "763104351884",
++                    "ap-southeast-2": "763104351884",
++                    "ap-southeast-3": "907027046896",
++                    "ca-central-1": "763104351884",
++                    "cn-north-1": "727897471807",
++                    "cn-northwest-1": "727897471807",
++                    "eu-central-1": "763104351884",
++                    "eu-north-1": "763104351884",
++                    "eu-south-1": "692866216735",
++                    "eu-west-1": "763104351884",
++                    "eu-west-2": "763104351884",
++                    "eu-west-3": "763104351884",
++                    "me-south-1": "217643126080",
++                    "sa-east-1": "763104351884",
++                    "us-east-1": "763104351884",
++                    "us-east-2": "763104351884",
++                    "us-gov-west-1": "442386744353",
++                    "us-iso-east-1": "886529160074",
++                    "us-west-1": "763104351884",
++                    "us-west-2": "763104351884"
++                },
++                "repository": "tensorflow-inference-graviton"
++            }
++        }
++    }
+ }
+diff --git a/src/sagemaker/image_uris.py b/src/sagemaker/image_uris.py
+--- a/src/sagemaker/image_uris.py
++++ b/src/sagemaker/image_uris.py
+@@ -1,4 +1,5 @@
+ import json
++import re
+ from typing import Optional
+ 
+ from sagemaker import utils
+@@ -18,6 +19,9 @@
+ HUGGING_FACE_FRAMEWORK = "huggingface"
+ JUMPSTART_FRAMEWORK = "jumpstart"
+ 
++GRAVITON_FRAMEWORKS = ("pytorch", "tensorflow")
++GRAVITON_INSTANCE_FAMILIES = ("c6g", "m6g", "t4g", "r6g", "x2gd")
++
+ 
+ def _config_for_framework_and_scope(framework, image_scope, accelerator_type=None):
+     """Loads the JSON configuration for the given framework and image scope.
+@@ -106,10 +110,30 @@
+     return registry
+ 
+ 
+-def _processor(instance_type, available_processors, serverless_inference_config=None):
++def _get_image_scope_for_instance_type(framework, instance_type, image_scope):
++    """Extract the image scope from instance type, specifically for Graviton.
++
++    Args:
++        framework (str): The name of the framework or algorithm.
++        instance_type (str): The SageMaker instance type.
++        image_scope (str): The original image scope.
++
++    Returns:
++        str: The determined image scope, potentially "graviton" if applicable.
++    """
++    if instance_type and framework in GRAVITON_FRAMEWORKS:
++        match = re.match(r"^ml[\._]([a-z\d]+)\.?\w*$", instance_type)
++        if match:
++            family = match[1]
++            if any(family.startswith(g_family) for g_family in GRAVITON_INSTANCE_FAMILIES):
++                logger.info("Graviton instance type detected (%s). Setting image scope to 'graviton'.", instance_type)
++                return "graviton"
++    return image_scope
++
++
++def _processor(instance_type, available_processors, serverless_inference_config=None, image_scope=None):
+     """Returns the processor type for the given instance type."""
+     if not available_processors:
+-        logger.info("Ignoring unnecessary instance type: %s.", instance_type)
+         return None
+ 
+     if len(available_processors) == 1 and not instance_type:
+@@ -119,6 +143,14 @@
+     if serverless_inference_config is not None:
+         logger.info("Defaulting to CPU type when using serverless inference")
+         return "cpu"
++
++    # New logic for Graviton images
++    if image_scope == "graviton":
++        if "cpu" not in available_processors:
++            raise ValueError(
++                f"Graviton image scope requires 'cpu' processor, but it's not in available processors: {available_processors}"
++            )
++        return "cpu"
+ 
+     if not instance_type:
+         raise ValueError(
+@@ -183,18 +215,22 @@
+     if is_jumpstart_model_input(model_id, model_version):
+         return _retrieve_image_uri_for_jumpstart(model_id, model_version, region)
+ 
++    # Determine the effective image_scope, potentially overriding the user-provided one
++    # if a Graviton instance type is detected.
++    effective_image_scope = _get_image_scope_for_instance_type(framework, instance_type, image_scope)
++
+     if training_compiler_config and (framework == HUGGING_FACE_FRAMEWORK):
+         config = _config_for_framework_and_scope(
+-            framework + "-training-compiler", image_scope, accelerator_type
++            framework + "-training-compiler", effective_image_scope, accelerator_type
+         )
+     else:
+         _framework = framework
+         if framework == HUGGING_FACE_FRAMEWORK:
+             inference_tool = _get_inference_tool(inference_tool, instance_type)
+             if inference_tool == "neuron":
+-                _framework = f"{framework}-{inference_tool}"
+-        config = _config_for_framework_and_scope(_framework, image_scope, accelerator_type)
++                _framework = f"{framework}-{inference_tool}" # noqa: E701
++        config = _config_for_framework_and_scope(_framework, effective_image_scope, accelerator_type)
+ 
+     original_version = version
+     version = _validate_version_and_set_if_needed(version, config, framework)
+@@ -208,7 +244,7 @@
+         instance_type,
+         config.get("processors") or version_config.get("processors"),
+         serverless_inference_config,
++        image_scope=effective_image_scope,
+     )
+ 
+     py_version = _validate_py_version_and_set_if_needed(py_version, version_config, framework)

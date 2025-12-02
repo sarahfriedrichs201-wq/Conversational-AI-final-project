@@ -1,0 +1,73 @@
+diff --git a/optax/tree_utils/_random.py b/optax/tree_utils/_random.py
+--- a/optax/tree_utils/_random.py
++++ b/optax/tree_utils/_random.py
+@@ -15,7 +15,7 @@
+ from optax.tree_utils._base import ArrayTree
+ 
+ 
+-def _tree_rng_keys_split(
++def tree_random_split(
+     rng_key: chex.PRNGKey, target_tree: ArrayTree
+ ) -> ArrayTree:
+   """Split keys to match structure of target tree.
+@@ -32,7 +32,7 @@ def _tree_rng_keys_split(
+   return jtu.tree_unflatten(tree_def, keys)
+ 
+ 
+-def tree_random_like(
++def tree_random_like(
+     rng_key: chex.PRNGKey,
+     target_tree: ArrayTree,
+     sampler: Callable[[chex.PRNGKey, Any], Any] = jax.random.normal,
+@@ -49,7 +49,7 @@ def tree_random_like(
+   Returns:
+     a tree of random values.
+   """
+-  keys_tree = _tree_rng_keys_split(rng_key, target_tree)
++  keys_tree = tree_random_split(rng_key, target_tree)
+   return jtu.tree_map(
+       lambda key, leaf: sampler(key, jnp.shape(leaf)), keys_tree, target_tree
+   )
+diff --git a/optax/tree_utils/__init__.py b/optax/tree_utils/__init__.py
+--- a/optax/tree_utils/__init__.py
++++ b/optax/tree_utils/__init__.py
+@@ -17,7 +17,7 @@
+ from optax.tree_utils._base import NamedTupleKey
+ from optax.tree_utils._math import (
+     tree_add, tree_add_scalar_mul, tree_div, tree_l1_norm, tree_l2_norm,
+-    tree_mul, tree_scalar_mul, tree_sub, tree_sum, tree_vdot)
++    tree_mul, tree_scalar_mul, tree_sub, tree_sum, tree_vdot)
+ from optax.tree_utils._misc import (
+     tree_get, tree_get_all_with_path, tree_map_params, tree_ones_like,
+     tree_set, tree_where, tree_zeros_like)
+@@ -25,6 +25,7 @@ from optax.tree_utils._misc import (
+     tree_get, tree_get_all_with_path, tree_map_params, tree_ones_like,
+     tree_set, tree_where, tree_zeros_like)
+ from optax.tree_utils._random import (
+-    tree_random_like)
++    tree_random_like,
++    tree_random_split)
+ from optax.tree_utils._state_utils import (
+     tree_get_params, tree_set_params)
+diff --git a/docs/api/utilities.rst b/docs/api/utilities.rst
+--- a/docs/api/utilities.rst
++++ b/docs/api/utilities.rst
+@@ -21,6 +21,7 @@ Tree
+     tree_ones_like
+     tree_random_like
+     tree_random_split
++    tree_random_split
+     tree_scalar_mul
+     tree_set
+     tree_sub
+@@ -28,6 +29,10 @@ Tree
+     tree_vdot
+     tree_where
+     tree_zeros_like
++    tree_zeros_like
++
++Tree random split
++~~~~~~~~~~~~~~~~~
+ 
+ Tree random like
+ ~~~~~~~~~~~~~~~~

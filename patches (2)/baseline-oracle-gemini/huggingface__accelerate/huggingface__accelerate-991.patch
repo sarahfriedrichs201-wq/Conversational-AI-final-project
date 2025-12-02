@@ -1,0 +1,231 @@
+```diff
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -11,7 +11,7 @@
+ import contextlib
+ import math
+ import os
+-import shutil
+ import sys
+ import warnings
+ from contextlib import contextmanager
+@@ -34,6 +34,7 @@
+     DistributedType,
+     DynamoBackend,
+     FullyShardedDataParallelPlugin,
++    get_pretty_name,
+     GradScalerKwargs,
+     InitProcessGroupKwargs,
+     KwargsHandler,
+@@ -47,6 +48,7 @@
+     is_torch_version,
+     is_tpu_available,
+     pad_across_processes,
++    RemovableHandle,
+     recursively_apply,
+     reduce,
+     release_memory,
+@@ -279,6 +281,8 @@
+         self._models = []
+         self._schedulers = []
+         self._dataloaders = []
++        self._save_state_pre_hooks = []
++        self._load_state_pre_hooks = []
+         self._custom_objects = []
+ 
+         # RNG Types
+@@ -1124,6 +1128,7 @@
+         """
+         if self.project_configuration.automatic_checkpoint_naming:
+             output_dir = os.path.join(self.project_dir, "checkpoints")
++        import shutil
+         os.makedirs(output_dir, exist_ok=True)
+         if self.project_configuration.automatic_checkpoint_naming:
+             folders = [os.path.join(output_dir, folder) for folder in os.listdir(output_dir)]
+@@ -1139,10 +1144,17 @@
+                 )
+         os.makedirs(output_dir, exist_ok=True)
+         logger.info(f"Saving current state to {output_dir}")
++        
++        # Apply pre-hooks for saving state
++        models_to_process = list(self._models)
++        weights_to_process = [self.get_state_dict(model, unwrap=False) for model in self._models]
++        for hook in self._save_state_pre_hooks:
++            hook(models_to_process, weights_to_process, output_dir)
+ 
+         # Save the models taking care of FSDP and DeepSpeed nuances
+-        weights = []
+-        for i, model in enumerate(self._models):
++        weights_for_accelerator_state = []
++        for model in models_to_process:
++            original_idx = self._models.index(model)
+             if self.distributed_type == DistributedType.FSDP:
+                 logger.info("Saving FSDP model")
+                 self.state.fsdp_plugin.save_model(self, model, output_dir, i)
+@@ -1156,7 +1168,7 @@
+                 model.save_checkpoint(output_dir)
+                 logger.info(f"Megatron-LM Model , Optimizer and Scheduler saved to output dir {output_dir}")
+             else:
+-                weights.append(self.get_state_dict(model, unwrap=False))
++                weights_for_accelerator_state.append(weights_to_process[original_idx])
+ 
+         # Save the optimizers taking care of FSDP and DeepSpeed nuances
+         optimizers = []
+@@ -1176,7 +1188,7 @@
+             schedulers = self._schedulers
+ 
+         save_location = save_accelerator_state(
+-            output_dir, weights, optimizers, schedulers, self.state.process_index, self.scaler
++            output_dir, weights_for_accelerator_state, optimizers, schedulers, self.state.process_index, self.scaler
+         )
+         for i, obj in enumerate(self._custom_objects):
+             save_custom_state(obj, output_dir, i)
+@@ -1204,10 +1216,15 @@
+             raise ValueError(f"Tried to find {input_dir} but folder does not exist")
+         logger.info(f"Loading states from {input_dir}")
+ 
++        # Apply pre-hooks for loading state
++        models_to_process = list(self._models)
++        for hook in self._load_state_pre_hooks:
++            hook(models_to_process, input_dir)
++
+         # Load the models taking care of FSDP and DeepSpeed nuances
+-        models = []
+-        for i, model in enumerate(self._models):
++        models_for_accelerator_state = []
++        for model in models_to_process:
++            original_idx = self._models.index(model)
+             if self.distributed_type == DistributedType.FSDP:
+                 logger.info("Loading FSDP model")
+                 self.state.fsdp_plugin.load_model(self, model, input_dir, i)
+@@ -1220,7 +1237,7 @@
+                 logger.info("Loading Megatron-LM Model, Optimizer and Scheduler")
+                 model.load_checkpoint(input_dir)
+                 logger.info(f"Megatron-LM Model , Optimizer and Scheduler loaded from input dir {input_dir}")
+-            else:
+-                models.append(model)
++            else: # For non-distributed types, collect the models
++                models_for_accelerator_state.append(model)
+ 
+         # Load the optimizers taking care of FSDP and DeepSpeed nuances
+         optimizers = []
+@@ -1240,7 +1257,7 @@
+             schedulers = self._schedulers
+ 
+         load_accelerator_state(
+-            input_dir, models, optimizers, schedulers, self.state.process_index, self.scaler, **load_model_func_kwargs
++            input_dir, models_for_accelerator_state, optimizers, schedulers, self.state.process_index, self.scaler, **load_model_func_kwargs
+         )
+         custom_checkpoints = [f for f in os.listdir(input_dir) if "custom_checkpoint" in f]
+         if len(custom_checkpoints) != len(self._custom_objects):
+@@ -1336,3 +1353,63 @@
+             autocast_context.__exit__(*sys.exc_info())
+         else:
+             yield
++
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, `weights`
++        argument are the state dicts of the `models`, and the `output_dir` argument is the `output_dir` argument passed
++        to [`Accelerator.save_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already loaded weights from the weights list.
++
++        </Tip>
++
++        Returns:
++            `accelerate.utils.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        self._save_state_pre_hooks.append(hook)
++        return RemovableHandle(self._save_state_pre_hooks, hook)
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> RemovableHandle:
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, and the
++        `input_dir` argument is the `input_dir` argument passed to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the models list.
++
++        </Tip>
++
++        Returns:
++            `accelerate.utils.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        self._load_state_pre_hooks.append(hook)
++        return RemovableHandle(self._load_state_pre_hooks, hook)
+diff --git a/src/accelerate/utils/__init__.py b/src/accelerate/utils/__init__.py
+--- a/src/accelerate/utils/__init__.py
++++ b/src/accelerate/utils/__init__.py
+@@ -34,6 +34,7 @@
+     is_torch_version,
+     is_tpu_available,
+     pad_across_processes,
++    RemovableHandle,
+     recursively_apply,
+     reduce,
+     release_memory,
+diff --git a/src/accelerate/utils/other.py b/src/accelerate/utils/other.py
+--- a/src/accelerate/utils/other.py
++++ b/src/accelerate/utils/other.py
+@@ -10,7 +10,7 @@
+ import os
+ import random
+ import shutil
+-from typing import List, Optional, Union
++from typing import Callable, List, Optional, Union
+ 
+ import numpy as np
+ import torch
+@@ -359,3 +359,20 @@
+         return obj
+     else:
+         return obj
++
++
++class RemovableHandle:
++    """
++    A handle which provides the capability to remove a hook.
++    """
++
++    def __init__(self, hooks_list: List[Callable], hook: Callable):
++        self.hooks_list = hooks_list
++        self.hook = hook
++
++    def remove(self):
++        """
++        Removes the hook from the list.
++        """
++        if self.hook in self.hooks_list:
++            self.hooks_list.remove(self.hook)
+```

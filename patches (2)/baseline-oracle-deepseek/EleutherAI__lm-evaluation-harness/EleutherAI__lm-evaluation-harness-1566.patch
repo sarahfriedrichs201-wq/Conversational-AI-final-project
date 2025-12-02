@@ -1,0 +1,177 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,4 +1,4 @@
+-import argparse
++import argparse, inspect
+ import json
+ import logging
+ import os
+@@ -16,6 +16,17 @@
+ DEFAULT_RESULTS_FILE = "results.json"
+ 
+ 
++def check_argument_types(parser: argparse.ArgumentParser):
++    """Check to make sure all CLI args are typed, raises error if not"""
++    for action in parser._actions:
++        if action.dest != "help" and action.type is None:
++            raise TypeError(f"Argument '{action.dest}' has no type")
++
++
++def setup_parser() -> argparse.ArgumentParser:
++    return parse_eval_args().parser
++
++
+ def _handle_non_serializable(o):
+     if isinstance(o, np.int64) or isinstance(o, np.int32):
+         return int(o)
+@@ -25,7 +36,7 @@
+         return str(o)
+ 
+ 
+-def parse_eval_args() -> argparse.Namespace:
++def parse_eval_args(return_parser: bool = False) -> argparse.Namespace:
+     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+     parser.add_argument("--model", "-m", default="hf", help="Name of model e.g. `hf`")
+     parser.add_argument(
+@@ -164,7 +175,10 @@
+         help="Sets trust_remote_code to True to execute code to create HF Datasets from the Hub",
+     )
+ 
+-    return parser.parse_args()
++    if return_parser:
++        return parser
++    else:
++        return parser.parse_args()
+ 
+ 
+ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
+@@ -172,6 +186,8 @@
+         # we allow for args to be passed externally, else we parse them ourselves
+         args = parse_eval_args()
+ 
++    check_argument_types(parse_eval_args(return_parser=True))
++
+     if args.wandb_args:
+         wandb_logger = WandbLogger(**simple_parse_args_string(args.wandb_args))
+ 
+@@ -179,6 +195,7 @@
+     eval_logger.setLevel(getattr(logging, f"{args.verbosity}"))
+     eval_logger.info(f"Verbosity set to {args.verbosity}")
+     os.environ["TOKENIZERS_PARALLELISM"] = "false"
++    check_argument_types(parse_eval_args(return_parser=True))
+ 
+     if args.predict_only:
+         args.log_samples = True
+@@ -186,6 +203,7 @@
+         raise ValueError(
+             "Specify --output_path if providing --log_samples or --predict_only"
+         )
++    check_argument_types(parse_eval_args(return_parser=True))
+ 
+     initialize_tasks(args.verbosity)
+     task_manager = TaskManager(args.verbosity, include_path=args.include_path)
+@@ -196,6 +214,7 @@
+         )
+     if args.include_path is not None:
+         eval_logger.info(f"Including path: {args.include_path}")
++        check_argument_types(parse_eval_args(return_parser=True))
+         include_path(args.include_path)
+ 
+     if args.tasks is None:
+@@ -206,6 +225,7 @@
+             "Available Tasks:\n - {}".format("\n - ".join(task_manager.all_tasks))
+         )
+         sys.exit()
++    check_argument_types(parse_eval_args(return_parser=True))
+     else:
+         if os.path.isdir(args.tasks):
+             import glob
+@@ -215,6 +235,7 @@
+             for yaml_file in glob.glob(yaml_path):
+                 config = utils.load_yaml_config(yaml_file)
+                 task_names.append(config)
++            check_argument_types(parse_eval_args(return_parser=True))
+         else:
+             task_list = args.tasks.split(",")
+             task_names = task_manager.match_tasks(task_list)
+@@ -222,6 +243,7 @@
+                 if os.path.isfile(task):
+                     config = utils.load_yaml_config(task)
+                     task_names.append(config)
++            check_argument_types(parse_eval_args(return_parser=True))
+             task_missing = [
+                 task for task in task_list if task not in task_names and "*" not in task
+             ]  # we don't want errors if a wildcard ("*") task name was used
+@@ -234,6 +256,7 @@
+                 )
+                 raise ValueError(
+                     f"Tasks not found: {missing}. Try `lm-eval --tasks list` for list of available tasks, or '--verbosity DEBUG' to troubleshoot task registration issues."
++                    check_argument_types(parse_eval_args(return_parser=True))
+                 )
+ 
+     if args.output_path:
+@@ -254,6 +277,7 @@
+         else:
+             path.mkdir(parents=True, exist_ok=True)
+ 
++    check_argument_types(parse_eval_args(return_parser=True))
+     # Respect user's value passed in via CLI, otherwise default to True and add to comma-separated model args
+     if args.trust_remote_code:
+         os.environ["HF_DATASETS_TRUST_REMOTE_CODE"] = str(args.trust_remote_code)
+@@ -262,6 +286,7 @@
+             + f",trust_remote_code={os.environ['HF_DATASETS_TRUST_REMOTE_CODE']}"
+         )
+ 
++    check_argument_types(parse_eval_args(return_parser=True))
+     eval_logger.info(f"Selected Tasks: {task_names}")
+     eval_logger.info("Loading selected tasks...")
+ 
+@@ -269,6 +294,7 @@
+         cache_requests=args.cache_requests
+     )
+ 
++    check_argument_types(parse_eval_args(return_parser=True))
+     results = evaluator.simple_evaluate(
+         model=args.model,
+         model_args=args.model_args,
+@@ -290,6 +316,7 @@
+         **request_caching_args,
+     )
+ 
++    check_argument_types(parse_eval_args(return_parser=True))
+     if results is not None:
+         if args.log_samples:
+             samples = results.pop("samples")
+@@ -298,6 +325,7 @@
+         )
+         if args.show_config:
+             print(dumped)
++        check_argument_types(parse_eval_args(return_parser=True))
+ 
+         batch_sizes = ",".join(map(str, results["config"]["batch_sizes"]))
+ 
+@@ -310,6 +338,7 @@
+                     wandb_logger.log_eval_samples(samples)
+             except Exception as e:
+                 eval_logger.info(f"Logging to Weights and Biases failed due to {e}")
++            check_argument_types(parse_eval_args(return_parser=True))
+ 
+         if args.output_path:
+             output_path_file.open("w", encoding="utf-8").write(dumped)
+@@ -324,6 +353,7 @@
+                         default=_handle_non_serializable,
+                         ensure_ascii=False,
+                     )
++                    check_argument_types(parse_eval_args(return_parser=True))
+                     filename.write_text(samples_dumped, encoding="utf-8")
+ 
+         print(
+@@ -334,6 +364,7 @@
+         if "groups" in results:
+             print(make_table(results, "groups"))
+ 
++        check_argument_types(parse_eval_args(return_parser=True))
+         if args.wandb_args:
+             # Tear down wandb run once all the logging is done.
+             wandb_logger.run.finish()

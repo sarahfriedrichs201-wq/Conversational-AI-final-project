@@ -1,0 +1,160 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -4,6 +4,7 @@
+ import logging
+ import warnings
+ from typing import TYPE_CHECKING, Any, Callable
++from collections import defaultdict
+ 
+ from aws_lambda_powertools.event_handler.graphql_appsync.exceptions import InvalidBatchResponse, ResolverNotFoundError
+ from aws_lambda_powertools.event_handler.graphql_appsync.router import Router
+@@ -28,6 +29,7 @@
+     """
+ 
+     def __init__(self):
++        self._exception_handlers: dict[type[Exception], Callable] = {}
+         """
+         Initialize a new instance of the AppSyncResolver.
+         """
+@@ -122,6 +124,7 @@
+         """
+ 
+         self.lambda_context = context
++        Router.lambda_context = context
+         Router.lambda_context = context
+ 
+         if isinstance(event, list):
+@@ -154,7 +157,11 @@
+         resolver = self._resolver_registry.find_resolver(self.current_event.type_name, self.current_event.field_name)
+         if not resolver:
+             raise ValueError(f"No resolver found for '{self.current_event.type_name}.{self.current_event.field_name}'")
+-        return resolver["func"](**self.current_event.arguments)
++        try:
++            return resolver["func"](**self.current_event.arguments)
++        except Exception as e:
++            handler = self._lookup_exception_handler(type(e))
++            return handler(e) if handler else raise
+ 
+     def _call_sync_batch_resolver(
+         self,
+@@ -195,7 +202,7 @@
+         # Non aggregated events, so we call this event list x times
+         # Stop on first exception we encounter
+         if raise_on_error:
+-            return [
++            results = [
+                 resolver(event=appconfig_event, **appconfig_event.arguments)
+                 for appconfig_event in self.current_batch_event
+             ]
+@@ -204,7 +211,11 @@
+         results = []
+         for idx, event in enumerate(self.current_batch_event):
+             try:
+-                results.append(resolver(event=event, **event.arguments))
++                result = resolver(event=event, **event.arguments)
++                results.append(result)
++            except Exception as e:
++                handler = self._lookup_exception_handler(type(e))
++                results.append(handler(e) if handler else None)
+             except Exception:
+                 logger.debug(f"Failed to process event number {idx} from field '{event.info.field_name}'")
+                 results.append(None)
+@@ -244,7 +255,11 @@
+ 
+         # Aggregate results or raise at first error
+         if raise_on_error:
+-            response.extend(await asyncio.gather(*tasks))
++            try:
++                response.extend(await asyncio.gather(*tasks))
++            except Exception as e:
++                handler = self._lookup_exception_handler(type(e))
++                return handler(e) if handler else raise
+             return response
+ 
+         # Aggregate results and exceptions, then filter them out
+@@ -253,7 +268,13 @@
+         # NOTE: asyncio.gather(return_exceptions=True) catches and includes exceptions in the results
+         #       this will become useful when we support exception handling in AppSync resolver
+         results = await asyncio.gather(*tasks, return_exceptions=True)
+-        response.extend(None if isinstance(ret, Exception) else ret for ret in results)
++        for ret in results:
++            if isinstance(ret, Exception):
++                handler = self._lookup_exception_handler(type(ret))
++                response.append(handler(ret) if handler else None)
++            else:
++                response.append(ret)
++        return response
+ 
+         return response
+ 
+@@ -299,7 +320,11 @@
+         if resolver:
+             logger.debug(f"Found sync resolver. {resolver=}, {field_name=}")
+             return self._call_sync_batch_resolver(
+-                resolver=resolver["func"],
++                try:
++                    resolver=resolver["func"],
++                except Exception as e:
++                    handler = self._lookup_exception_handler(type(e))
++                    return handler(e) if handler else raise
+                 raise_on_error=resolver["raise_on_error"],
+                 aggregate=resolver["aggregate"],
+             )
+@@ -308,7 +333,11 @@
+             logger.debug(f"Found async resolver. {resolver=}, {field_name=}")
+             return asyncio.run(
+                 self._call_async_batch_resolver(
+-                    resolver=async_resolver["func"],
++                    try:
++                        resolver=async_resolver["func"],
++                    except Exception as e:
++                        handler = self._lookup_exception_handler(type(e))
++                        return handler(e) if handler else raise
+                     raise_on_error=async_resolver["raise_on_error"],
+                     aggregate=async_resolver["aggregate"],
+                 ),
+@@ -416,6 +445,44 @@
+             raise_on_error=raise_on_error,
+             aggregate=aggregate,
+         )
++
++    def exception_handler(self, exc_class: type[Exception] | list[type[Exception]]):
++        """Registers an exception handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class : type[Exception] | list[type[Exception]]
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable
++            A decorator that registers the exception handler.
++        """
++        def decorator(func: Callable):
++            if isinstance(exc_class, list):
++                for exc in exc_class:
++                    self._exception_handlers[exc] = func
++            else:
++                self._exception_handlers[exc_class] = func
++            return func
++        return decorator
++
++    def _lookup_exception_handler(self, exp_type: type) -> Callable | None:
++        """Looks up the registered exception handler for the given exception type or its base classes.
++
++        Parameters
++        ----------
++        exp_type : type
++            The exception type to look up the handler for.
++
++        Returns
++        -------
++        Callable | None
++            The registered exception handler function if found, otherwise None.
++        """
++        for exc_class in self._exception_handlers:
++            if issubclass(exp_type, exc_class):
++                return self._exception_handlers[exc_class]
++        return None

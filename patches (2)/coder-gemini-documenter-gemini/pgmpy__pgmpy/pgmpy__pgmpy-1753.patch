@@ -1,0 +1,127 @@
+diff --git a/pgmpy/utils/__init__.py b/pgmpy/utils/__init__.py
+--- a/pgmpy/utils/__init__.py
++++ b/pgmpy/utils/__init__.py
+@@ -2,7 +2,7 @@
+ from .mathext import cartesian, sample_discrete
+ from .state_name import StateNameMixin
+ from .check_functions import _check_1d_array_object, _check_length_equal
+-from .optimizer import optimize, pinverse
+-from .utils import get_example_model
++from .optimizer import optimize, pinverse 
++from .utils import get_example_model, discretize
+ 
+ 
+ __all__ = [
+@@ -13,4 +13,5 @@
+     "_check_length_equal",
+     "optimize",
+     "pinverse",
+-    "get_example_model"
++    "get_example_model",
++    "discretize",
+ ]
+diff --git a/pgmpy/utils/utils.py b/pgmpy/utils/utils.py
+--- a/pgmpy/utils/utils.py
++++ b/pgmpy/utils/utils.py
+@@ -1,6 +1,7 @@
+ import gzip
++import pandas as pd
+ 
+-
++ 
+ try:
+     from importlib.resources import files
+ except:
+@@ -10,3 +11,92 @@
+ 
+ def get_example_model(model_name):
+     return files("pgmpy").joinpath(f"examples/{model_name}.bif").read_text()
++
++
++def discretize(data, cardinality, labels=dict(), method="rounding"):
++    """
++    Discretizes a given continuous dataset.
++
++    Parameters
++    ----------
++    data: pandas.DataFrame
++        The dataset to discretize. All columns must have continuous values.
++
++    cardinality: dict
++        A dictionary of the form (str: int) representing the number of bins
++        to create for each of the variables.
++
++    labels: dict (default: dict())
++        A dictionary of the form (str: list) representing the label names for
++        each variable in the discretized dataframe.
++
++    method: rounding or quantile
++        If rounding, equal width bins are created and data is discretized into these bins. Refer pandas.cut for more details.
++        If quantile, creates bins such that each bin has an equal number of datapoints. Refer pandas.qcut for more details.
++
++    Examples
++    --------
++    >>> import numpy as np
++    >>> import pandas as pd
++    >>> from pgmpy.utils import discretize
++    >>> rng = np.random.default_rng(42)
++    >>> X = rng.standard_normal(1000)
++    >>> Y = 0.2 * X + rng.standard_normal(1000)
++    >>> Z = 0.4 * X + 0.5 * Y + rng.standard_normal(1000)
++    >>> df = pd.DataFrame({"X": X, "Y": Y, "Z": Z})
++    >>> df_disc = discretize(df, cardinality={'X': 3, 'Y': 3, 'Z': 3}, labels={'X': ['low', 'mid', 'high'], 'Y': ['low', 'mid', 'high'], 'Z': ['low', 'mid', 'high']})
++    >>> df_disc.head()
++        X    Y    Z
++    0   mid  mid  mid
++    1   mid  mid  low
++    2   mid  mid  mid
++    3  high  mid  mid
++    4   low  mid  low
++
++    Returns
++    -------
++    pandas.DataFrame: A discretized dataframe.
++    """
++    # Input validation
++    if not isinstance(data, pd.DataFrame):
++        raise ValueError("Input 'data' must be a pandas.DataFrame.")
++    if not isinstance(cardinality, dict):
++        raise ValueError("Input 'cardinality' must be a dictionary.")
++    if not isinstance(labels, dict):
++        raise ValueError("Input 'labels' must be a dictionary.")
++    if method not in ["rounding", "quantile"]:
++        raise ValueError("Method must be 'rounding' or 'quantile'.")
++
++    # Create a copy to avoid modifying the original DataFrame
++    discretized_data = data.copy()
++
++    for var, bins in cardinality.items():
++        if var not in data.columns:
++            raise ValueError(f"Variable '{var}' not found in the input DataFrame.")
++        if not isinstance(bins, int) or bins <= 0:
++            raise ValueError(f"Cardinality for variable '{var}' must be a positive integer.")
++
++        current_labels = labels.get(var)
++        if current_labels is not None:
++            if not isinstance(current_labels, list):
++                raise ValueError(f"Labels for variable '{var}' must be a list or None.")
++            if len(current_labels) != bins:
++                raise ValueError(f"Number of labels for variable '{var}' ({len(current_labels)}) does not match cardinality ({bins}).")
++
++        if method == "rounding":
++            # pd.cut requires bins >= 2. If bins=1, it implies a single category,
++            # but pd.cut will raise an error. The current check `bins <= 0`
++            # handles invalid non-positive bins. For bins=1, pandas will raise
++            # a ValueError, which is acceptable.
++            discretized_data[var] = pd.cut(
++                data[var], bins=bins, labels=current_labels, include_lowest=True
++            )
++        elif method == "quantile":
++            # 'duplicates='drop'' handles cases with many identical values,
++            # which can lead to non-unique quantiles and errors otherwise.
++            discretized_data[var] = pd.qcut(
++                data[var], q=bins, labels=current_labels, duplicates='drop'
++            )
++    return discretized_data
++
++

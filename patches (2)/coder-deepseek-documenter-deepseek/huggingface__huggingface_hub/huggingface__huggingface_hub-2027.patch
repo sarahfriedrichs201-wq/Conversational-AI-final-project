@@ -1,0 +1,97 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -1,6 +1,7 @@
+ import os
+ import time
+ from dataclasses import dataclass
++from typing import Optional
+ 
+ from .constants import DEFAULT_REVISION, ENDPOINT, HF_HUB_ENABLE_HF_TRANSFER
+ from .utils import (
+@@ -8,7 +9,6 @@
+     hf_raise_for_status,
+     http_backoff,
+ )
+-from typing import Optional
+ 
+ 
+ @dataclass(frozen=True)
+@@ -215,6 +215,39 @@ class HfFileSystem:
+         """
+         return self._ls_tree(path, recursive=recursive, revision=revision)
+ 
++    def url(self, path: str, revision: Optional[str] = None) -> str:
++        """
++        Get the HTTP URL of the given path.
++
++        Args:
++            path (`str`):
++                Path to a file or directory in a Hugging Face Hub repository.
++                Can be in the format `repo_id/path/to/file` or `datasets/repo_id/path/to/file`.
++            revision (`str`, *optional*):
++                The revision of the repository. If not provided, defaults to the default branch.
++
++        Returns:
++            `str`: The HTTP URL that can be used to access the file.
++
++        Raises:
++            `FileNotFoundError`: If the path doesn't exist.
++
++        Example:
++            ```python
++            >>> fs = HfFileSystem()
++            >>> fs.url("username/my-model/pytorch_model.bin")
++            'https://huggingface.co/username/my-model/resolve/main/pytorch_model.bin'
++            >>> fs.url("datasets/username/my-dataset/data.json", revision="v1.0")
++            'https://huggingface.co/datasets/username/my-dataset/resolve/v1.0/data.json'
++            ```
++        """
++        from .file_download import hf_hub_url
++
++        resolved_path = self.resolve_path(path, revision=revision)
++        return hf_hub_url(
++            repo_id=resolved_path.repo_id, filename=resolved_path.path_in_repo, repo_type=resolved_path.repo_type, revision=resolved_path.revision, endpoint=self.endpoint
++        )
++
+     def _open(
+         self,
+         path: str,
+@@ -340,6 +373,18 @@ class HfFileSystemFile(AbstractBufferedFile):
+         self._info = None
+         self._xetm = None
+ 
++    @property
++    def url(self) -> str:
++        """
++        Get the HTTP URL of this file.
++
++        Returns:
++            `str`: The HTTP URL that can be used to access the file.
++        """
++        from .file_download import hf_hub_url
++
++        return hf_hub_url(repo_id=self.resolved_path.repo_id, filename=self.resolved_path.path_in_repo, repo_type=self.resolved_path.repo_type, revision=self.resolved_path.revision, endpoint=self.fs.endpoint)
++
+     def _fetch_range(self, start: int, end: int) -> bytes:
+         """Download a chunk of the file."""
+         if self._xetm:
+@@ -393,6 +438,18 @@ class HfFileSystemStreamFile(AbstractBufferedFile):
+         self._info = None
+         self._xetm = None
+ 
++    @property
++    def url(self) -> str:
++        """
++        Get the HTTP URL of this file.
++
++        Returns:
++            `str`: The HTTP URL that can be used to access the file.
++        """
++        from .file_download import hf_hub_url
++
++        return hf_hub_url(repo_id=self.resolved_path.repo_id, filename=self.resolved_path.path_in_repo, repo_type=self.resolved_path.repo_type, revision=self.resolved_path.revision, endpoint=self.fs.endpoint)
++
+     def _fetch_range(self, start: int, end: int) -> bytes:
+         """Download a chunk of the file."""
+         if self._xetm:

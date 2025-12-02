@@ -1,0 +1,70 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -201,6 +201,34 @@
+         self.invalidate_cache(path)
+         return True
+ 
++    def url(self, path: str, revision: Optional[str] = None) -> str:
++        """
++        Get the HTTP URL of the given path.
++
++        Args:
++            path (`str`):
++                The path to the file on the Hugging Face Hub.
++            revision (`str`, *optional*):
++                The revision (e.g., branch name, tag name, or commit id) of the repository.
++                Defaults to "main".
++
++        Returns:
++            `str`: The HTTP URL for the file.
++
++        Raises:
++            `IsADirectoryError`: If the path refers to a directory.
++            `FileNotFoundError`: If the path does not exist.
++        """
++        resolved_path = self.resolve_path(path, revision=revision)
++        # Check if the path refers to a directory.
++        # We use resolved_path.unresolve() because self.info expects the unresolved path.
++        if self.info(resolved_path.unresolve(), revision=resolved_path.revision)["type"] == "directory":
++            raise IsADirectoryError(f"Cannot get URL for a directory: '{path}'")
++
++        return hf_hub_url(
++            repo_id=resolved_path.repo_id, revision=resolved_path.revision, filename=resolved_path.path_in_repo, repo_type=resolved_path.repo_type, endpoint=self.endpoint
++        )
++
+ 
+ class HfFileSystemFile(fsspec.spec.AbstractBufferedFile):
+     """
+@@ -250,6 +278,16 @@
+         self.resolved_path = fs.resolve_path(path, revision=revision)
+         super().__init__(fs, path, mode, **kwargs)
+ 
++    def url(self) -> str:
++        """
++        Get the HTTP URL of the file represented by this object.
++
++        Returns:
++            `str`: The HTTP URL for the file.
++        """
++        return hf_hub_url(
++            repo_id=self.resolved_path.repo_id, revision=self.resolved_path.revision, filename=self.resolved_path.path_in_repo, repo_type=self.resolved_path.repo_type, endpoint=self.fs.endpoint
++        )
+ 
+ class HfFileSystemStreamFile(fsspec.spec.AbstractBufferedFile):
+     """
+@@ -300,3 +338,13 @@
+         self.resolved_path = fs.resolve_path(path, revision=revision)
+         super().__init__(fs, path, mode, block_size, cache_type, **kwargs)
+         self.offset = 0
++
++    def url(self) -> str:
++        """
++        Get the HTTP URL of the streaming file represented by this object.
++
++        Returns:
++            `str`: The HTTP URL for the file.
++        """
++        return hf_hub_url(
++            repo_id=self.resolved_path.repo_id, revision=self.resolved_path.revision, filename=self.resolved_path.path_in_repo, repo_type=self.resolved_path.repo_type, endpoint=self.fs.endpoint
++        )

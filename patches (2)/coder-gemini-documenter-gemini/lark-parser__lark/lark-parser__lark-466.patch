@@ -1,0 +1,44 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -107,6 +107,22 @@
+             self._call_userfunc(subtree)
+         return tree
+ 
++    def visit_topdown(self, tree):
++        """Top-down visitor, non-recursive
++
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        stack = [tree]
++        while stack:
++            current_tree = stack.pop()
++            self._call_userfunc(current_tree)
++            # Add children in reverse order to maintain left-to-right processing
++            # when popping from the stack (LIFO).
++            for child in reversed(current_tree.children):
++                if isinstance(child, Tree):
++                    stack.append(child)
++        return tree
+ 
+ class Transformer(VisitorBase):
+     """
+@@ -165,3 +181,17 @@
+         f = getattr(self, tree.data, self.__default__)
+         f(tree)
+         return tree
++
++    def visit_topdown(self, tree):
++        """Top-down visitor, recursive
++
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        self._call_userfunc(tree) # Process current node first
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child) # Then recurse on children
++        return tree
++
++

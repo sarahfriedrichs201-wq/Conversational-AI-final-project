@@ -1,0 +1,196 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -3,7 +3,7 @@
+ import asyncio
+ import inspect
+ import logging
+-import warnings
+-from typing import TYPE_CHECKING, Any, Callable
++from typing import TYPE_CHECKING, Any, Callable, Dict
+ 
+ from aws_lambda_powertools.event_handler.graphql_appsync.exceptions import InvalidBatchResponse, ResolverNotFoundError
+ from aws_lambda_powertools.event_handler.graphql_appsync.router import Router
+@@ -19,6 +19,7 @@
+     def __init__(self):
+         super().__init__()
+         self.context = {}
++        self._exception_handlers: Dict[type[Exception], Callable] = {}
+ 
+     def resolve(
+         self,
+@@ -36,9 +37,59 @@
+ 
+         if not asyncio.iscoroutine(response):
+             self.clear_context()
++            self._exception_handlers.clear()
+ 
+         return response
+ 
++    def exception_handler(self, exc_class: type[Exception] | list[type[Exception]]):
++        """
++        A decorator function that registers a handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class (type[Exception] | list[type[Exception]])
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable:
++            A decorator function that registers the exception handler.
++        """
++
++        def register_exception_handler(func: Callable):
++            if not isinstance(exc_class, list):
++                self._exception_handlers[exc_class] = func
++                return func
++
++            for exc in exc_class:
++                self._exception_handlers[exc] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: type) -> Callable | None:
++        """
++        Looks up the registered exception handler for the given exception type or its base classes.
++
++        Parameters
++        ----------
++        exp_type (type):
++            The exception type to look up the handler for.
++
++        Returns
++        -------
++        Callable | None:
++            The registered exception handler function if found, otherwise None.
++        """
++        # Traverse the MRO to find the most specific handler
++        for cls in exp_type.__mro__:
++            if cls in self._exception_handlers:
++                return self._exception_handlers[cls]
++        return None
++
+     def _call_single_resolver(self, event: dict, data_model: type[AppSyncResolverEvent]) -> Any:
+         """Call single event resolver
+ 
+@@ -57,7 +108,16 @@
+             raise ValueError(f"No resolver found for '{self.current_event.type_name}.{self.current_event.field_name}'")
+ 
+         resolver_func = resolver_data["func"]
+-
++        # NOTE: Exception handling is not supported for single async resolvers as per problem description.
++        # Async resolvers are expected to handle their own exceptions or let them propagate.
++        if inspect.iscoroutinefunction(resolver_func):
++            logger.debug("Skipping exception handling for single async resolver")
++            return resolver_func(**self.current_event.arguments)
++
++        try:
++            return resolver_func(**self.current_event.arguments)
++        except Exception as ex:
++            handler = self._lookup_exception_handler(type(ex))
++            if handler:
++                logger.debug(f"Found exception handler for {type(ex).__name__}")
++                return handler(ex)
++            raise  # Re-raise if no handler is found
+     def _call_batch_resolver(self, event: list[dict], data_model: type[AppSyncResolverEvent]) -> Any:
+         """Call batch resolver
+ 
+@@ -127,7 +187,10 @@
+             try:
+                 results.append(resolver(event=event, **event.arguments))
+             except Exception as ex:
+-                logger.debug(f"Failed to process event number {idx} from field '{event.info.field_name}'")
+-                results.append(None)
++                handler = self._lookup_exception_handler(type(ex))
++                if handler:
++                    logger.debug(f"Found exception handler for {type(ex).__name__} in sync batch resolver")
++                    results.append(handler(ex))
++                else:
++                    logger.debug(f"Failed to process event number {idx} from field '{event.info.field_name}'")
++                    results.append(None)
+ 
+         return results
+@@ -165,12 +228,19 @@
+         #
+         # NOTE: asyncio.gather(return_exceptions=True) catches and includes exceptions in the results
+         #       this will become useful when we support exception handling in AppSync resolver
+-        return await asyncio.gather(*tasks, return_exceptions=True)
++        results = await asyncio.gather(*tasks, return_exceptions=True)
++
++        response = []
++        for ret in results:
++            if isinstance(ret, Exception):
++                handler = self._lookup_exception_handler(type(ret))
++                if handler:
++                    logger.debug(f"Found exception handler for {type(ret).__name__} in async batch resolver")
++                    response.append(handler(ret))
++                else:
++                    response.append(None)
++            else:
++                response.append(ret)
++        return response
+ 
+     def include_router(self, router: Router) -> None:
+         """Adds all resolvers defined in a router
+@@ -186,3 +256,4 @@
+         self._resolver_registry.merge(router._resolver_registry)
+         self._batch_resolver_registry.merge(router._batch_resolver_registry)
+         self._async_batch_resolver_registry.merge(router._async_batch_resolver_registry)
++        self._exception_handlers.update(router._exception_handlers)
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,45 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++from aws_lambda_powertools.utilities.typing import LambdaContext
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    """
++    Handles ValueError exceptions raised by resolvers.
++    """
++    return {"message": f"A value error occurred: {ex}"}
++
++
++@app.exception_handler(Exception)
++def handle_all_exceptions(ex: Exception):
++    """
++    Handles any other exceptions not specifically caught.
++    This handler will catch exceptions that are not specifically handled
++    by more specific exception handlers (e.g., ValueError).
++    """
++    return {"message": f"An unexpected error occurred: {type(ex).__name__}"}
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    """
++    A resolver that raises a ValueError if the ID is empty.
++    """
++    if not id:
++        raise ValueError("ID cannot be empty")
++    return {"id": id, "status": "created"}
++
++
++@app.resolver(field_name="deleteSomething")
++def delete_something(id: str):
++    """
++    A resolver that raises a generic Exception if the ID is "error".
++    """
++    if id == "error":
++        raise Exception("Failed to delete item")
++    return {"id": id, "status": "deleted"}
++
++
++def lambda_handler(event: dict, context: LambdaContext):
++    """
++    Lambda handler function that resolves AppSync events.
++    """
++    return app.resolve(event, context)

@@ -1,0 +1,313 @@
+diff --git a/src/sagemaker/image_uris.py b/src/sagemaker/image_uris.py
+--- a/src/sagemaker/image_uris.py
++++ b/src/sagemaker/image_uris.py
+@@ -1,6 +1,6 @@
+ # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ #
+-# Licensed under the Apache License, Version 2.0 (the "License"). You
++# Licensed under the Apache License, Version 2.0 (the "License"). You
+ # may not use this file except in compliance with the License. A copy of
+ # the License is located at
+ #
+@@ -14,6 +14,7 @@
+ import json
+ import logging
+ import os
++import re
+ from typing import Optional
+ 
+ from sagemaker import utils
+@@ -26,6 +27,7 @@
+ 
+ logger = logging.getLogger(__name__)
+ 
++
+ ECR_URI_TEMPLATE = "{registry}.dkr.{hostname}/{repository}"
+ HUGGING_FACE_FRAMEWORK = "huggingface"
+ 
+@@ -219,6 +221,7 @@
+     if training_compiler_config and (framework == HUGGING_FACE_FRAMEWORK):
+         config = _config_for_framework_and_scope(
+             framework + "-training-compiler", image_scope, accelerator_type
++
+         )
+     else:
+         _framework = framework
+@@ -226,6 +229,7 @@
+             inference_tool = _get_inference_tool(inference_tool, instance_type)
+             if inference_tool == "neuron":
+                 _framework = f"{framework}-{inference_tool}"
++
+         config = _config_for_framework_and_scope(_framework, image_scope, accelerator_type)
+ 
+     original_version = version
+@@ -246,6 +250,7 @@
+     repo = version_config["repository"]
+ 
+     processor = _processor(
++
+         instance_type,
+         config.get("processors") or version_config.get("processors"),
+         serverless_inference_config,
+@@ -254,6 +259,7 @@
+     # if container version is available in .json file, utilize that
+     if version_config.get("container_version"):
+         container_version = version_config["container_version"][processor]
++
+ 
+     if framework == HUGGING_FACE_FRAMEWORK:
+         pt_or_tf_version = (
+@@ -284,6 +290,7 @@
+         tag_prefix = version_config.get("tag_prefix", version)
+ 
+     tag = _format_tag(tag_prefix, processor, py_version, container_version, inference_tool)
++
+ 
+     if instance_type is not None and _should_auto_select_container_version(
+         instance_type, distribution
+@@ -310,6 +317,7 @@
+         if key in container_versions:
+             tag = "-".join([tag, container_versions[key]])
+ 
++
+     if tag:
+         repo += ":{}".format(tag)
+ 
+@@ -317,6 +325,7 @@
+ 
+ 
+ def _config_for_framework_and_scope(framework, image_scope, accelerator_type=None):
++
+     """Loads the JSON config for the given framework and image scope."""
+     config = config_for_framework(framework)
+ 
+@@ -329,6 +338,7 @@
+         image_scope = "eia"
+ 
+     available_scopes = config.get("scope", config.keys())
++
+ 
+     if len(available_scopes) == 1:
+         if image_scope and image_scope != list(available_scopes)[0]:
+@@ -339,6 +349,7 @@
+             )
+         image_scope = list(available_scopes)[0]
+ 
++
+     if not image_scope and "scope" in config and set(available_scopes) == {"training", "inference"}:
+         logger.info(
+             "Same images used for training and inference. Defaulting to image scope: %s.",
+@@ -346,6 +357,7 @@
+         )
+         image_scope = available_scopes[0]
+ 
++
+     _validate_arg(image_scope, available_scopes, "image scope")
+     return config if "scope" in config else config[image_scope]
+ 
+@@ -353,6 +365,7 @@
+ def config_for_framework(framework):
+     """Loads the JSON config for the given framework."""
+     fname = os.path.join(os.path.dirname(__file__), "image_uri_config", "{}.json".format(framework))
++
+     with open(fname) as f:
+         return json.load(f)
+ 
+@@ -360,6 +373,7 @@
+ def _get_inference_tool(inference_tool, instance_type):
+     """Extract the inference tool name from instance type."""
+     if not inference_tool and instance_type:
++
+         match = re.match(r"^ml[\._]([a-z\d]+)\.?\w*$", instance_type)
+         if match and match[1].startswith("inf"):
+             return "neuron"
+@@ -367,6 +381,7 @@
+ 
+ 
+ def _get_latest_versions(list_of_versions):
++
+     """Extract the latest version from the input list of available versions."""
+     return sorted(list_of_versions, reverse=True)[0]
+ 
+@@ -374,6 +389,7 @@
+ def _validate_accelerator_type(accelerator_type):
+     """Raises a ``ValueError`` if ``accelerator_type`` is invalid."""
+     if not accelerator_type.startswith("ml.eia") and accelerator_type != "local_sagemaker_notebook":
++
+         raise ValueError(
+             "Invalid SageMaker Elastic Inference accelerator type: {}. "
+             "See https://docs.aws.amazon.com/sagemaker/latest/dg/ei.html".format(accelerator_type)
+@@ -382,6 +398,7 @@
+ 
+ def _validate_version_and_set_if_needed(version, config, framework):
+     """Checks if the framework/algorithm version is one of the supported versions."""
++
+     available_versions = list(config["versions"].keys())
+     aliased_versions = list(config.get("version_aliases", {}).keys())
+ 
+@@ -393,6 +410,7 @@
+             logger.warning("%s Ignoring framework/algorithm version: %s.", log_message, version)
+         elif not version:
+             logger.info(log_message)
++
+ 
+         return available_versions[0]
+ 
+@@ -403,6 +421,7 @@
+ def _version_for_config(version, config):
+     """Returns the version string for retrieving a framework version's specific config."""
+     if "version_aliases" in config:
++
+         if version in config["version_aliases"].keys():
+             return config["version_aliases"][version]
+ 
+@@ -411,6 +430,7 @@
+ 
+ def _registry_from_region(region, registry_dict):
+     """Returns the ECR registry (AWS account number) for the given region."""
++
+     _validate_arg(region, registry_dict.keys(), "region")
+     return registry_dict[region]
+ 
+@@ -418,6 +438,7 @@
+ def _processor(instance_type, available_processors, serverless_inference_config=None):
+     """Returns the processor type for the given instance type."""
+     if not available_processors:
++
+         logger.info("Ignoring unnecessary instance type: %s.", instance_type)
+         return None
+ 
+@@ -425,6 +446,7 @@
+         logger.info("Defaulting to only supported image scope: %s.", available_processors[0])
+         return available_processors[0]
+ 
++
+     if serverless_inference_config is not None:
+         logger.info("Defaulting to CPU type when using serverless inference")
+         return "cpu"
+@@ -435,6 +457,7 @@
+             "https://aws.amazon.com/sagemaker/pricing/instance-types"
+         )
+ 
++
+     if instance_type.startswith("local"):
+         processor = "cpu" if instance_type == "local" else "gpu"
+     elif instance_type.startswith("neuron"):
+@@ -442,6 +465,7 @@
+     else:
+         # looks for either "ml.<family>.<size>" or "ml_<family>"
+         match = re.match(r"^ml[\._]([a-z\d]+)\.?\w*$", instance_type)
++
+         if match:
+             family = match[1]
+ 
+@@ -449,6 +473,8 @@
+             # In those cases, we use the family name in the image tag. In other cases, we use
+             # 'cpu' or 'gpu'.
+             if family in available_processors:
++                processor = family
++            elif family.startswith("c6g") or family.startswith("c7g") or family.startswith("t4g"):
+                 processor = family
+             elif family.startswith("inf"):
+                 processor = "inf"
+@@ -461,6 +487,7 @@
+                 "https://aws.amazon.com/sagemaker/pricing/instance-types".format(instance_type)
+             )
+ 
++
+     _validate_arg(processor, available_processors, "processor")
+     return processor
+ 
+@@ -468,6 +495,7 @@
+ def _should_auto_select_container_version(instance_type, distribution):
+     """Returns a boolean that indicates whether to use an auto-selected container version."""
+     p4d = False
++
+     if instance_type:
+         # looks for either "ml.<family>.<size>" or "ml_<family>"
+         match = re.match(r"^ml[\._]([a-z\d]+)\.?\w*$", instance_type)
+@@ -475,6 +503,7 @@
+             family = match[1]
+             p4d = family == "p4d"
+ 
++
+     smdistributed = False
+     if distribution:
+         smdistributed = "smdistributed" in distribution
+@@ -484,6 +513,7 @@
+ 
+ def _validate_py_version_and_set_if_needed(py_version, version_config, framework):
+     """Checks if the Python version is one of the supported versions."""
++
+     if "repository" in version_config:
+         available_versions = version_config.get("py_versions")
+     else:
+@@ -494,6 +524,7 @@
+             logger.info("Ignoring unnecessary Python version: %s.", py_version)
+         return None
+ 
++
+     if py_version is None and defaults.SPARK_NAME == framework:
+         return None
+ 
+@@ -501,6 +532,7 @@
+         logger.info("Defaulting to only available Python version: %s", available_versions[0])
+         return available_versions[0]
+ 
++
+     _validate_arg(py_version, available_versions, "Python version")
+     return py_version
+ 
+@@ -508,6 +540,7 @@
+ def _validate_arg(arg, available_options, arg_name):
+     """Checks if the arg is in the available options, and raises a ``ValueError`` if not."""
+     if arg not in available_options:
++
+         raise ValueError(
+             "Unsupported {arg_name}: {arg}. You may need to upgrade your SDK version "
+             "(pip install -U sagemaker) for newer {arg_name}s. Supported {arg_name}(s): "
+@@ -518,6 +551,7 @@
+ def _format_tag(tag_prefix, processor, py_version, container_version, inference_tool=None):
+     """Creates a tag for the image URI."""
+     if inference_tool:
++
+         return "-".join(x for x in (tag_prefix, inference_tool, py_version, container_version) if x)
+     return "-".join(x for x in (tag_prefix, processor, py_version, container_version) if x)
+ 
+@@ -535,6 +569,7 @@
+     instance_type=None,
+ ) -> str:
+     """Retrieves the image URI for training.
++
+ 
+     Args:
+         region (str): The AWS region to use for image URI.
+@@ -553,6 +588,7 @@
+     Returns:
+         str: The image URI string.
+     """
++
+ 
+     if image_uri:
+         return image_uri
+@@ -561,6 +597,7 @@
+         "image_uri is not presented, retrieving image_uri based on instance_type, framework etc."
+     )
+     base_framework_version: Optional[str] = None
++
+ 
+     if tensorflow_version is not None or pytorch_version is not None:
+         processor = _processor(instance_type, ["cpu", "gpu"])
+@@ -574,6 +611,7 @@
+         container_version = None
+         base_framework_version = None
+ 
++
+     return retrieve(
+         framework,
+         region,
+@@ -586,4 +624,5 @@
+         container_version=container_version,
+         training_compiler_config=compiler_config,
+     )
++

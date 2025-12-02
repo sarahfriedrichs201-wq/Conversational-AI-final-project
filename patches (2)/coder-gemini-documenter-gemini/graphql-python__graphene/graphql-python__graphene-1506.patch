@@ -1,0 +1,46 @@
+diff --git a/graphene/types/inputobjecttype.py b/graphene/types/inputobjecttype.py
+--- a/graphene/types/inputobjecttype.py
++++ b/graphene/types/inputobjecttype.py
+@@ -12,6 +12,31 @@
+ if MYPY:
+     from typing import Dict, Callable  # NOQA
+ 
++# Global variable to store the default value for non-specified input fields.
++# Initialized to None for backward compatibility.
++_input_object_type_default_value = None
++
++
++def set_input_object_type_default_value(default_value):
++    """
++    Sets the global default value for non-specified fields in InputObjectTypes.
++
++    This value will be returned when an optional input field is accessed via
++    dot notation (e.g., `input.field_name`) but was not provided in the
++    incoming GraphQL input.
++
++    By default, this value is `None`, which is the current behavior.
++    Setting it to a sentinel value (like `graphql.Undefined`) allows
++    differentiation between an explicitly set `None` and an unspecified field.
++
++    This function should be called early in the application lifecycle,
++    before any `InputObjectType`s are defined or instantiated.
++
++    Args:
++        default_value: The sentinel value to be returned for non-specified
++                       optional input fields.
++    """
++    global _input_object_type_default_value
++    _input_object_type_default_value = default_value
++
+ 
+ class InputObjectTypeOptions(BaseOptions):
+     fields = None
+@@ -58,7 +83,7 @@
+         dict.__init__(self, *args, **kwargs)
+         for key in self._meta.fields:
+             # Use the global default value for non-specified fields
+-            setattr(self, key, self.get(key, None))
++            setattr(self, key, self.get(key, _input_object_type_default_value))
+ 
+     def __init_subclass__(cls, *args, **kwargs):
+         pass

@@ -1,0 +1,106 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -1,5 +1,6 @@
+ # Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License"). You
+ # may not use this file except in compliance with the License. A copy of
+ # the License is located at
+@@ -10,10 +11,11 @@
+ # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+ # ANY KIND, either express or implied. See the License for the specific
+ # language governing permissions and limitations under the License.
+ 
+ import logging
++import jmespath
+ 
+ from . import model
+ from .response import ResourceHandler
+ from .params import create_request_parameters
+ 
+@@ -185,10 +187,11 @@
+         """
+         Creates a new property on the resource to lazy-load a reference.
+         """
+         # References are essentially an action with no request
+         # or response, so we can re-use the response handlers to
+         # build up resources from identifiers and data members.
+         handler = ResourceHandler('', factory_self, resource_defs,
+                                   service_model, reference.resource)
+ 
+         def get_reference(self):
++            # First, try to extract data from parent's meta.data if path exists
++            if (hasattr(self, 'meta') and self.meta.data is not None and
++                hasattr(reference.resource, 'path') and reference.resource.path):
++                extracted_data = jmespath.search(reference.resource.path,
++                                                 self.meta.data)
++                if extracted_data is not None:
++                    return handler(self, {}, {}, extracted_data)
++
++            # If no data but parent can load, trigger load and retry
++            if (hasattr(self, 'load') and
++                hasattr(self.meta, 'data') and self.meta.data is None):
++                self.load()
++                # After load, try extraction again
++                if (self.meta.data is not None and
++                    hasattr(reference.resource, 'path') and reference.resource.path):
++                    extracted_data = jmespath.search(reference.resource.path,
++                                                     self.meta.data)
++                    if extracted_data is not None:
++                        return handler(self, {}, {}, extracted_data)
++
++            # Fall back to original behavior (build from identifiers only)
+             return handler(self, {}, {})
+ 
+         get_reference.__name__ = str(reference.name)
+diff --git a/boto3/resources/response.py b/boto3/resources/response.py
+--- a/boto3/resources/response.py
++++ b/boto3/resources/response.py
+@@ -1,5 +1,6 @@
+ # Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License"). You
+ # may not use this file except in compliance with the License. A copy of
+ # the License is located at
+@@ -10,10 +11,11 @@
+ # distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+ # ANY KIND, either express or implied. See the License for the specific
+ # language governing permissions and limitations under the License.
+ 
+ import logging
++import jmespath
+ 
+ from . import model
+ from .params import create_request_parameters
+ from .action import ServiceAction
+ from .base import ServiceResource
+@@ -56,11 +58,11 @@
+         self.search_path = search_path
+         self.factory = factory
+         self.resource_defs = resource_defs
+         self.service_model = service_model
+         self.resource_model = resource_model
+ 
+-    def __call__(self, parent, params, response):
++    def __call__(self, parent, params, response, extracted_data=None):
+         """
+         Builds a resource from response data.
+ 
+         :type parent: ServiceResource
+@@ -68,11 +70,14 @@
+         :type response: dict
+         :rtype: ServiceResource or list
+         """
+         # Determine which data source to use
+         if self.search_path:
+-            data = jmespath.search(self.search_path, response)
++            if extracted_data is not None:
++                data = extracted_data
++            else:
++                data = jmespath.search(self.search_path, response)
+         else:
+             data = response
+ 
+         # If there is no data, then we should return None
+         if data is None:

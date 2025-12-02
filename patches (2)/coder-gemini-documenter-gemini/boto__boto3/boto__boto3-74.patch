@@ -1,0 +1,35 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -3,6 +3,7 @@
+ from functools import partial
+ 
+ import jmespath
++
+ from boto3.exceptions import ResourceLoadException
+ from boto3.utils import get_identifier_args, get_service_module_name
+ 
+@@ -165,6 +166,22 @@
+             # First, though, we need to see if we have the required
+             # identifiers to instantiate the resource reference.
+ 
++            initial_data = {}
++            if reference.resource_path:
++                parent_data = self.meta.data
++                if parent_data is None and hasattr(self, 'load'):
++                    # If parent data is not loaded, and the parent can be
++                    # loaded, then load the parent.
++                    self.load()
++                    parent_data = self.meta.data
++
++                if parent_data is not None:
++                    # If parent data is available, try to extract the
++                    # reference's data using the JMESPath query.
++                    extracted_data = jmespath.search(
++                        reference.resource_path, parent_data
++                    )
++                    if extracted_data is not None:
++                        initial_data = extracted_data
+             # Pass the extracted data to the handler.
+             return handler(self, {}, initial_data)
+ 

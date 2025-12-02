@@ -1,0 +1,78 @@
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -1,6 +1,6 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
+ import functools
+-import inspect
++import inspect
+ import warnings
+ from collections.abc import Sequence
+ from typing import Any, Callable, Optional, Type, Union
+@@ -1015,3 +1015,56 @@ def has_method(obj: object, method: str) -> bool:
+     """
+     return hasattr(obj, method) and callable(getattr(obj, method))
+ 
++
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A decorator to mark a function as deprecated.
++    """
++
++    def decorator(func: Callable) -> Callable:
++        """The actual decorator that wraps the deprecated function."""
++
++        @functools.wraps(func)
++        def wrapper(*args, **kwargs):
++            """Wrapper function that issues deprecation warning."""
++            warnings.warn(
++                f'Function "{func.__name__}" is deprecated since version {since} '
++                f'and will be removed in version {removed_in}. {instructions}',
++                DeprecationWarning,
++                stacklevel=2)
++            return func(*args, **kwargs)
++
++        # Add deprecation notice to the docstring
++        if wrapper.__doc__ is None:
++            wrapper.__doc__ = ''
++
++        deprecation_message = (
++            f'.. deprecated:: {since}\n'
++            f'    This function is deprecated and will be removed in version '
++            f'{removed_in}. {instructions}\n\n')
++
++        wrapper.__doc__ = deprecation_message + wrapper.__doc__
++
++        return wrapper
++
++    return decorator
+diff --git a/docs/en/api/utils.rst b/docs/en/api/utils.rst
+--- a/docs/en/api/utils.rst
++++ b/docs/en/api/utils.rst
+@@ -49,6 +49,7 @@ Miscellaneous
+    check_prerequisites
+    deprecated_api_warning
+    deprecated_function
+    has_method
+    is_method_overridden
+    import_modules_from_strings
+diff --git a/docs/zh_cn/api/utils.rst b/docs/zh_cn/api/utils.rst
+--- a/docs/zh_cn/api/utils.rst
++++ b/docs/zh_cn/api/utils.rst
+@@ -49,6 +49,7 @@ Miscellaneous
+    check_prerequisites
+    deprecated_api_warning
+    deprecated_function
+    has_method
+    is_method_overridden
+    import_modules_from_strings

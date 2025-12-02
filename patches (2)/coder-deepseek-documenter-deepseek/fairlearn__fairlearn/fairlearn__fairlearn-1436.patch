@@ -1,0 +1,237 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -239,63 +239,39 @@ class DisaggregatedResult:
+         """
+         # Calculate the 'overall' values
+         if control_feature_names is None:
+-            # No control features, so we just apply the metric functions to the
+-            # entire dataset
+             overall = apply_to_dataframe(data, metric_functions=annotated_functions)
+         else:
+-            # We have control features, so we need to group by them
+-            temp = data.groupby(control_feature_names).apply(
+-                apply_to_dataframe,
+-                metric_functions=annotated_functions,
+-                include_groups=False,
+-            )
+-
+-            # Expand the index to include missing combinations
+-            all_classes = extract_unique_classes(data, control_feature_names)
+-            all_indices = pd.MultiIndex.from_product(
+-                all_classes.values(),
+-                names=all_classes.keys(),
+-            )
+-            overall = temp.reindex(index=all_indices)
++            overall = DisaggregatedResult._compute_grouped_metrics(
++                data=data,
++                annotated_functions=annotated_functions,
++                grouping_names=control_feature_names,
++            )
+ 
+         # Calculate the 'by_group' values
+-        # We need to group by both the control features (if any) and the
+-        # sensitive features
+         all_grouping_names = sensitive_feature_names.copy()
+         if control_feature_names is not None:
+-            # Note that we prepend the control feature names
+             all_grouping_names = control_feature_names + all_grouping_names
+ 
+-        temp = data.groupby(all_grouping_names).apply(
+-            apply_to_dataframe,
+-            metric_functions=annotated_functions,
+-            include_groups=False,
++        by_group = DisaggregatedResult._compute_grouped_metrics(
++            data=data,
++            annotated_functions=annotated_functions,
++            grouping_names=all_grouping_names,
+         )
+ 
+-        # Expand the index to include missing combinations
+-        if len(all_grouping_names) > 1:
+-            all_classes = extract_unique_classes(data, all_grouping_names)
+-            all_indices = pd.MultiIndex.from_product(
+-                all_classes.values(),
+-                names=all_classes.keys(),
+-            )
+-            by_group = temp.reindex(index=all_indices)
+-        else:
+-            by_group = temp
+-
+         return DisaggregatedResult(overall, by_group)
+ 
+     @staticmethod
+-    def _compute_grouped_metrics(
++    def _compute_grouped_metrics(
+         data: pd.DataFrame,
+         annotated_functions: dict[str, AnnotatedMetricFunction],
+         grouping_names: list[str],
+     ) -> pd.Series | pd.DataFrame:
+-        """Apply metric functions to data grouped by specified columns.
++        """Apply metric functions to data grouped by specified columns.
+ 
+         Parameters
+         ----------
+         data : pd.DataFrame
+-            Input data containing all required columns
++            Input data containing all required columns
+         annotated_functions : dict[str, AnnotatedMetricFunction]
+             Metric functions to apply
+         grouping_names : list[str]
+@@ -303,7 +279,7 @@ class DisaggregatedResult:
+ 
+         Returns
+         -------
+-        pd.Series or pd.DataFrame
++        pd.Series or pd.DataFrame
+             Metrics computed for each group
+         """
+         # Group data and apply metric functions
+@@ -312,7 +288,7 @@ class DisaggregatedResult:
+             metric_functions=annotated_functions,
+             include_groups=False,
+         )
+-
++        
+         # Expand index for missing combinations if multiple grouping columns
+         if len(grouping_names) > 1:
+             all_classes = extract_unique_classes(data, grouping_names)
+@@ -320,7 +296,7 @@ class DisaggregatedResult:
+                 all_classes.values(),
+                 names=all_classes.keys(),
+             )
+-            return temp.reindex(index=all_indices)
++            return temp.reindex(index=all_indices)
+ 
+         return temp
+ 
+@@ -103,66 +79,46 @@ class DisaggregatedResult:
+         if errors not in _VALID_ERROR_STRING:
+             raise ValueError(_INVALID_ERRORS_VALUE_ERROR_MESSAGE)
+ 
+-        # We'll work with a copy of the metric frame
+         mf = self.by_group
+ 
+         if errors == "coerce":
+-            # In coerce mode, we need to convert any non-scalar values to NaN
+-            # before computing the min/max
+-            # We'll do this by applying a function that checks if the value is
+-            # scalar and returns NaN if not
+-            mf = mf.applymap(lambda x: x if np.isscalar(x) else np.nan)
++            mf = mf.applymap(lambda x: x if np.isscalar(x) else np.nan)
+ 
+         try:
+             if control_feature_names is None:
+-                # We're grouping over all sensitive features, so we need to
+-                # compute the min/max across all groups for each metric
+-                # We'll do this by iterating over the columns and computing
+-                # the min/max for each column
+-                if grouping_function == "min":
+-                    result = pd.Series(
+-                        [mf[m].min() for m in mf.columns], index=mf.columns
+-                    )
+-                else:  # grouping_function == "max"
+-                    result = pd.Series(
+-                        [mf[m].max() for m in mf.columns], index=mf.columns
+-                    )
++                # Use pandas built-in min/max methods
++                if grouping_function == "min":
++                    result = mf.min()
++                else:  # grouping_function == "max"
++                    result = mf.max()
+             else:
+-                # We're grouping by control features, so we need to compute
+-                # the min/max for each control feature group
+-                # We'll do this by grouping by the control features and then
+-                # computing the min/max for each group
+-                if grouping_function == "min":
+-                    result = mf.groupby(level=control_feature_names).apply(
+-                        lambda x: pd.Series(
+-                            [x[m].min() for m in x.columns], index=x.columns
+-                        )
+-                    )
+-                else:  # grouping_function == "max"
+-                    result = mf.groupby(level=control_feature_names).apply(
+-                        lambda x: pd.Series(
+-                            [x[m].max() for m in x.columns], index=x.columns
+-                        )
+-                    )
++                # Group by control features first
++                if grouping_function == "min":
++                    result = mf.groupby(level=control_feature_names).min()
++                else:  # grouping_function == "max"
++                    result = mf.groupby(level=control_feature_names).max()
+         except (ValueError, TypeError) as ve:
+             if errors == "raise":
+                 raise ValueError(_MF_CONTAINS_NON_SCALAR_ERROR_MESSAGE) from ve
+-            else:  # errors == "coerce"
+-                # In coerce mode, we need to return NaN for any metric that
+-                # has non-scalar values
++            else:  # errors == "coerce"
++                # For coerce mode with control features, ensure we return proper structure
+                 if control_feature_names is None:
+-                    result = pd.Series([np.nan] * len(mf.columns), index=mf.columns)
++                    result = pd.Series([np.nan] * len(mf.columns), index=mf.columns)
+                 else:
+-                    # We need to return a DataFrame with the same index as the
+-                    # control features and the same columns as the metrics
+-                    # We'll create a DataFrame of NaNs with the appropriate
+-                    # shape
+-                    unique_controls = mf.index.get_level_values(
+-                        control_feature_names
+-                    ).unique()
+-                    result = pd.DataFrame(
+-                        np.nan, index=unique_controls, columns=mf.columns
+-                    )
++                    # Create empty result with proper MultiIndex structure
++                    unique_controls = mf.index.get_level_values(control_feature_names).unique()
++                    result = pd.DataFrame(
++                        np.nan,
++                        index=unique_controls,
++                        columns=mf.columns
++                    )
++                    if len(control_feature_names) > 1:
++                        result.index = pd.MultiIndex.from_tuples(unique_controls)
+ 
+         assert isinstance(result, pd.Series) or isinstance(result, pd.DataFrame)
+         return result
++
++    @staticmethod
++    def _compute_grouped_metrics(
++        data: pd.DataFrame,
++        annotated_functions: dict[str, AnnotatedMetricFunction],
++        grouping_names: list[str],
++    ) -> pd.Series | pd.DataFrame:
++        """Apply metric functions to data grouped by specified columns.
++
++        Parameters
++        ----------
++        data : pd.DataFrame
++            Input data containing all required columns
++        annotated_functions : dict[str, AnnotatedMetricFunction]
++            Metric functions to apply
++        grouping_names : list[str]
++            Column names to group by
++
++        Returns
++        -------
++        pd.Series or pd.DataFrame
++            Metrics computed for each group
++        """
++        # Group data and apply metric functions
++        temp = data.groupby(grouping_names).apply(
++            apply_to_dataframe,
++            metric_functions=annotated_functions,
++            include_groups=False,
++        )
++        
++        # Expand index for missing combinations if multiple grouping columns
++        if len(grouping_names) > 1:
++            all_classes = extract_unique_classes(data, grouping_names)
++            all_indices = pd.MultiIndex.from_product(
++                all_classes.values(),
++                names=all_classes.keys(),
++            )
++            return temp.reindex(index=all_indices)
++
++        return temp

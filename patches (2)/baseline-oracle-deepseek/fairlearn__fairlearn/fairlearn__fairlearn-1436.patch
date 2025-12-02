@@ -1,0 +1,130 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -1,5 +1,6 @@
+ # Copyright (c) Microsoft Corporation and Fairlearn contributors.
+ # Licensed under the MIT License.
++
+ from __future__ import annotations
+ 
+ import logging
+@@ -7,6 +8,7 @@
+ 
+ import numpy as np
+ import pandas as pd
++from pandas.core.groupby.generic import DataFrameGroupBy
+ 
+ from ._annotated_metric_function import AnnotatedMetricFunction
+ 
+@@ -24,6 +26,40 @@
+ )
+ 
+ 
++def _apply_functions(
++    *,
++    data: pd.DataFrame,
++    annotated_functions: dict[str, AnnotatedMetricFunction],
++    grouping_names: list[str] | None,
++) -> pd.Series | pd.DataFrame:
++    """Apply annotated metric functions to a DataFrame, optionally grouping by specified columns.
++
++    Parameters
++    ----------
++    data : pd.DataFrame
++        The input data on which the metric functions will be applied.
++    annotated_functions : dict[str, AnnotatedMetricFunction]
++        A dictionary where keys are metric names and values are the corresponding annotated metric
++        functions.
++    grouping_names : list[str] | None
++        A list of column names to group by before applying the metric functions. If None, the
++        functions are applied to the entire DataFrame.
++
++    Returns
++    -------
++    Series or DataFrame
++        A Series or DataFrame with the results of the metric functions applied. If grouping_names is provided,
++        the results are grouped accordingly.
++    """
++    if grouping_names is None:
++        return apply_to_dataframe(data, metric_functions=annotated_functions)
++    else:
++        return data.groupby(grouping_names).apply(
++            apply_to_dataframe,
++            metric_functions=annotated_functions,
++            include_groups=False,
++        )
++
+ def extract_unique_classes(data: pd.DataFrame, feature_list: list[str]) -> dict[str, np.ndarray]:
+     """Compute unique values in a given set of columns."""
+     result = dict()
+@@ -176,39 +212,15 @@
+         DisaggregatedResult
+             Freshly constructed instance of this class
+         """
+-        # Calculate the 'overall' values
+-        if control_feature_names is None:
+-            overall = apply_to_dataframe(data, metric_functions=annotated_functions)
+-        else:
+-            temp = data.groupby(by=control_feature_names).apply(
+-                apply_to_dataframe,
+-                metric_functions=annotated_functions,
+-                # See note in apply_to_dataframe about include_groups
+-                include_groups=False,
+-            )
+-            # If there are multiple control features, might have missing combinations
+-            if len(control_feature_names) > 1:
+-                cf_classes = extract_unique_classes(data, control_feature_names)
+-                all_indices = pd.MultiIndex.from_product(
+-                    cf_classes.values(), names=cf_classes.keys()
+-                )
+-
+-                overall = temp.reindex(index=all_indices)
+-            else:
+-                overall = temp
+-
+-        # Calculate the 'by_group' values
+-        all_grouping_names = [x for x in sensitive_feature_names]
+-        if control_feature_names is not None:
+-            # Note that we prepend the control feature names
+-            all_grouping_names = control_feature_names + all_grouping_names
+-
+-        temp = data.groupby(all_grouping_names).apply(
+-            apply_to_dataframe,
+-            metric_functions=annotated_functions,
+-            # See note in apply_to_dataframe about include_groups
+-            include_groups=False,
+-        )
++        # Use the new helper function for both overall and by_group
++        overall = _apply_functions(
++            data=data,
++            annotated_functions=annotated_functions,
++            grouping_names=control_feature_names,
++        )
++
++        all_grouping_names = (control_feature_names or []) + sensitive_feature_names
++        temp = _apply_functions(data=data, annotated_functions=annotated_functions, grouping_names=all_grouping_names)
+         if len(all_grouping_names) > 1:
+             # We might have missing combinations in the input, so expand to fill
+             all_classes = extract_unique_classes(data, all_grouping_names)
+@@ -216,9 +228,19 @@
+                 all_classes.values(),
+                 names=all_classes.keys(),
+             )
+-
+             by_group = temp.reindex(index=all_indices)
+         else:
+             by_group = temp
+ 
++        # Handle missing combinations for overall when control_feature_names is not None
++        if control_feature_names is not None and len(control_feature_names) > 1:
++            cf_classes = extract_unique_classes(data, control_feature_names)
++            all_indices = pd.MultiIndex.from_product(
++                cf_classes.values(), names=cf_classes.keys()
++            )
++            overall = overall.reindex(index=all_indices)
++        elif control_feature_names is not None and len(control_feature_names) == 1:
++            # Ensure overall is a Series/DataFrame with proper index
++            if isinstance(overall, pd.DataFrame) and overall.index.names != control_feature_names:
++                overall.index.names = control_feature_names
++
+         return DisaggregatedResult(overall, by_group)

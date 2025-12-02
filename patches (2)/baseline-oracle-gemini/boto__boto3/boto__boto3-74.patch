@@ -1,0 +1,36 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -10,6 +10,7 @@
+ # language governing permissions and limitations under the License.
+ 
+ import logging
++import jmespath
+ from functools import partial
+ 
+ from .action import ServiceAction
+@@ -216,14 +217,21 @@
+         handler = ResourceHandler('', factory_self, resource_defs,
+                                   service_model, reference.resource)
+ 
+         def get_reference(self):
+             # We need to lazy-evaluate the reference to handle circular
+             # references between resources. We do this by loading the class
+             # when first accessed.
+             # First, though, we need to see if we have the required
+             # identifiers to instantiate the resource reference.
+-            return handler(self, {}, {})
++            data = {}
++            if reference.resource_path:
++                # If the parent resource has no data, attempt to load it.
++                if self.meta.data is None and hasattr(self, 'load'):
++                    self.load()
++                # If data is now available, extract the relevant part using JMESPath.
++                if self.meta.data is not None:
++                    extracted_data = jmespath.search(reference.resource_path, self.meta.data)
++                    if extracted_data is not None:
++                        data = extracted_data
++            return handler(self, data, {})
+ 
+         get_reference.__name__ = str(reference.name)
+         get_reference.__doc__ = 'TODO'

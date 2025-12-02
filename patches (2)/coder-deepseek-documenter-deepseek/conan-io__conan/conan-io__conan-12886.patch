@@ -1,0 +1,59 @@
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -1,5 +1,6 @@
+ import os
+ import textwrap
++import warnings
+ 
+ from conans.client.subsystems import deduce_subsystem, subsystem_path
+ 
+@@ -56,3 +57,28 @@ def unix_path(conanfile, path, scope=None):
+         return path
+ 
+     return subsystem_path(subsystem, path)
++
++
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    """
++    Convert a path to Unix-style for legacy package_info compatibility.
++
++    This function is provided for backward compatibility with Conan 1.x recipes
++    that performed path conversions in package_info(). In Conan 2.0, path
++    conversions should not be performed in package_info().
++
++    :param conanfile: The current conanfile instance
++    :param path: Path to convert (string)
++    :param path_flavor: Optional path flavor (deprecated, kept for compatibility)
++    :return: Converted path string
++    """
++    warnings.warn("unix_path_package_info_legacy is deprecated. "
++                  "In Conan 2.0, path conversions should not be performed in package_info(). "
++                  "Remove this call from your recipe.",
++                  DeprecationWarning,
++                  stacklevel=2)
++
++    # The path_flavor parameter is kept for compatibility but not used
++    # as unix_path doesn't accept it and Conan 1.x didn't use it in this context
++    return unix_path(conanfile, path, scope="build")
++
+diff --git a/conan/tools/microsoft/__init__.py b/conan/tools/microsoft/__init__.py
+--- a/conan/tools/microsoft/__init__.py
++++ b/conan/tools/microsoft/__init__.py
+@@ -8,7 +8,7 @@ from conan.tools.microsoft.visual import vs_ide_version
+ from conan.tools.microsoft.toolchain import MSBuildToolchain
+ from conan.tools.microsoft.layout import vs_layout
+ from conan.tools.microsoft.msbuild import MSBuild, msbuild_max_cpu_count
+-from conan.tools.microsoft.subsystems import unix_path
++from conan.tools.microsoft.subsystems import unix_path, unix_path_package_info_legacy
+ from conan.tools.microsoft.ninja import NMakeToolchain, NMakeDeps
+ from conan.tools.microsoft.util import check_min_vs, msvc_runtime_flag, vs_layout, VCVars
+ 
+@@ -20,6 +20,7 @@ __all__ = [
+     "MSBuild",
+     "MSBuildToolchain",
+     "unix_path",
++    "unix_path_package_info_legacy",
+     "NMakeToolchain",
+     "NMakeDeps",
+     "check_min_vs",

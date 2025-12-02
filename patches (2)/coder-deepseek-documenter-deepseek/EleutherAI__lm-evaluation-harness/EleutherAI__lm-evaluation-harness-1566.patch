@@ -1,0 +1,517 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,5 +1,5 @@
+ import argparse
+-import json, logging, os, re, sys
++import json, logging, os, re, sys
+ from functools import partial
+ from pathlib import Path
+ from typing import Union
+@@ -10,6 +10,7 @@
+ from lm_eval.evaluator import request_caching_arg_to_dict
+ from lm_eval.logging_utils import WandbLogger
+ from lm_eval.tasks import TaskManager, include_path, initialize_tasks
++from lm_eval.utils import make_table, simple_parse_args_string
+ 
+ eval_logger = logging.getLogger("lm-eval")
+ 
+@@ -17,7 +18,7 @@
+ # ====================================================
+ 
+ 
+-def parse_eval_args() -> argparse.Namespace:
++def setup_parser() -> argparse.ArgumentParser:
+     """Parse command line arguments for evaluation.
+ 
+     Returns:
+@@ -25,7 +26,6 @@
+     """
+     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+     parser.add_argument("--model", "-m", default="hf", help="Name of model e.g. `hf`")
+-
+     parser.add_argument(
+         "--tasks",
+         "-t",
+@@ -33,7 +33,6 @@
+         metavar="task1,task2",
+         help="To get full list of tasks, use the command lm-eval --tasks list",
+     )
+-
+     parser.add_argument(
+         "--model_args",
+         "-a",
+@@ -41,7 +40,6 @@
+         help="Comma separated string arguments for model, e.g. `pretrained=EleutherAI/pythia-160m,dtype=float32`",
+     )
+     parser.add_argument(
+-
+         "--num_fewshot",
+         "-f",
+         type=int,
+@@ -49,7 +47,6 @@
+         metavar="N",
+         help="Number of examples in few-shot context",
+     )
+-
+     parser.add_argument(
+         "--batch_size",
+         "-b",
+@@ -57,7 +54,6 @@
+         default=1,
+         metavar="auto|auto:N|N",
+         help="Acceptable values are 'auto', 'auto:N' or N, where N is an integer. Default 1.",
+-
+     )
+     parser.add_argument(
+         "--max_batch_size",
+@@ -65,7 +61,6 @@
+         default=None,
+         metavar="N",
+         help="Maximal batch size to try with --batch_size auto.",
+-
+     )
+     parser.add_argument(
+         "--device",
+@@ -73,7 +68,6 @@
+         default=None,
+         help="Device to use (e.g. cuda, cuda:0, cpu).",
+     )
+-
+     parser.add_argument(
+         "--output_path",
+         "-o",
+@@ -82,7 +76,6 @@
+         help="The path to the output file where the result metrics will be saved. If the path is a directory and log_samples is true, the results will be saved in the directory. Else the parent directory will be used.",
+     )
+     parser.add_argument(
+-
+         "--limit",
+         "-L",
+         type=float,
+@@ -90,7 +83,6 @@
+         metavar="N|0<N<1",
+         help="Limit the number of examples per task. "
+         "If <1, limit is a percentage of the total number of examples.",
+-
+     )
+     parser.add_argument(
+         "--use_cache",
+@@ -99,7 +91,6 @@
+         default=None,
+         metavar="DIR",
+         help="A path to a sqlite db file for caching model responses. `None` if not caching.",
+-
+     )
+     parser.add_argument(
+         "--cache_requests",
+@@ -108,7 +99,6 @@
+         choices=["true", "refresh", "delete"],
+         help="Speed up evaluation by caching the building of dataset requests. `None` if not caching.",
+     )
+-
+     parser.add_argument(
+         "--check_integrity",
+         action="store_true",
+@@ -120,7 +110,6 @@
+         action="store_true",
+         default=False,
+         help="Prints the prompt for the first few documents.",
+-
+     )
+     parser.add_argument(
+         "--log_samples",
+@@ -128,7 +117,6 @@
+         action="store_true",
+         default=False,
+         help="If True, write out all model outputs and documents for per-sample measurement and post-hoc analysis. Use with --output_path.",
+-
+     )
+     parser.add_argument(
+         "--show_config",
+@@ -142,7 +130,6 @@
+         default=None,
+         metavar="DIR",
+         help="Additional path to include if there are external tasks to include.",
+-
+     )
+     parser.add_argument(
+         "--gen_kwargs",
+@@ -151,7 +138,6 @@
+             "String arguments for model generation on greedy_until tasks,"
+             " e.g. `temperature=0,top_k=0,top_p=0`."
+         ),
+-
+     )
+     parser.add_argument(
+         "--verbosity",
+@@ -159,7 +145,6 @@
+         type=str.upper,
+         default="INFO",
+         metavar="CRITICAL|ERROR|WARNING|INFO|DEBUG",
+-
+         help="Controls the reported logging error level. Set to DEBUG when testing + adding new task configurations for comprehensive log output.",
+     )
+     parser.add_argument(
+@@ -172,7 +157,6 @@
+         action="store_true",
+         default=False,
+         help="Use with --log_samples. Only model outputs will be saved and metrics will not be evaluated.",
+-
+     )
+     parser.add_argument(
+         "--seed",
+@@ -195,7 +179,6 @@
+         action="store_true",
+         default=False,
+         help="Sets trust_remote_code to True to execute code to create HF Datasets from the Hub",
+-
+     )
+ 
+     # YAML config file
+@@ -204,7 +187,6 @@
+         default=None,
+         help="Path to a YAML config file containing arguments. Command line args override config file args.",
+     )
+-
+     # deprecated args
+     parser.add_argument(
+         "--provide_description",
+@@ -212,7 +194,6 @@
+         action="store_true",
+         help=argparse.SUPPRESS,
+     )
+-
+     parser.add_argument(
+         "--decontamination_ngrams_path",
+         default=None,
+@@ -220,7 +201,6 @@
+     )
+ 
+     # logging args
+-
+     parser.add_argument(
+         "--log_samples_path",
+         default=None,
+@@ -228,7 +208,6 @@
+         help="If --log_samples is true, this is the path to write the samples to. Defaults to output_path if not set.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--show_task_models",
+         action="store_true",
+@@ -236,7 +215,6 @@
+         help="Show the list of models that have been evaluated on each task.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--include_example_prompt",
+         action="store_true",
+@@ -244,7 +222,6 @@
+         help="Include the example prompt in the output table.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--system_instruction",
+         type=str,
+@@ -252,7 +229,6 @@
+         help="System instruction to use for chat models.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--system_instruction_key",
+         type=str,
+@@ -260,7 +236,6 @@
+         help="Key to use for system instruction in chat templates.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--fewshot_as_multiturn",
+         action="store_true",
+@@ -268,7 +243,6 @@
+         help="Treat few-shot examples as multi-turn conversations for chat models.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--apply_chat_template",
+         action="store_true",
+@@ -276,7 +250,6 @@
+         help="Apply chat template to prompts for chat models.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--chat_template_args",
+         type=str,
+@@ -284,7 +257,6 @@
+         help="Comma separated string arguments for chat template, e.g. `add_generation_prompt=True`.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--multiturn_fewshot_context_key",
+         type=str,
+@@ -292,7 +264,6 @@
+         help="Key to use for few-shot context in multi-turn conversations.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--multiturn_fewshot_prompt_key",
+         type=str,
+@@ -300,7 +271,6 @@
+         help="Key to use for few-shot prompt in multi-turn conversations.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--multiturn_fewshot_separator",
+         type=str,
+@@ -308,7 +278,6 @@
+         help="Separator to use between few-shot turns in multi-turn conversations.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--multiturn_fewshot_assistant_prefix",
+         type=str,
+@@ -316,7 +285,6 @@
+         help="Prefix to use for assistant responses in few-shot multi-turn conversations.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--multiturn_fewshot_user_prefix",
+         type=str,
+@@ -324,7 +292,6 @@
+         help="Prefix to use for user messages in few-shot multi-turn conversations.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--multiturn_fewshot_system_prefix",
+         type=str,
+@@ -332,7 +299,6 @@
+         help="Prefix to use for system messages in few-shot multi-turn conversations.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--no_cot",
+         action="store_true",
+@@ -340,7 +306,6 @@
+         help="Disable chain-of-thought prompting for tasks that support it.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_delimiter",
+         type=str,
+@@ -348,7 +313,6 @@
+         help="Delimiter to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_prompt",
+         type=str,
+@@ -356,7 +320,6 @@
+         help="Prompt to use for chain-of-thought reasoning.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_system_instruction",
+         type=str,
+@@ -364,7 +327,6 @@
+         help="System instruction to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_separator",
+         type=str,
+@@ -372,7 +334,6 @@
+         help="Separator to use between few-shot examples in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_task_description_key",
+         type=str,
+@@ -380,7 +341,6 @@
+         help="Key to use for task description in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_example_prompt_key",
+         type=str,
+@@ -388,7 +348,6 @@
+         help="Key to use for example prompt in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_context_key",
+         type=str,
+@@ -396,7 +355,6 @@
+         help="Key to use for few-shot context in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_prompt_key",
+         type=str,
+@@ -404,7 +362,6 @@
+         help="Key to use for few-shot prompt in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_separator_key",
+         type=str,
+@@ -412,7 +369,6 @@
+         help="Key to use for few-shot separator in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_assistant_prefix_key",
+         type=str,
+@@ -420,7 +376,6 @@
+         help="Key to use for assistant prefix in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_user_prefix_key",
+         type=str,
+@@ -428,7 +383,6 @@
+         help="Key to use for user prefix in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_system_prefix_key",
+         type=str,
+@@ -436,7 +390,6 @@
+         help="Key to use for system prefix in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_task_description",
+         type=str,
+@@ -444,7 +397,6 @@
+         help="Task description to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_example_prompt",
+         type=str,
+@@ -452,7 +404,6 @@
+         help="Example prompt to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_context",
+         type=str,
+@@ -460,7 +411,6 @@
+         help="Few-shot context to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_prompt",
+         type=str,
+@@ -468,7 +418,6 @@
+         help="Few-shot prompt to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_separator",
+         type=str,
+@@ -476,7 +425,6 @@
+         help="Few-shot separator to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_assistant_prefix",
+         type=str,
+@@ -484,7 +432,6 @@
+         help="Assistant prefix to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_user_prefix",
+         type=str,
+@@ -492,7 +439,6 @@
+         help="User prefix to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_system_prefix",
+         type=str,
+@@ -500,7 +446,6 @@
+         help="System prefix to use for chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_context_key",
+         type=str,
+@@ -508,7 +453,6 @@
+         help="Key to use for few-shot context in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_prompt_key",
+         type=str,
+@@ -516,7 +460,6 @@
+         help="Key to use for few-shot prompt in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_separator_key",
+         type=str,
+@@ -524,7 +467,6 @@
+         help="Key to use for few-shot separator in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_assistant_prefix_key",
+         type=str,
+@@ -532,7 +474,6 @@
+         help="Key to use for assistant prefix in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_user_prefix_key",
+         type=str,
+@@ -540,7 +481,6 @@
+         help="Key to use for user prefix in chain-of-thought prompting.",
+     )
+ 
+-    from lm_eval.utils import make_table, simple_parse_args_string
+     parser.add_argument(
+         "--cot_fewshot_system_prefix_key",
+         type=str,
+@@ -548,7 +488,6 @@
+         help="Key to use for system prefix in chain-of-thought

@@ -1,0 +1,31 @@
+diff --git a/conan/tools/microsoft/__init__.py b/conan/tools/microsoft/__init__.py
+--- a/conan/tools/microsoft/__init__.py
++++ b/conan/tools/microsoft/__init__.py
+@@ -2,7 +2,7 @@
+ from conan.tools.microsoft.layout import vs_layout
+ from conan.tools.microsoft.msbuild import MSBuild
+ from conan.tools.microsoft.msbuilddeps import MSBuildDeps
+-from conan.tools.microsoft.subsystems import unix_path
++from conan.tools.microsoft.subsystems import unix_path, unix_path_package_info_legacy
+ from conan.tools.microsoft.toolchain import MSBuildToolchain
+ from conan.tools.microsoft.nmaketoolchain import NMakeToolchain
+ from conan.tools.microsoft.nmakedeps import NMakeDeps
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -8,3 +8,15 @@
+ def unix_path(conanfile, path, scope="build"):
+     subsystem = deduce_subsystem(conanfile, scope=scope)
+     return subsystem_path(subsystem, path)
++
++
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    """
++    Converts a path to a Unix-like path for legacy Conan 1.x recipes
++    that perform path conversions in the package_info method.
++    This function deduces the subsystem based on the 'host' context.
++    """
++    # path_flavor is included for API compatibility but not used internally
++    # as subsystem_path does not currently utilize it.
++    subsystem = deduce_subsystem(conanfile, scope="host")
++    return subsystem_path(subsystem, path)

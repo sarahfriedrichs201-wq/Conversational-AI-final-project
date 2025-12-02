@@ -1,0 +1,25 @@
+diff --git a/conan/tools/microsoft/__init__.py b/conan/tools/microsoft/__init__.py
+--- a/conan/tools/microsoft/__init__.py
++++ b/conan/tools/microsoft/__init__.py
+@@ -1,6 +1,6 @@
+ from conan.tools.microsoft.layout import vs_layout
+ from conan.tools.microsoft.msbuild import MSBuild
+ from conan.tools.microsoft.msbuilddeps import MSBuildDeps
+-from conan.tools.microsoft.subsystems import unix_path
++from conan.tools.microsoft.subsystems import unix_path, unix_path_package_info_legacy
+ from conan.tools.microsoft.toolchain import MSBuildToolchain
+ from conan.tools.microsoft.nmaketoolchain import NMakeToolchain
+ from conan.tools.microsoft.nmakedeps import NMakeDeps
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -5,3 +5,8 @@
+ def unix_path(conanfile, path, scope="build"):
+     subsystem = deduce_subsystem(conanfile, scope=scope)
+     return subsystem_path(subsystem, path)
++
++
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    subsystem = deduce_subsystem(conanfile, scope="host")
++    return subsystem_path(subsystem, path, path_flavor=path_flavor)
+--

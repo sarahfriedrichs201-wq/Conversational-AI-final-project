@@ -1,0 +1,108 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -107,7 +107,7 @@
+         self._router = router or routing.DefaultRouter()
+         self._router_search = self._router.find
+ 
+-        self._error_handlers = []
++        self._error_handlers = {}
+         self._serialize_error = helpers.default_serialize_error
+ 
+         self.req_options = RequestOptions()
+@@ -160,11 +160,13 @@
+         A handler can raise an instance of :class:`~.HTTPError` or
+         :class:`~.HTTPStatus` to communicate information about the issue to
+         the client.  Alternatively, a handler may modify `resp`
+-        directly. Handlers are called in LIFO order, so if multiple handlers
+-        are registered for the same exception type, the most recently
+-        registered handler will take precedence.
++        directly.
+ 
+-        .. Note::
++        Error handlers are matched by finding the most specific handler
++        available for a given exception type. This means that if an
++        exception `E` is raised, Falcon will search `E`'s Method Resolution
++        Order (MRO) for the first exception type that has a registered
++        handler. For example, if handlers are registered for both
++        `HTTPForbidden` and `Exception`, and an `HTTPForbidden` error is
++        raised, the `HTTPForbidden` handler will be chosen.
++
++        Note:
++            Registration order no longer matters *except* when multiple
++            error handlers are registered for the *exact same* exception
++            type, in which case the most recently registered handler
++            overrides the previous ones.
++
++        .. Note::
+ 
+             By default, the framework installs three handlers, one for
+             :class:`~.HTTPError`, one for :class:`~.HTTPStatus`, and one for
+@@ -214,7 +216,8 @@
+             # NOTE(kgriffs): Store handlers in a dict, keyed by exception type.
+             # This naturally handles the "most recently registered for the
+             # exact same type wins" rule.
+-            self._error_handlers.append((exc_type, handler))
++            for exc_type in exception_tuple:
++                self._error_handlers[exc_type] = handler
+         else:
+             raise TypeError('"exception" must be an exception type.')
+ 
+@@ -370,6 +373,25 @@
+         self._compose_status_response(req, resp, status)
+ 
+     # NOTE(kgriffs): This method is called by the router when a requested
++    # route is not found.
++    def _find_error_handler(self, ex):
++        """Finds the most specific error handler for a given exception.
++
++        Args:
++            ex (Exception): The exception instance for which to find a handler.
++
++        Returns:
++            callable: The most specific error handler found, or None if no
++            handler is registered for the exception's type or any of its
++            ancestors in the MRO.
++        """
++        # NOTE(kgriffs): Iterate through the MRO to find the most specific
++        # handler registered for the exception type or its ancestors.
++        for exc_type in ex.__class__.__mro__:
++            handler = self._error_handlers.get(exc_type)
++            if handler is not None:
++                return handler
++        return None
++
++    # NOTE(kgriffs): This method is called by the router when a requested
+     # route is not found.
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from mw or a responder.
+@@ -390,17 +412,10 @@
+             bool: ``True`` if a handler was found and called for the
+             exception, ``False`` otherwise.
+         """
+-
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
++        # NOTE(kgriffs): Find the most specific error handler using MRO.
++        err_handler = self._find_error_handler(ex)
++
++        if err_handler:
++            try:
++                err_handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++
++            return True
+ 
+         # NOTE(kgriffs): No error handlers are defined for ex
+         # and it is not one of (HTTPStatus, HTTPError), since it

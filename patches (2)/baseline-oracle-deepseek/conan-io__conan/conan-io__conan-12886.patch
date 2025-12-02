@@ -1,0 +1,37 @@
+diff --git a/conan/tools/microsoft/__init__.py b/conan/tools/microsoft/__init__.py
+--- a/conan/tools/microsoft/__init__.py
++++ b/conan/tools/microsoft/__init__.py
+@@ -1,5 +1,5 @@
+ from conan.tools.microsoft.layout import vs_layout
+ from conan.tools.microsoft.msbuild import MSBuild
+ from conan.tools.microsoft.msbuilddeps import MSBuildDeps
+-from conan.tools.microsoft.subsystems import unix_path
++from conan.tools.microsoft.subsystems import unix_path, unix_path_package_info_legacy
+ from conan.tools.microsoft.toolchain import MSBuildToolchain
+@@ -8,3 +8,3 @@
+ from conan.tools.microsoft.nmakedeps import NMakeDeps
+ from conan.tools.microsoft.visual import msvc_runtime_flag, VCVars, is_msvc, \
+-    is_msvc_static_runtime, check_min_vs
++    is_msvc_static_runtime, check_min_vs
+diff --git a/conan/tools/microsoft/subsystems.py b/conan/tools/microsoft/subsystems.py
+--- a/conan/tools/microsoft/subsystems.py
++++ b/conan/tools/microsoft/subsystems.py
+@@ -1,5 +1,17 @@
+ from conans.client.subsystems import deduce_subsystem, subsystem_path
+ 
+ 
+ def unix_path(conanfile, path, scope="build"):
+     subsystem = deduce_subsystem(conanfile, scope=scope)
+     return subsystem_path(subsystem, path)
++
++
++def unix_path_package_info_legacy(conanfile, path, path_flavor=None):
++    """
++    Compatibility function for Conan 1.x recipes that used path conversions in package_info.
++    In Conan 2, path conversions should not be performed in the package_info method.
++    This function is provided for legacy compatibility only.
++    """
++    if path_flavor is not None:
++        # For compatibility with the old unix_path function signature used in package_info
++        pass
++    return unix_path(conanfile, path, scope="build")

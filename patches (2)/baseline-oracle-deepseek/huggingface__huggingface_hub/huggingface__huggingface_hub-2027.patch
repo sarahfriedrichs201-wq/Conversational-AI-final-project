@@ -1,0 +1,51 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -12,7 +12,7 @@
+ from urllib.parse import quote, unquote
+ 
+ import fsspec
+-from requests import Response
++from requests import Response
+ 
+ from ._commit_api import CommitOperationCopy, CommitOperationDelete
+ from .constants import DEFAULT_REVISION, ENDPOINT, REPO_TYPE_MODEL, REPO_TYPES_MAPPING, REPO_TYPES_URL_PREFIXES
+@@ -396,6 +396,15 @@
+         path = self.resolve_path(path, revision=revision).unresolve()
+         return super().glob(path, **kwargs)
+ 
++    def url(self, path: str) -> str:
++        """Get the HTTP URL of the given path."""
++        resolved_path = self.resolve_path(path)
++        return hf_hub_url(
++            repo_id=resolved_path.repo_id,
++            revision=resolved_path.revision,
++            filename=resolved_path.path_in_repo,
++            repo_type=resolved_path.repo_type,
++        )
++
+     def find(
+         self,
+         path: str,
+@@ -618,6 +627,10 @@
+             os.remove(self.temp_file.name)
+             self.fs.invalidate_cache(path=self.resolved_path.unresolve())
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file."""
++        return self.fs.url(self.path)
++
+ 
+ class HfFileSystemStreamFile(fsspec.spec.AbstractBufferedFile):
+     def __init__(
+@@ -698,6 +711,10 @@
+                 self.response.close()
+                 raise
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file."""
++        return self.fs.url(self.path)
++
+     def __del__(self):
+         if not hasattr(self, "resolved_path"):
+             # Means that the constructor failed. Nothing to do.

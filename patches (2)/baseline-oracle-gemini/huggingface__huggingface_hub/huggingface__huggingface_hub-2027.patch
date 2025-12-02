@@ -1,0 +1,53 @@
+diff --git a/src/huggingface_hub/hf_file_system.py b/src/huggingface_hub/hf_file_system.py
+--- a/src/huggingface_hub/hf_file_system.py
++++ b/src/huggingface_hub/hf_file_system.py
+@@ -321,6 +321,16 @@
+         # See https://github.com/huggingface/huggingface_hub/issues/1733
+         raise NotImplementedError("Transactional commits are not supported.")
+ 
++    def url(self, path: str) -> str:
++        """Get the HTTP URL of the given path."""
++        resolved_path = self.resolve_path(path)
++        return hf_hub_url(
++            repo_id=resolved_path.repo_id,
++            revision=resolved_path.revision,
++            filename=resolved_path.path_in_repo,
++            repo_type=resolved_path.repo_type,
++            endpoint=self.endpoint,
++        )
+ 
+ class HfFileSystemFile(fsspec.spec.AbstractBufferedFile):
+     def __init__(self, fs: HfFileSystem, path: str, revision: Optional[str] = None, **kwargs):
+@@ -359,6 +369,15 @@
+                 path=self.resolved_path.unresolve(),
+             )
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file."""
++        return hf_hub_url(
++            repo_id=self.resolved_path.repo_id,
++            revision=self.resolved_path.revision,
++            filename=self.resolved_path.path_in_repo,
++            repo_type=self.resolved_path.repo_type,
++            endpoint=self.fs.endpoint,
++        )
+ 
+ class HfFileSystemStreamFile(fsspec.spec.AbstractBufferedFile):
+     def __init__(
+@@ -430,6 +449,15 @@
+     def __reduce__(self):
+         return reopen, (self.fs, self.path, self.mode, self.blocksize, self.cache.name)
+ 
++    def url(self) -> str:
++        """Get the HTTP URL of the file."""
++        return hf_hub_url(
++            repo_id=self.resolved_path.repo_id,
++            revision=self.resolved_path.revision,
++            filename=self.resolved_path.path_in_repo,
++            repo_type=self.resolved_path.repo_type,
++            endpoint=self.fs.endpoint,
++        )
+ 
+ def safe_revision(revision: str) -> str:
+     return revision if SPECIAL_REFS_REVISION_REGEX.match(revision) else safe_quote(revision)
+-- 

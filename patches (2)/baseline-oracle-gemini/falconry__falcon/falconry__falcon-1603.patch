@@ -1,0 +1,124 @@
+diff --git a/docs/_newsfragments/1603-smart-exception-handler-precedence.feature.rst b/docs/_newsfragments/1603-smart-exception-handler-precedence.feature.rst
+new file mode 100644
+--- /dev/null
++++ b/docs/_newsfragments/1603-smart-exception-handler-precedence.feature.rst
+@@ -0,0 +1 @@
++Select error handlers based on exception MRO.
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -140,7 +140,7 @@
+         self._router = router or routing.DefaultRouter()
+         self._router_search = self._router.find
+ 
+-        self._error_handlers = []
++        self._error_handlers = {}
+         self._serialize_error = helpers.default_serialize_error
+ 
+         self.req_options = RequestOptions()
+@@ -399,20 +399,23 @@
+         Error handlers may be registered for any exception type, including
+         :class:`~.HTTPError` or :class:`~.HTTPStatus`. This feature
+         provides a central location for logging and otherwise handling
+-        exceptions raised by responders, hooks, and middleware components.
++        exceptions raised by responders, hooks, and middleware components. When
++        an exception is raised, Falcon will search for the most specific
++        handler registered for the exception's type, walking up the exception's
++        `__mro__` until a match is found.
+ 
+         A handler can raise an instance of :class:`~.HTTPError` or
+         :class:`~.HTTPStatus` to communicate information about the issue to
+         the client.  Alternatively, a handler may modify `resp`
+         directly.
+ 
+-        Error handlers are matched in LIFO order. In other words, when
+-        searching for an error handler to match a raised exception, and
+-        more than one handler matches the exception type, the framework
+-        will choose the one that was most recently registered.
+-        Therefore, more general error handlers (e.g., for the
+-        standard ``Exception`` type) should be added first, to avoid
+-        masking more specific handlers for subclassed types. For example::
++        Registration order only matters when multiple handlers are registered
++        for the *exact same* exception type. In that case, the most recently
++        registered handler for that type will take precedence. For example::
+ 
+             app = falcon.App()
+             app.add_error_handler(Exception, custom_handle_uncaught_exception)
+             app.add_error_handler(falcon.HTTPError, custom_handle_http_error)
+             app.add_error_handler(CustomException)
+ 
+         .. Note::
+@@ -420,10 +423,10 @@
+             By default, the framework installs three handlers, one for
+             :class:`~.HTTPError`, one for :class:`~.HTTPStatus`, and one for
+             the standard ``Exception`` type, which prevents passing uncaught
+-            exceptions to the WSGI server. These can be overridden by adding a
+-            custom error handler method for the exception type in question.
++            exceptions to the WSGI server. These can be overridden by
++            registering a custom error handler for the exception type in
++            question.
+ 
+-            Be aware that both :class:`~.HTTPError` and :class:`~.HTTPStatus`
+-            inherit from the standard ``Exception`` type, so overriding the
+-            default ``Exception`` handler will override all three default
+-            handlers, due to the LIFO ordering of handler-matching.
++            .. versionchanged:: 3.0
++                Error handlers are now selected based on the exception's
++                `__mro__` rather than LIFO order of registration.
+ 
+         Args:
+             exception (type or iterable of types): When handling a request,
+@@ -459,12 +462,9 @@
+             exception_tuple = (exception, )
+ 
+         if all(issubclass(exc, BaseException) for exc in exception_tuple):
+-            # Insert at the head of the list in case we get duplicate
+-            # adds (will cause the most recently added one to win).
+-            if len(exception_tuple) == 1:
+-                # In this case, insert only the single exception type
+-                # (not a tuple), to avoid unnnecessary overhead in the
+-                # exception handling path.
+-                self._error_handlers.insert(0, (exception_tuple[0], handler))
+-            else:
+-                self._error_handlers.insert(0, (exception_tuple, handler))
++            # NOTE(kgriffs): Store handlers in a dict for O(1) lookup
++            # and to allow the most specific handler to be selected
++            # based on the exception's MRO.
++            for exc_type in exception_tuple:
++                self._error_handlers[exc_type] = handler
+         else:
+             raise TypeError('"exception" must be an exception type.')
+ 
+@@ -578,16 +578,19 @@
+             exception, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
++        # NOTE(kgriffs): Iterate through the MRO to find the most specific
++        # handler for the given exception type.
++        err_handler = None
++        for cls in type(ex).__mro__:
++            if cls in self._error_handlers:
++                err_handler = self._error_handlers[cls]
++                break
++
++        if err_handler:
++            try:
++                err_handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+ 
+         # NOTE(kgriffs): No error handlers are defined for ex
+         # and it is not one of (HTTPStatus, HTTPError), since it

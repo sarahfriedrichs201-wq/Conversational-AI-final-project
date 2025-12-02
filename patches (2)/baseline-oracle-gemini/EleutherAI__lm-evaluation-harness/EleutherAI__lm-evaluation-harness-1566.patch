@@ -1,0 +1,87 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -40,11 +40,30 @@
+     return items
+ 
+ 
+-def parse_eval_args() -> argparse.Namespace:
++# NEW FUNCTION
++def check_argument_types(parser: argparse.ArgumentParser):
++    """
++    Checks if all arguments added to the parser have a type defined.
++    Raises a TypeError if an argument is found without an explicit type
++    and is not a store_true/store_false action.
++    """
++    for action in parser._actions:
++        # Skip positional arguments and help action
++        if action.dest == argparse.SUPPRESS or not action.option_strings:
++            continue
++        # If type is not explicitly set and it's not a store_const action
++        # (which implicitly have a boolean type via `const`)
++        if action.type is None and action.const is None:
++            raise TypeError(
++                f"Argument '{action.dest}' is missing a type definition. "
++                "Please specify a `type` for this argument."
++            )
++
++# NEW FUNCTION
++def setup_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+-    parser.add_argument("--model", "-m", default="hf", help="Name of model e.g. `hf`")
+-    parser.add_argument(
+-        "--tasks",
+-        "-t",
++    parser.add_argument("--model", "-m", default="hf", type=str, help="Name of model e.g. `hf`")
++    parser.add_argument(
++        "--tasks", "-t",
+         default=None,
++        type=str,
+         metavar="task1,task2",
+         help="To get full list of tasks, use the command lm-eval --tasks list",
+     )
+@@ -52,6 +71,7 @@
+         "--model_args",
+         "-a",
+         default="",
++        type=str,
+         help="Comma separated string arguments for model, e.g. `pretrained=EleutherAI/pythia-160m,dtype=float32`",
+     )
+     parser.add_argument(
+@@ -131,6 +151,7 @@
+     parser.add_argument(
+         "--gen_kwargs",
+         default=None,
++        type=str,
+         help=(
+             "String arguments for model generation on greedy_until tasks,"
+             " e.g. `temperature=0,top_k=0,top_p=0`."
+@@ -147,6 +168,7 @@
+     parser.add_argument(
+         "--wandb_args",
+         default="",
++        type=str,
+         help="Comma separated string arguments passed to wandb.init, e.g. `project=lm-eval,job_type=eval",
+     )
+     parser.add_argument(
+@@ -172,11 +194,16 @@
+         action="store_true",
+         help="Sets trust_remote_code to True to execute code to create HF Datasets from the Hub",
+     )
+-
+-    return parser.parse_args()
++    return parser
++
++
++def parse_eval_args() -> argparse.Namespace:
++    parser = setup_parser()
++    check_argument_types(parser)
++    return parser.parse_args()
+ 
+ 
+ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
+     if not args:
+         # we allow for args to be passed externally, else we parse them ourselves
+         args = parse_eval_args()
+-- 
+2.34.1

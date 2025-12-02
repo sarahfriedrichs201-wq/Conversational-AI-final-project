@@ -1,0 +1,30 @@
+diff --git a/lark/tree.py b/lark/tree.py
+--- a/lark/tree.py
++++ b/lark/tree.py
+@@ -7,6 +7,7 @@
+ if TYPE_CHECKING:
+     from .lexer import TerminalDef
+     from .visitors import _Leaf_T, _Leaf_T_co, _Leaf_T_contra
++    from .lexer import Token
+ 
+ __all__ = ['Tree', 'ParseTree']
+ 
+@@ -140,6 +141,18 @@
+         """
+         return self.find_pred(lambda t: t.data == data)
+ 
++    def find_token(self, token_type: str) -> Iterator[_Leaf_T]:
++        """Returns all tokens whose type equals the given token_type.
++
++        This is a recursive function that will find tokens in all the subtrees.
++
++        Example:
++            >>> term_tokens = tree.find_token('TERM')
++        """
++        from .lexer import Token
++        # Type ignore because mypy doesn't infer the lambda return type correctly
++        return self.scan_values(lambda v: isinstance(v, Token) and v.type == token_type)  # type: ignore[return-value]
++
+     def expand_kids_by_data(self, *data_values: str) -> None:
+         """Expand all children that have any of the given data values.
+         If a child is a tree and its data matches one of the data values,

@@ -1,0 +1,119 @@
+diff --git a/fairlearn/metrics/_disaggregated_result.py b/fairlearn/metrics/_disaggregated_result.py
+--- a/fairlearn/metrics/_disaggregated_result.py
++++ b/fairlearn/metrics/_disaggregated_result.py
+@@ -1,6 +1,7 @@
+ # Copyright (c) Microsoft Corporation. All rights reserved.
+ # Licensed under the MIT License.
+ 
++import pandas as pd
+ from typing import Any
+ 
+ from fairlearn.metrics._annotated_metric_function import AnnotatedMetricFunction
+@@ -35,6 +36,54 @@
+         self._overall = overall
+         self._by_group = by_group
+ 
++    @staticmethod
++    def _apply_functions(
++        *,
++        data: pd.DataFrame,
++        annotated_functions: dict[str, AnnotatedMetricFunction],
++        grouping_names: list[str] | None,
++    ) -> pd.Series | pd.DataFrame:
++        """Apply annotated metric functions to a DataFrame, optionally grouping by specified columns.
++
++        Parameters
++        ----------
++        data : pd.DataFrame
++            The input data on which the metric functions will be applied.
++        annotated_functions : dict[str, AnnotatedMetricFunction]
++            A dictionary where keys are metric names and values are the corresponding annotated metric
++            functions.
++        grouping_names : list[str] | None
++            A list of column names to group by before applying the metric functions. If None or empty, the
++            functions are applied to the entire DataFrame.
++
++        Returns
++        -------
++        Series or DataFrame
++            A Series or DataFrame with the results of the metric functions applied. If grouping_names is provided,
++            the results are grouped accordingly.
++        """
++        if grouping_names is None or len(grouping_names) == 0:
++            # Apply functions to the entire DataFrame if no grouping is specified
++            result = apply_to_dataframe(data, metric_functions=annotated_functions)
++        else:
++            # Group by grouping_names and apply functions to each group
++            temp_result = data.groupby(by=grouping_names).apply(
++                apply_to_dataframe,
++                metric_functions=annotated_functions,
++                # See note in apply_to_dataframe about include_groups
++                include_groups=False,
++            )
++
++            # If there are multiple grouping features, reindex to ensure all combinations are present
++            if len(grouping_names) > 1:
++                unique_classes = extract_unique_classes(data, grouping_names)
++                all_indices = pd.MultiIndex.from_product(
++                    unique_classes.values(), names=unique_classes.keys()
++                )
++                result = temp_result.reindex(index=all_indices)
++            else:
++                result = temp_result
++        return result
++
+     @staticmethod
+     def create(
+         *,
+@@ -75,30 +124,18 @@
+         DisaggregatedResult
+             Freshly constructed instance of this class
+         """
+-        if control_feature_names is None or len(control_feature_names) == 0:
+-            overall = apply_to_dataframe(data, metric_functions=annotated_functions)
+-        else:
+-            temp_overall = data.groupby(by=control_feature_names).apply(
+-                apply_to_dataframe,
+-                metric_functions=annotated_functions,
+-                include_groups=False,
+-            )
+-            if len(control_feature_names) > 1:
+-                unique_classes = extract_unique_classes(data, control_feature_names)
+-                all_indices = pd.MultiIndex.from_product(
+-                    unique_classes.values(), names=unique_classes.keys()
+-                )
+-                overall = temp_overall.reindex(index=all_indices)
+-            else:
+-                overall = temp_overall
++        # Calculate the 'overall' values using the new helper function
++        overall = DisaggregatedResult._apply_functions(
++            data=data,
++            annotated_functions=annotated_functions,
++            grouping_names=control_feature_names,
++        )
+ 
++        # Calculate the 'by_group' values using the new helper function
+         all_grouping_names = [x for x in sensitive_feature_names]
+         if control_feature_names is not None:
+             # Note that we prepend the control feature names
+             all_grouping_names = control_feature_names + all_grouping_names
+ 
+-        temp_by_group = data.groupby(by=all_grouping_names).apply(
+-            apply_to_dataframe,
+-            metric_functions=annotated_functions,
+-            include_groups=False,
+-        )
+-
+-        if len(all_grouping_names) > 1:
+-            unique_classes = extract_unique_classes(data, all_grouping_names)
+-            all_indices = pd.MultiIndex.from_product(
+-                unique_classes.values(), names=unique_classes.keys()
+-            )
+-            by_group = temp_by_group.reindex(index=all_indices)
+-        else:
+-            by_group = temp_by_group
++        by_group = DisaggregatedResult._apply_functions(
++            data=data, annotated_functions=annotated_functions, grouping_names=all_grouping_names
++        )
+ 
+         return DisaggregatedResult(overall, by_group)

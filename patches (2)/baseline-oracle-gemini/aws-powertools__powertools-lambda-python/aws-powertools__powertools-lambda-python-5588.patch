@@ -1,0 +1,86 @@
+diff --git a/aws_lambda_powertools/event_handler/appsync.py b/aws_lambda_powertools/event_handler/appsync.py
+--- a/aws_lambda_powertools/event_handler/appsync.py
++++ b/aws_lambda_powertools/event_handler/appsync.py
+@@ -52,6 +52,7 @@
+         """
+         Initialize a new instance of the AppSyncResolver.
+         """
++        self._exception_handlers: dict[type[Exception], Callable] = {}
+         super().__init__()
+         self.context = {}  # early init as customers might add context before event resolution
+ 
+@@ -143,7 +144,14 @@
+         resolver = self._resolver_registry.find_resolver(self.current_event.type_name, self.current_event.field_name)
+         if not resolver:
+             raise ValueError(f"No resolver found for '{self.current_event.type_name}.{self.current_event.field_name}'")
+-        return resolver["func"](**self.current_event.arguments)
++
++        try:
++            return resolver["func"](**self.current_event.arguments)
++        except Exception as ex:
++            handler = self._lookup_exception_handler(type(ex))
++            if handler:
++                return handler(ex)
++            raise  # Re-raise if no handler found
+ 
+     def _call_sync_batch_resolver(
+         self,
+@@ -348,3 +356,36 @@
+             raise_on_error=raise_on_error,
+             aggregate=aggregate,
+         )
++
++    def exception_handler(self, exc_class: type[Exception] | list[type[Exception]]):
++        """
++        A decorator function that registers a handler for one or more exception types.
++
++        Parameters
++        ----------
++        exc_class (type[Exception] | list[type[Exception]])
++            A single exception type or a list of exception types.
++
++        Returns
++        -------
++        Callable:
++            A decorator function that registers the exception handler.
++        """
++
++        def register_exception_handler(func: Callable):
++            if isinstance(exc_class, list):
++                for e_class in exc_class:
++                    self._exception_handlers[e_class] = func
++            else:
++                self._exception_handlers[exc_class] = func
++            return func
++
++        return register_exception_handler
++
++    def _lookup_exception_handler(self, exp_type: type) -> Callable | None:
++        """Looks up the registered exception handler for the given exception type or its base classes."""
++        for cls in exp_type.__mro__:
++            if cls in self._exception_handlers:
++                return self._exception_handlers[cls]
++        return None
+diff --git a/examples/event_handler_graphql/src/exception_handling_graphql.py b/examples/event_handler_graphql/src/exception_handling_graphql.py
+new file mode 100644
+--- /dev/null
++++ b/examples/event_handler_graphql/src/exception_handling_graphql.py
+@@ -0,0 +1,17 @@
++from aws_lambda_powertools.event_handler import AppSyncResolver
++from aws_lambda_powertools.utilities.typing import LambdaContext
++
++app = AppSyncResolver()
++
++
++@app.exception_handler(ValueError)
++def handle_value_error(ex: ValueError):
++    return {"message": "error"}
++
++
++@app.resolver(field_name="createSomething")
++def create_something(id: str):
++    raise ValueError("Error")
++
++
++def lambda_handler(event: dict, context: LambdaContext):
++    return app.resolve(event, context)

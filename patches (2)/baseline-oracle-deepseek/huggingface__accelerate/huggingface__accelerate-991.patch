@@ -1,0 +1,246 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -12,6 +12,7 @@
+ import warnings
+ from contextlib import contextmanager
+ from functools import wraps
++from torch.utils import hooks
+ from typing import List, Optional, Union
+ 
+ import torch
+@@ -66,6 +67,7 @@
+     from torch.distributed.algorithms.join import Join
+ 
+ 
++
+ if is_tpu_available(check_device=False):
+     import torch_xla.distributed.xla_multiprocessing as xmp
+ 
+@@ -217,6 +219,12 @@
+         self._schedulers = []
+         self._dataloaders = []
+         self._custom_objects = []
++        
++        # Hooks for saving and loading state
++        self._save_state_pre_hooks = []
++        self._load_state_pre_hooks = []
++        self._save_state_pre_hook_handles = []
++        self._load_state_pre_hook_handles = []
+ 
+         # RNG Types
+         self.rng_types = rng_types
+@@ -1168,6 +1176,10 @@
+         """
+         if self.project_configuration.automatic_checkpoint_naming:
+             output_dir = os.path.join(self.project_dir, "checkpoints")
++        
++        # Call save state pre hooks
++        self._call_save_state_pre_hooks(output_dir)
++        
+         os.makedirs(output_dir, exist_ok=True)
+         if self.project_configuration.automatic_checkpoint_naming:
+             folders = [os.path.join(output_dir, folder) for folder in os.listdir(output_dir)]
+@@ -1188,6 +1200,7 @@
+ 
+         # Save the models taking care of FSDP and DeepSpeed nuances
+         weights = []
++        models_to_save = []
+         for i, model in enumerate(self._models):
+             if self.distributed_type == DistributedType.FSDP:
+                 logger.info("Saving FSDP model")
+@@ -1205,7 +1218,8 @@
+                 model.save_checkpoint(output_dir)
+                 logger.info(f"Megatron-LM Model , Optimizer and Scheduler saved to output dir {output_dir}")
+             else:
+-                weights.append(self.get_state_dict(model, unwrap=False))
++                models_to_save.append(model)
++                weights.append(self.get_state_dict(model, unwrap=True))
+ 
+         # Save the optimizers taking care of FSDP and DeepSpeed nuances
+         optimizers = []
+@@ -1231,7 +1245,7 @@
+             schedulers = self._schedulers
+ 
+         save_location = save_accelerator_state(
+-            output_dir, weights, optimizers, schedulers, self.state.process_index, self.scaler
++            output_dir, weights, optimizers, schedulers, self.state.process_index, self.scaler, models_to_save
+         )
+         for i, obj in enumerate(self._custom_objects):
+             save_custom_state(obj, output_dir, i)
+@@ -1258,6 +1272,9 @@
+         if not os.path.isdir(input_dir):
+             raise ValueError(f"Tried to find {input_dir} but folder does not exist")
+         logger.info(f"Loading states from {input_dir}")
++        
++        # Call load state pre hooks
++        self._call_load_state_pre_hooks(input_dir)
+ 
+         # Load the models taking care of FSDP and DeepSpeed nuances
+         models = []
+@@ -1336,6 +1353,7 @@
+         self._models = []
+         self._dataloaders = []
+         self.deepspeed_engine_wrapped = None
++        self._clear_state_hooks()
+         release_memory()
+ 
+     def clear(self):
+@@ -1438,3 +1456,77 @@
+             if optimizer.step_was_skipped:
+                 return True
+         return False
++
++    def register_save_state_pre_hook(self, hook):
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, `weights`
++        argument are the state dicts of the `models`, and the `input_dir` argument is the `input_dir` argument passed
++        to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already loaded weights from the weights list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._save_state_pre_hooks)
++        self._save_state_pre_hooks.append(hook)
++        self._save_state_pre_hook_handles.append(handle)
++        return handle
++
++    def register_load_state_pre_hook(self, hook):
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, and the
++        `input_dir` argument is the `input_dir` argument passed to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the models list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._load_state_pre_hooks)
++        self._load_state_pre_hooks.append(hook)
++        self._load_state_pre_hook_handles.append(handle)
++        return handle
++
++    def _call_save_state_pre_hooks(self, input_dir):
++        for hook in self._save_state_pre_hooks:
++            hook(self._models, [self.get_state_dict(model, unwrap=True) for model in self._models], input_dir)
++
++    def _call_load_state_pre_hooks(self, input_dir):
++        for hook in self._load_state_pre_hooks:
++            hook(self._models, input_dir)
++
+diff --git a/src/accelerate/checkpointing.py b/src/accelerate/checkpointing.py
+--- a/src/accelerate/checkpointing.py
++++ b/src/accelerate/checkpointing.py
+@@ -1,4 +1,5 @@
+ import os
++import warnings
+ from typing import List
+ 
+ import torch
+@@ -6,7 +7,7 @@
+ from .state import PartialState
+ 
+ 
+-def save_accelerator_state(output_dir, weights, optimizers, schedulers, process_index, scaler=None):
++def save_accelerator_state(output_dir, weights, optimizers, schedulers, process_index, scaler=None, models=None):
+     """
+     Saves the current states of the models, optimizers, scaler, and RNG generators to a given directory.
+ 
+@@ -19,6 +20,7 @@
+         process_index (`int`):
+             The current process index
+         scaler (`torch.cuda.amp.GradScaler`, *optional*):
++        models (`List[torch.nn.Module]`, *optional*):
+     """
+     # Model states
+     for i, weight in enumerate(weights):
+@@ -26,6 +28,14 @@
+             model_name = "pytorch_model"
+         else:
+             model_name = f"pytorch_model_{i}"
++        
++        # Check if weight is None (might have been removed by a hook)
++        if weight is None:
++            warnings.warn(
++                f"Model {i} has no state dict to save. This might be intentional if a hook removed it."
++            )
++            continue
++        
+         if process_index == 0:
+             torch.save(weight, os.path.join(output_dir, f"{model_name}.bin"))
+ 
+@@ -56,7 +66,7 @@
+     return output_dir
+ 
+ 
+-def load_accelerator_state(input_dir, models, optimizers, schedulers, process_index, scaler=None):
++def load_accelerator_state(input_dir, models, optimizers, schedulers, process_index, scaler=None, **kwargs):
+     """
+     Loads the states of the models, optimizers, scaler, and RNG generators from a given directory.
+ 
+@@ -69,6 +79,7 @@
+         process_index (`int`):
+             The current process index
+         scaler (`torch.cuda.amp.GradScaler`, *optional*):
++        **kwargs: Additional arguments passed from Accelerator.load_state
+     """
+     # Model states
+     for i, model in enumerate(models):
+@@ -76,6 +87,12 @@
+             model_name = "pytorch_model"
+         else:
+             model_name = f"pytorch_model_{i}"
++        
++        # Check if model should be skipped (might have been removed by a hook)
++        if model is None:
++            warnings.warn(f"Model {i} is None and will not be loaded.")
++            continue
++        
+         model_path = os.path.join(input_dir, f"{model_name}.bin")
+         if os.path.isfile(model_path):
+             state_dict = torch.load(model_path, map_location="cpu")
+@@ -83,6 +100,8 @@
+             model.load_state_dict(state_dict, strict=False)
+         else:
+             logger.info(f"No model checkpoint found at {model_path}")
++    # Note: We don't need to handle weights removal here since hooks are called before loading
++    # and models list is already filtered by hooks if needed
+ 
+     # Optimizer states
+     for i, optimizer in enumerate(optimizers):

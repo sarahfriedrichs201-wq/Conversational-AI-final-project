@@ -1,0 +1,46 @@
+diff --git a/boto3/resources/factory.py b/boto3/resources/factory.py
+--- a/boto3/resources/factory.py
++++ b/boto3/resources/factory.py
+@@ -7,6 +7,7 @@
+ from .action import ServiceAction
+ from .action import WaiterAction
+ from .base import ResourceMeta, ServiceResource
++from .collection import CollectionFactory
+ from .model import ResourceModel
+ from .response import build_identifiers, ResourceHandler
+ from ..exceptions import ResourceLoadException
+@@ -195,7 +196,7 @@
+         """
+         Creates a new property on the resource to lazy-load a reference.
+         """
+-        # References are essentially an action with no request
++        # References are essentially an action with no request
+         # or response, so we can re-use the response handlers to
+         # build up resources from identifiers and data members.
+         handler = ResourceHandler('', factory_self, resource_defs,
+@@ -206,7 +207,24 @@
+             # references between resources. We do this by loading the class
+             # when first accessed.
+             # First, though, we need to see if we have the required
+-            # identifiers to instantiate the resource reference.
++            # identifiers to instantiate the resource reference.
++            # If the reference has a resource path, we can try to load
++            # data from the parent's meta.data.
++            if reference.resource_path:
++                # If parent has data, we can use it to populate the reference.
++                if self.meta.data is not None:
++                    # The handler will extract data from parent's meta.data
++                    # using the resource_path.
++                    return handler(self, {}, {})
++                # If parent doesn't have data but is loadable, trigger a load.
++                elif hasattr(self, 'load'):
++                    self.load()
++                    # After load, meta.data should be populated.
++                    if self.meta.data is not None:
++                        return handler(self, {}, {})
++                # If parent is not loadable, we fall through to the default
++                # handler which will raise an error if identifiers are missing.
++            
+             return handler(self, {}, {})
+ 
+         get_reference.__name__ = str(reference.name)

@@ -1,0 +1,236 @@
+diff --git a/src/nlp/arrow_dataset.py b/src/nlp/arrow_dataset.py
+--- a/src/nlp/arrow_dataset.py
++++ b/src/nlp/arrow_dataset.py
+@@ -1,5 +1,6 @@
+ import copy
+ import hashlib
++import os
+ import pickle
+ import warnings
+ from collections import defaultdict
+@@ -7,7 +8,7 @@ from dataclasses import dataclass
+ from functools import partial
+ from itertools import chain
+ from multiprocessing import Pool, cpu_count
+-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
++from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union, Set
+ 
+ import numpy as np
+ import pyarrow as pa
+@@ -15,6 +16,7 @@ import pyarrow.compute as pc
+ 
+ from nlp.arrow_writer import ArrowWriter
+ from nlp.features import Features
++from nlp.utils import convert_tuples_in_lists
+ from nlp.utils.logging import get_logger
+ 
+ 
+@@ -1425,6 +1427,262 @@ class Dataset:
+ 
+         return Dataset.from_buffer(buf_writer.getvalue())
+ 
++    def filter(
++        self,
++        function,
++        with_indices: bool = False,
++        batched: bool = False,
++        batch_size: Optional[int] = 1000,
++        remove_columns: Optional[List[str]] = None,
++        keep_in_memory: bool = False,
++        load_from_cache_file: bool = True,
++        cache_file_name: Optional[str] = None,
++        writer_batch_size: Optional[int] = 1000,
++        arrow_schema: Optional[pa.Schema] = None,
++        disable_nullable: bool = True,
++    ):
++        """Apply a filter function to all the elements in the table (individually or in batches)
++        and return a new dataset with only the examples that match the filter.
++        
++        Args:
++            function (`callable`): with one of the following signature:
++                - `function(example: Dict) -> bool` if `batched=False` and `with_indices=False`
++                - `function(example: Dict, indices: int) -> bool` if `batched=False` and `with_indices=True`
++                - `function(batch: Dict[List]) -> List[bool]` if `batched=True` and `with_indices=False`
++                - `function(batch: Dict[List], indices: List[int]) -> List[bool]` if `batched=True` and `with_indices=True`
++            with_indices (`bool`, default: `False`): Provide example indices to `function`.
++            batched (`bool`, default: `False`): Provide batch of examples to `function`.
++            batch_size (`Optional[int]`, default: `1000`): Number of examples per batch provided to `function` if `batched=True`.
++                `batch_size <= 0` or `batch_size == None`: Provide the full dataset as a single batch to `function`.
++            remove_columns (`Optional[List[str]]`, default: `None`): Remove a selection of columns before filtering.
++                Columns will be removed before updating the examples with the output of `function`.
++            keep_in_memory (`bool`, default: `False`): Keep the dataset in memory instead of writing it to a cache file.
++            load_from_cache_file (`bool`, default: `True`): If a cache file storing the current computation from `function`
++                can be identified, use it instead of recomputing.
++            cache_file_name (`Optional[str]`, default: `None`): Provide the name of a cache file to use to store the
++                results of the computation instead of the automatically generated cache file name.
++            writer_batch_size (`int`, default: `1000`): Number of rows per write operation for the cache file writer.
++                Higher value gives smaller cache files, lower value consume less temporary memory.
++            arrow_schema (`Optional[pa.Schema]`, default: `None`): Use a specific Apache Arrow Schema to store the cache file
++                instead of the automatically generated one.
++            disable_nullable (`bool`, default: `True`): Allow null values in the table.
++        
++        Returns:
++            A new `Dataset` instance with filtered examples.
++        """
++        # If the array is empty we do nothing
++        if len(self) == 0:
++            return self
++
++        # Select the columns (arrow columns) to process
++        if remove_columns is not None:
++            missing_columns = [col for col in remove_columns if col not in self._data.column_names]
++            if missing_columns:
++                raise ValueError(
++                    "Column to remove {} not in the dataset. Current columns in the dataset: {}".format(
++                        missing_columns,
++                        self._data.column_names,
++                    )
++                )
++
++        # If we do batch computation but no batch size is provided, default to the full dataset
++        if batched and (batch_size is None or batch_size <= 0):
++            batch_size = self._data.num_rows
++
++        # Check if the function returns the correct type
++        def validate_filter_function(inputs, indices):
++            """Validate that the filter function returns bool or list of bools."""
++            processed_inputs = function(inputs, indices) if with_indices else function(inputs)
++            
++            if batched:
++                if not isinstance(processed_inputs, list):
++                    raise TypeError(
++                        f"When using `batched=True`, the filter function must return a list of bools. "
++                        f"Got {type(processed_inputs)} instead."
++                    )
++                if not all(isinstance(x, bool) for x in processed_inputs):
++                    raise TypeError(
++                        f"When using `batched=True`, the filter function must return a list of bools. "
++                        f"Got list containing {set(type(x) for x in processed_inputs)}."
++                    )
++            else:
++                if not isinstance(processed_inputs, bool):
++                    raise TypeError(
++                        f"When using `batched=False`, the filter function must return a bool. "
++                        f"Got {type(processed_inputs)} instead."
++                    )
++            
++            return processed_inputs
++
++        # Test the function on a small sample
++        test_inputs = self[:2] if batched else self[0]
++        test_indices = [0, 1] if batched else 0
++        validate_filter_function(test_inputs, test_indices)
++
++        def filter_wrapper(inputs, indices):
++            """Wrapper that applies the filter and returns filtered examples or None."""
++            # Apply remove_columns if specified
++            if remove_columns is not None:
++                if batched:
++                    # Reconstruct batched format after removing columns
++                    filtered_inputs = {}
++                    for key, values in inputs.items():
++                        if key not in remove_columns:
++                            filtered_inputs[key] = values
++                    inputs = filtered_inputs
++                else:
++                    inputs = {k: v for k, v in inputs.items() if k not in remove_columns}
++            
++            # Apply the filter function
++            filter_results = function(inputs, indices) if with_indices else function(inputs)
++            
++            if batched:
++                # For batched mode, filter_results is a list of bools
++                if not any(filter_results):
++                    return None  # No examples to keep in this batch
++                
++                # Filter the batch to keep only True examples
++                filtered_batch = {}
++                for key, values in inputs.items():
++                    filtered_batch[key] = [v for v, keep in zip(values, filter_results) if keep]
++                
++                # Also filter indices if with_indices
++                if with_indices:
++                    filtered_indices = [idx for idx, keep in zip(indices, filter_results) if keep]
++                    # Return both batch and indices for writer
++                    return filtered_batch, filtered_indices
++                
++                return filtered_batch
++            else:
++                # For single example mode, filter_results is a bool
++                if not filter_results:
++                    return None  # Skip this example
++                
++                return inputs
++
++        # Find the output schema if none is given
++        if arrow_schema is None:
++            # Get the first example to infer schema
++            test_example = self[0]
++            if remove_columns is not None:
++                test_example = {k: v for k, v in test_example.items() if k not in remove_columns}
++            test_example = self._nest(test_example)
++            test_example = convert_tuples_in_lists(test_example)
++            arrow_schema = pa.Table.from_pydict(test_example).schema
++            if disable_nullable:
++                arrow_schema = pa.schema(pa.field(field.name, field.type, nullable=False) for field in arrow_schema)
++
++        # Check if we've already cached this computation
++        if self._data_files:
++            if cache_file_name is None:
++                # Create a unique hash from the function, current dataset file and the filter args
++                cache_kwargs = {
++                    "with_indices": with_indices,
++                    "batched": batched,
++                    "batch_size": batch_size,
++                    "remove_columns": remove_columns,
++                    "keep_in_memory": keep_in_memory,
++                    "load_from_cache_file": load_from_cache_file,
++                    "cache_file_name": cache_file_name,
++                    "writer_batch_size": writer_batch_size,
++                    "arrow_schema": arrow_schema,
++                    "disable_nullable": disable_nullable,
++                }
++                cache_file_name = self._get_cache_file_path(function, cache_kwargs)
++            if os.path.exists(cache_file_name) and load_from_cache_file:
++                logger.info("Loading cached filtered dataset at %s", cache_file_name)
++                return Dataset.from_file(cache_file_name)
++
++        # Prepare output buffer and batched writer
++        if keep_in_memory or not self._data_files:
++            buf_writer = pa.BufferOutputStream()
++            writer = ArrowWriter(schema=arrow_schema, stream=buf_writer, writer_batch_size=writer_batch_size)
++        else:
++            buf_writer = None
++            logger.info("Caching filtered dataset at %s", cache_file_name)
++            writer = ArrowWriter(schema=arrow_schema, path=cache_file_name, writer_batch_size=writer_batch_size)
++
++        if not batched:
++            for i, example in enumerate(self):
++                result = filter_wrapper(example, i)
++                if result is not None:
++                    writer.write(result)
++        else:
++            for i in range(0, len(self), batch_size):
++                batch = self[i : i + batch_size]
++                indices = list(range(i, min(i + batch_size, len(self))))
++                result = filter_wrapper(batch, indices if with_indices else None)
++                
++                if result is not None:
++                    if with_indices:
++                        # result is a tuple of (filtered_batch, filtered_indices)
++                        filtered_batch, _ = result
++                        writer.write_batch(filtered_batch)
++                    else:
++                        writer.write_batch(result)
++
++        writer.finalize()
++
++        # Create new Dataset from buffer or file
++        if buf_writer is None:
++            return Dataset.from_file(cache_file_name)
++        else:
++            return Dataset.from_buffer(buf_writer.getvalue())
++
+     def flatten_indices(self, keep_in_memory: bool = False) -> "Dataset":
+         """
+         Create and cache a new Dataset with indices flattened to an arrow table.

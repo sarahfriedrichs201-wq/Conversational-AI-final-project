@@ -1,0 +1,97 @@
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -1,5 +1,6 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
+ import collections.abc
++import functools
+ import functools
+ import itertools
+ import subprocess
+@@ -7,7 +8,7 @@
+ from collections import abc
+ from importlib import import_module
+ from inspect import getfullargspec
+-from itertools import repeat
++from itertools import repeat
+ from typing import Any, Callable, Optional, Type, Union
+ 
+ 
+@@ -285,3 +286,56 @@
+     """Check whether the object has a method.
+ 
+     Args:
++        method (str): The method name to check.
++        obj (object): The object to check.
++
++    Returns:
++        bool: True if the object has the method else False.
++    """
++    return hasattr(obj, method) and callable(getattr(obj, method))
++
++
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A decorator which can be applied to deprecated functions.
++    """
++    def decorator(function):
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            warnings.warn(
++                f'{function.__name__} is deprecated since version {since} and '
++                f'will be removed in version {removed_in}. {instructions}',
++                category=DeprecationWarning,
++                stacklevel=2)
++            return function(*args, **kwargs)
++
++        # Add deprecation note to docstring
++        docstring = function.__doc__ or ''
++        # Add a deprecation warning at the beginning of the docstring
++        deprecation_note = (
++            f'.. warning::\n'
++            f'    This function is deprecated since version {since} and will be '
++            f'removed in version {removed_in}. {instructions}\n\n'
++        )
++        # Insert the deprecation note after the first line if there's a one-line
++        # description, otherwise prepend it.
++        lines = docstring.split('\n')
++        if len(lines) > 1 and lines[0].strip() and lines[1].strip() == '':
++            # Insert after the one-line description and the following empty line
++            lines.insert(2, deprecation_note.rstrip())
++        else:
++            lines.insert(0, deprecation_note)
++        wrapper.__doc__ = '\n'.join(lines)
++        return wrapper
++    return decorator
++
+diff --git a/docs/en/api/utils.rst b/docs/en/api/utils.rst
+--- a/docs/en/api/utils.rst
++++ b/docs/en/api/utils.rst
+@@ -78,6 +78,7 @@
+    requires_executable
+    requires_package
+    check_time
++   deprecated_function
+ 
+ ```
+ 
+diff --git a/docs/zh_cn/api/utils.rst b/docs/zh_cn/api/utils.rst
+--- a/docs/zh_cn/api/utils.rst
++++ b/docs/zh_cn/api/utils.rst
+@@ -78,4 +78,5 @@
+    requires_executable
+    requires_package
+    check_time
++   deprecated_function
+ 
+ ```

@@ -1,0 +1,73 @@
+diff --git a/docs/en/api/utils.rst b/docs/en/api/utils.rst
+--- a/docs/en/api/utils.rst
++++ b/docs/en/api/utils.rst
+@@ -47,6 +47,7 @@
+        to_4tuple
+        to_ntuple
+        check_prerequisites
+        deprecated_api_warning
++       deprecated_function
+        has_method
+        is_method_overridden
+        import_modules_from_strings
+diff --git a/docs/zh_cn/api/utils.rst b/docs/zh_cn/api/utils.rst
+--- a/docs/zh_cn/api/utils.rst
++++ b/docs/zh_cn/api/utils.rst
+@@ -47,6 +47,7 @@
+        to_4tuple
+        to_ntuple
+        check_prerequisites
+        deprecated_api_warning
++       deprecated_function
+        has_method
+        is_method_overridden
+        import_modules_from_strings
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -308,3 +308,40 @@
+         warnings.warn(
+             f'{old_api} is deprecated, please use `{new_api}` instead.',
+             DeprecationWarning)
++
++
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A new function, which will be deprecated soon.
++    """
++
++    def decorator(function):
++
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            # Issue a DeprecationWarning
++            warnings.warn(
++                f'{function.__name__} is deprecated since version {since} '
++                f'and will be removed in version {removed_in}. {instructions}',
++                DeprecationWarning,
++                stacklevel=2)  # stacklevel=2 points to the caller of the decorated function
++            return function(*args, **kwargs)
++
++        # Augment the docstring
++        docstring_note = (
++            f'\n\n.. deprecated:: {since}\n'
++            f'    {instructions}\n'
++            f'    This function will be removed in version {removed_in}.')
++        if wrapper.__doc__ is None:
++            wrapper.__doc__ = docstring_note
++        else:
++            wrapper.__doc__ += docstring_note
++
++        return wrapper
++
++    return decorator

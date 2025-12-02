@@ -1,0 +1,87 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -68,6 +68,7 @@
+ from falcon.response import Response, ResponseOptions
+ import falcon.status_codes as status
+ from falcon.util import misc
++import collections
+ 
+ 
+ # PERF(vytas): On Python 3.5+ (including cythonized modules),
+@@ -176,7 +177,7 @@
+                  independent_middleware=True, cors_enable=False):
+         self._sinks = []
+         self._media_type = media_type
+-        self._static_routes = []
++        self._static_routes = []        
+ 
+         if cors_enable:
+             cm = CORSMiddleware()
+@@ -206,7 +207,7 @@
+         self._request_type = request_type
+         self._response_type = response_type
+ 
+-        self._error_handlers = []
++        self._error_handlers = {}
+         self._serialize_error = helpers.default_serialize_error
+ 
+         self.req_options = RequestOptions()
+@@ -589,6 +590,21 @@
+         """
+ 
+         self._serialize_error = serializer
++    
++    def _find_error_handler(self, ex):
++        """Find the error handler for the given exception.
++        
++        Args:
++            ex: Exception instance.
++            
++        Returns:
++            callable: The error handler for the exception, or None if not found.
++        """
++        ex_type = type(ex)
++        for exc_class in ex_type.__mro__:
++            handler = self._error_handlers.get(exc_class)
++            if handler is not None:
++                return handler
+ 
+     # ------------------------------------------------------------------------
+     # Helpers that require self
+@@ -726,15 +742,13 @@
+             exception, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
+                 return True
+ 
+         # NOTE(kgriffs): No error handlers are defined for ex
+@@ -743,6 +757,7 @@
+         # handlers.
+         return False
+ 
++
+     # PERF(kgriffs): Moved from api_helpers since it is slightly faster
+     # to call using self, and this function is called for most
+     # requests.
+@@ -828,3 +843,4 @@
+     @misc.deprecated('API class may be removed in a future release, use falcon.App instead.')
+     def __init__(self, *args, **kwargs):
+         super().__init__(*args, **kwargs)
++

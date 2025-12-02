@@ -1,0 +1,29 @@
+diff --git a/haystack/dataclasses/byte_stream.py b/haystack/dataclasses/byte_stream.py
+--- a/haystack/dataclasses/byte_stream.py
++++ b/haystack/dataclasses/byte_stream.py
+@@ -1,4 +1,4 @@
+-from typing import Optional, Union
++from typing import Optional, Union, cast
+ import base64
+ from pathlib import Path
+ 
+@@ -85,6 +85,19 @@ class ByteStream(DataClass):
+         """
+         return cls(data=string.encode(encoding))
+ 
++    def to_string(self, encoding: str = "utf-8") -> str:
++        """
++        Convert the ByteStream to a string, metadata will not be included.
++
++        :param encoding: The encoding used to convert the bytes to a string. Defaults to "utf-8".
++        :return: The string representation of the ByteStream.
++        :raises UnicodeDecodeError: If the ByteStream data cannot be decoded with the specified encoding.
++        """
++        # The data attribute is typed as Optional[bytes], but when created via from_string or from_file_path,
++        # it should be bytes. We cast to bytes for type safety.
++        data_bytes = cast(bytes, self.data)
++        return data_bytes.decode(encoding)
++
+     def to_file(self, file_path: Union[str, Path]) -> None:
+         """
+         Write the ByteStream to a file.

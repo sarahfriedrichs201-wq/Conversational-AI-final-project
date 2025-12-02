@@ -1,0 +1,438 @@
+diff --git a/falcon/app.py b/falcon/app.py
+--- a/falcon/app.py
++++ b/falcon/app.py
+@@ -1,4 +1,4 @@
+-# Copyright 2013 by Rackspace Hosting, Inc.
++# Copyright 2013-2025 by Rackspace Hosting, Inc.
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+ # you may not use this file except in compliance with the License.
+@@ -204,7 +204,7 @@ class App:
+         self._sinks = []
+         self._media_handlers = media_handlers
+         self._request_type = request_type
+-        self._error_handlers = []
++        self._error_handlers = {}
+         self._static_routes = []
+         self._find_error_handler = None
+         self._router = router or routing.DefaultRouter()
+@@ -1148,7 +1148,7 @@ class App:
+         # NOTE(kgriffs): Add default error handlers
+         self.add_error_handler(Exception, self._python_error_handler)
+         self.add_error_handler(falcon.HTTPError, self._http_error_handler)
+-        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
++        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
+ 
+     def _get_responder(self, req):
+         """Return a responder for the requested path.
+@@ -1408,6 +1408,24 @@ class App:
+ 
+         return False
+ 
++    def _find_error_handler(self, ex):
++        """Find the most specific error handler for the given exception.
++
++        Args:
++            ex: Exception instance to find a handler for.
++
++        Returns:
++            The handler function for the most specific exception type in ex's MRO,
++            or None if no handler is found.
++        """
++        exc_class = type(ex)
++
++        for cls in exc_class.__mro__:
++            handler = self._error_handlers.get(cls)
++            if handler is not None:
++                return handler
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from a responder.
+ 
+@@ -1421,17 +1439,15 @@ class App:
+             bool: ``True`` if the exception was handled, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+         return False
+ 
+     def _http_status_handler(self, req, resp, ex, params):
+@@ -1538,7 +1554,7 @@ class App:
+         # PERF(kgriffs): Moved this out of the __init__ method to avoid
+         #   having to create a bound method for every instance.
+         if self._find_error_handler is None:
+-            self._find_error_handler = self._handle_exception
++            self._find_error_handler = self._find_error_handler
+ 
+         # PERF(kgriffs): We can usually avoid the overhead of setting up
+         #   a try/block by checking for a match ahead of time.
+@@ -1848,7 +1864,7 @@ class App:
+         # NOTE(kgriffs): Add default error handlers
+         self.add_error_handler(Exception, self._python_error_handler)
+         self.add_error_handler(falcon.HTTPError, self._http_error_handler)
+-        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
++        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
+ 
+     def _get_responder(self, req):
+         """Return a responder for the requested path.
+@@ -2208,6 +2224,24 @@ class App:
+ 
+         return False
+ 
++    def _find_error_handler(self, ex):
++        """Find the most specific error handler for the given exception.
++
++        Args:
++            ex: Exception instance to find a handler for.
++
++        Returns:
++            The handler function for the most specific exception type in ex's MRO,
++            or None if no handler is found.
++        """
++        exc_class = type(ex)
++
++        for cls in exc_class.__mro__:
++            handler = self._error_handlers.get(cls)
++            if handler is not None:
++                return handler
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from a responder.
+ 
+@@ -2221,17 +2255,15 @@ class App:
+             bool: ``True`` if the exception was handled, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+         return False
+ 
+     def _http_status_handler(self, req, resp, ex, params):
+@@ -2338,7 +2370,7 @@ class App:
+         # PERF(kgriffs): Moved this out of the __init__ method to avoid
+         #   having to create a bound method for every instance.
+         if self._find_error_handler is None:
+-            self._find_error_handler = self._handle_exception
++            self._find_error_handler = self._find_error_handler
+ 
+         # PERF(kgriffs): We can usually avoid the overhead of setting up
+         #   a try/block by checking for a match ahead of time.
+@@ -2648,7 +2680,7 @@ class App:
+         # NOTE(kgriffs): Add default error handlers
+         self.add_error_handler(Exception, self._python_error_handler)
+         self.add_error_handler(falcon.HTTPError, self._http_error_handler)
+-        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
++        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
+ 
+     def _get_responder(self, req):
+         """Return a responder for the requested path.
+@@ -3008,6 +3040,24 @@ class App:
+ 
+         return False
+ 
++    def _find_error_handler(self, ex):
++        """Find the most specific error handler for the given exception.
++
++        Args:
++            ex: Exception instance to find a handler for.
++
++        Returns:
++            The handler function for the most specific exception type in ex's MRO,
++            or None if no handler is found.
++        """
++        exc_class = type(ex)
++
++        for cls in exc_class.__mro__:
++            handler = self._error_handlers.get(cls)
++            if handler is not None:
++                return handler
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from a responder.
+ 
+@@ -3021,17 +3071,15 @@ class App:
+             bool: ``True`` if the exception was handled, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+         return False
+ 
+     def _http_status_handler(self, req, resp, ex, params):
+@@ -3138,7 +3186,7 @@ class App:
+         # PERF(kgriffs): Moved this out of the __init__ method to avoid
+         #   having to create a bound method for every instance.
+         if self._find_error_handler is None:
+-            self._find_error_handler = self._handle_exception
++            self._find_error_handler = self._find_error_handler
+ 
+         # PERF(kgriffs): We can usually avoid the overhead of setting up
+         #   a try/block by checking for a match ahead of time.
+@@ -3448,7 +3496,7 @@ class App:
+         # NOTE(kgriffs): Add default error handlers
+         self.add_error_handler(Exception, self._python_error_handler)
+         self.add_error_handler(falcon.HTTPError, self._http_error_handler)
+-        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
++        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
+ 
+     def _get_responder(self, req):
+         """Return a responder for the requested path.
+@@ -3808,6 +3856,24 @@ class App:
+ 
+         return False
+ 
++    def _find_error_handler(self, ex):
++        """Find the most specific error handler for the given exception.
++
++        Args:
++            ex: Exception instance to find a handler for.
++
++        Returns:
++            The handler function for the most specific exception type in ex's MRO,
++            or None if no handler is found.
++        """
++        exc_class = type(ex)
++
++        for cls in exc_class.__mro__:
++            handler = self._error_handlers.get(cls)
++            if handler is not None:
++                return handler
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from a responder.
+ 
+@@ -3821,17 +3887,15 @@ class App:
+             bool: ``True`` if the exception was handled, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+         return False
+ 
+     def _http_status_handler(self, req, resp, ex, params):
+@@ -3938,7 +4002,7 @@ class App:
+         # PERF(kgriffs): Moved this out of the __init__ method to avoid
+         #   having to create a bound method for every instance.
+         if self._find_error_handler is None:
+-            self._find_error_handler = self._handle_exception
++            self._find_error_handler = self._find_error_handler
+ 
+         # PERF(kgriffs): We can usually avoid the overhead of setting up
+         #   a try/block by checking for a match ahead of time.
+@@ -4248,7 +4312,7 @@ class App:
+         # NOTE(kgriffs): Add default error handlers
+         self.add_error_handler(Exception, self._python_error_handler)
+         self.add_error_handler(falcon.HTTPError, self._http_error_handler)
+-        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
++        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
+ 
+     def _get_responder(self, req):
+         """Return a responder for the requested path.
+@@ -4608,6 +4672,24 @@ class App:
+ 
+         return False
+ 
++    def _find_error_handler(self, ex):
++        """Find the most specific error handler for the given exception.
++
++        Args:
++            ex: Exception instance to find a handler for.
++
++        Returns:
++            The handler function for the most specific exception type in ex's MRO,
++            or None if no handler is found.
++        """
++        exc_class = type(ex)
++
++        for cls in exc_class.__mro__:
++            handler = self._error_handlers.get(cls)
++            if handler is not None:
++                return handler
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from a responder.
+ 
+@@ -4621,17 +4703,15 @@ class App:
+             bool: ``True`` if the exception was handled, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+         return False
+ 
+     def _http_status_handler(self, req, resp, ex, params):
+@@ -4738,7 +4818,7 @@ class App:
+         # PERF(kgriffs): Moved this out of the __init__ method to avoid
+         #   having to create a bound method for every instance.
+         if self._find_error_handler is None:
+-            self._find_error_handler = self._handle_exception
++            self._find_error_handler = self._find_error_handler
+ 
+         # PERF(kgriffs): We can usually avoid the overhead of setting up
+         #   a try/block by checking for a match ahead of time.
+@@ -5048,7 +5128,7 @@ class App:
+         # NOTE(kgriffs): Add default error handlers
+         self.add_error_handler(Exception, self._python_error_handler)
+         self.add_error_handler(falcon.HTTPError, self._http_error_handler)
+-        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
++        self.add_error_handler(falcon.HTTPStatus, self._http_status_handler)
+ 
+     def _get_responder(self, req):
+         """Return a responder for the requested path.
+@@ -5408,6 +5488,24 @@ class App:
+ 
+         return False
+ 
++    def _find_error_handler(self, ex):
++        """Find the most specific error handler for the given exception.
++
++        Args:
++            ex: Exception instance to find a handler for.
++
++        Returns:
++            The handler function for the most specific exception type in ex's MRO,
++            or None if no handler is found.
++        """
++        exc_class = type(ex)
++
++        for cls in exc_class.__mro__:
++            handler = self._error_handlers.get(cls)
++            if handler is not None:
++                return handler
++        return None
++
+     def _handle_exception(self, req, resp, ex, params):
+         """Handle an exception raised from a responder.
+ 
+@@ -5421,17 +5519,15 @@ class App:
+             bool: ``True`` if the exception was handled, ``False`` otherwise.
+         """
+ 
+-        for err_type, err_handler in self._error_handlers:
+-            if isinstance(ex, err_type):
+-                try:
+-                    err_handler(req, resp, ex, params)
+-                except HTTPStatus as status:
+-                    self._compose_status_response(req, resp, status)
+-                except HTTPError as error:
+-                    self._compose_error_response(req, resp, error)
+-
+-                return True
+-
++        handler = self._find_error_handler(ex)
++        if handler is not None:
++            try:
++                handler(req, resp, ex, params)
++            except HTTPStatus as status:
++                self._compose_status_response(req, resp, status)
++            except HTTPError as error:
++                self._compose_error_response(req, resp, error)
++            return True
+         return False
+ 
+     def _http_status_handler(self, req, resp, ex, params):
+@@ -5538,7 +5634,7 @@ class App:
+         # PERF(kgriffs): Moved this out of the __init__ method to avoid
+         #   having to create a bound method for every instance.
+         if self._find_error_handler is None:
+-            self._find_error_handler = self._handle_exception
++            self._find_error_handler = self._find_error_handler
+ 
+         # PERF(kgriffs): We can usually avoid the overhead of setting up
+         #  

@@ -1,0 +1,65 @@
+diff --git a/docs/en/api/utils.rst b/docs/en/api/utils.rst
+--- a/docs/en/api/utils.rst
++++ b/docs/en/api/utils.rst
+@@ -90,6 +90,7 @@
+    to_4tuple
+    to_ntuple
+    check_prerequisites
++   deprecated_function
+    deprecated_api_warning
+    has_method
+    is_method_overridden
+diff --git a/docs/zh_cn/api/utils.rst b/docs/zh_cn/api/utils.rst
+--- a/docs/zh_cn/api/utils.rst
++++ b/docs/zh_cn/api/utils.rst
+@@ -90,6 +90,7 @@
+    to_4tuple
+    to_ntuple
+    check_prerequisites
++   deprecated_function
+    deprecated_api_warning
+    has_method
+    is_method_overridden
+diff --git a/mmengine/utils/misc.py b/mmengine/utils/misc.py
+--- a/mmengine/utils/misc.py
++++ b/mmengine/utils/misc.py
+@@ -328,3 +328,37 @@
+         bool: True if the object has the method else False.
+     """
+     return hasattr(obj, method) and callable(getattr(obj, method))
++
++
++def deprecated_function(since: str, removed_in: str, instructions: str) -> Callable:
++    """Marks functions as deprecated.
++
++    Throw a warning when a deprecated function is called, and add a note in the
++    docstring. Modified from https://github.com/pytorch/pytorch/blob/master/torch/onnx/_deprecation.py
++
++    Args:
++        since (str): The version when the function was first deprecated.
++        removed_in (str): The version when the function will be removed.
++        instructions (str): The action users should take.
++
++    Returns:
++        Callable: A new function, which will be deprecated soon.
++    """
++
++    def decorator(function):
++        doc = f'.. deprecated:: {since}\n'
++        doc += f'    This function will be removed in version {removed_in}. '
++        doc += f'Please use `{instructions}` instead.\n'
++        if function.__doc__ is not None:
++            doc += function.__doc__
++        function.__doc__ = doc
++
++        @functools.wraps(function)
++        def wrapper(*args, **kwargs):
++            warnings.warn(
++                f'{function.__name__} is deprecated since version {since} '
++                f'and will be removed in version {removed_in}. '
++                f'Please use {instructions} instead.', DeprecationWarning,
++                stacklevel=2)
++            return function(*args, **kwargs)
++        return wrapper
++    return decorator
+-- 

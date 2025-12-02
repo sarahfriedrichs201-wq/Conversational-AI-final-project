@@ -1,0 +1,162 @@
+diff --git a/src/accelerate/accelerator.py b/src/accelerate/accelerator.py
+--- a/src/accelerate/accelerator.py
++++ b/src/accelerate/accelerator.py
+@@ -1,10 +1,11 @@
+ import inspect
+ import os
+ import shutil
+-from typing import Any, Callable, Dict, List, Optional, Union
++from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+ 
+ import torch
+ from torch.optim import Optimizer
++from torch.utils import hooks
+ 
+ from .checkpointing import (
+     load_accelerator_state,
+@@ -141,6 +142,10 @@
+         self._models = []
+         self._schedulers = []
+         self._dataloaders = []
++
++        # New: Hooks for saving/loading state
++        self._save_state_pre_hooks: List[hooks.RemovableHandle] = []
++        self._load_state_pre_hooks: List[hooks.RemovableHandle] = []
+         self._custom_objects = []
+ 
+         # RNG Types
+@@ -204,6 +209,62 @@
+         self.state.deepspeed_plugin.set_deepspeed_config(deepspeed_config)
+         return model, optimizer, scheduler
+ 
++    def register_save_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before `save_checkpoint` is called in [`Accelerator.save_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.save_state`] before `save_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], weights: List[Dict[str, torch.Tensor]], output_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, `weights`
++        argument are the state dicts of the `models`, and the `output_dir` argument is the `output_dir` argument passed
++        to [`Accelerator.save_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_load_state_pre_hook`]. Can be useful to save
++        configurations in addition to model weights. Can also be used to overwrite model saving with a customized
++        method. In this case, make sure to remove already loaded weights from the weights list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._save_state_pre_hooks, hook)
++        self._save_state_pre_hooks.append(handle)
++        return handle
++
++    def register_load_state_pre_hook(self, hook: Callable[..., None]) -> hooks.RemovableHandle:
++        """
++        Registers a pre hook to be run before [`load_checkpoint`] is called in [`Accelerator.load_state`].
++
++        Args:
++            hook (`Callable`):
++                A function to be called in [`Accelerator.load_state`] before `load_checkpoint`.
++
++        The hook should have the following signature:
++
++        `hook(models: List[torch.nn.Module], input_dir: str) -> None`
++
++        The `models` argument are the models as saved in the accelerator state under `accelerator._models`, and the
++        `input_dir` argument is the `input_dir` argument passed to [`Accelerator.load_state`].
++
++        <Tip>
++
++        Should only be used in conjunction with [`Accelerator.register_save_state_pre_hook`]. Can be useful to load
++        configurations in addition to model weights. Can also be used to overwrite model loading with a customized
++        method. In this case, make sure to remove already loaded models from the models list.
++
++        </Tip>
++
++        Returns:
++            `torch.utils.hooks.RemovableHandle`: a handle that can be used to remove the added hook by calling
++            `handle.remove()`
++        """
++        handle = hooks.RemovableHandle(self._load_state_pre_hooks, hook)
++        self._load_state_pre_hooks.append(handle)
++        return handle
++
+     def save_state(self, output_dir: str = None, **save_model_func_kwargs):
+         """
+         Saves the current state of the Accelerator object in a given directory. This includes the model, optimizer,
+@@ -250,7 +311,7 @@
+                 )
+         os.makedirs(output_dir, exist_ok=True)
+         logger.info(f"Saving current state to {output_dir}")
+-        
++
+         # Lists to hold models/weights that will be handled by default accelerate saving
+         # and are candidates for hooks to override.
+         models_to_save_via_accelerator_state = []
+@@ -273,6 +334,13 @@
+                 # For non-distributed models, collect them for hooks and potential default saving
+                 models_to_save_via_accelerator_state.append(model)
+                 weights_to_save_via_accelerator_state.append(self.get_state_dict(model, unwrap=False))
++
++        # Execute pre-save hooks on the collected non-distributed models/weights
++        # Hooks are expected to modify models_to_save_via_accelerator_state and weights_to_save_via_accelerator_state in-place.
++        # If a hook handles a model, it should remove both the model and its corresponding weight
++        # from these lists to prevent default `accelerate` saving.
++        for handle in self._save_state_pre_hooks:
++            handle.hook(models_to_save_via_accelerator_state, weights_to_save_via_accelerator_state, output_dir)
+ 
+         # Save optimizers and schedulers (logic remains mostly the same, as hooks are model-specific)
+         optimizers = []
+@@ -294,7 +362,7 @@
+         # Finally, save the accelerator state for non-distributed models, optimizers, and schedulers
+         save_location = save_accelerator_state(
+             output_dir,
+-            [self.get_state_dict(model, unwrap=False) for model in self._models],
++            weights_to_save_via_accelerator_state,  # Use the filtered weights
+             optimizers,
+             schedulers,
+             self.state.process_index,
+@@ -322,6 +390,10 @@
+             raise ValueError(f"Tried to find {input_dir} but folder does not exist")
+         logger.info(f"Loading states from {input_dir}")
+ 
++        # Lists to hold models that will be handled by default accelerate loading
++        # and are candidates for hooks to override.
++        models_to_load_via_accelerator_state = []
++
+         # Process models: first distributed, then non-distributed (which can be overridden by hooks)
+         for i, model in enumerate(self._models):
+             if self.distributed_type == DistributedType.FSDP:
+@@ -336,6 +408,12 @@
+                 logger.info("Loading Megatron-LM Model, Optimizer and Scheduler")
+                 model.load_checkpoint(input_dir)
+                 logger.info(f"Megatron-LM Model , Optimizer and Scheduler loaded from input dir {input_dir}")
++            else:
++                # For non-distributed models, collect them for hooks and potential default loading
++                models_to_load_via_accelerator_state.append(model)
++
++        for handle in self._load_state_pre_hooks:
++            handle.hook(models_to_load_via_accelerator_state, input_dir)
+ 
+         # Load optimizers and schedulers (logic remains mostly the same, as hooks are model-specific)
+         optimizers = []
+@@ -357,7 +435,7 @@
+         # Finally, load the accelerator state for non-distributed models, optimizers, and schedulers
+         load_accelerator_state(
+             input_dir,
+-            self._models,
++            models_to_load_via_accelerator_state,  # Use the filtered models
+             optimizers,
+             schedulers,
+             self.state.process_index,

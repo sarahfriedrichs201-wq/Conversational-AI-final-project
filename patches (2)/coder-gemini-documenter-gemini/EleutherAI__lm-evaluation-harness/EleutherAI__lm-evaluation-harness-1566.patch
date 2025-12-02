@@ -1,0 +1,86 @@
+diff --git a/lm_eval/__main__.py b/lm_eval/__main__.py
+--- a/lm_eval/__main__.py
++++ b/lm_eval/__main__.py
+@@ -1,6 +1,7 @@
+ import argparse
+ import collections
+ import logging
++import re
+ import sys
+ from functools import partial
+ from typing import Union
+@@ -109,10 +110,10 @@
+     return [int(x) if x.lower() != "none" else None for x in values]
+ 
+ 
+-def parse_eval_args() -> argparse.Namespace:
+-    """
+-    Parses command-line arguments for evaluation.
+-    """
++def setup_parser() -> argparse.ArgumentParser:
++    """
++    Sets up and returns the ArgumentParser for lm-eval CLI.
++    """
+     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+     parser.add_argument("--model", "-m", default="hf", help="Name of model e.g. `hf`")
+     parser.add_argument(
+@@ -232,6 +233,49 @@
+         parser.add_argument(
+             "--trust_remote_code",
+             action="store_true",
+             help="Sets trust_remote_code to True to execute code to create HF Datasets from the Hub",
+         )
++    return parser
++
++
++def parse_eval_args() -> argparse.Namespace:
++    """
++    Parses command-line arguments for evaluation.
++    """
++    parser = setup_parser()
++    return parser.parse_args()
++
++
++def check_argument_types(args: argparse.Namespace):
++    """
++    Performs runtime type and value validation for parsed CLI arguments,
++    raising TypeError for invalid values.
++    """
++    # Validate --batch_size
++    if args.batch_size is not None:
++        batch_size_lower = args.batch_size.lower()
++        if batch_size_lower != "auto":
++            # Check for 'auto:N' format
++            match = re.fullmatch(r"auto:(\d+)", batch_size_lower)
++            if match:
++                try:
++                    int(match.group(1))  # Ensure N is an integer
++                except ValueError:
++                    raise TypeError(
++                        f"Invalid value for --batch_size: '{args.batch_size}'. "
++                        "If using 'auto:N', N must be an integer."
++                    )
++            else:
++                # Check if it's a simple integer
++                try:
++                    int(args.batch_size)
++                except ValueError:
++                    raise TypeError(
++                        f"Invalid value for --batch_size: '{args.batch_size}'. "
++                        "Must be 'auto', 'auto:N' (where N is an integer), or an integer."
++                    )
++
++
+ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
+     if not args:
+         # we allow for args to be passed externally, else we parse them ourselves
+@@ -239,6 +283,9 @@
+ 
+     if args.wandb_args:
+         wandb_logger = WandbLogger(**simple_parse_args_string(args.wandb_args))
++
++    # Call the new argument type checking function for runtime validation
++    check_argument_types(args)
+ 
+     if args.tasks is None:
+         if args.output_path is not None:

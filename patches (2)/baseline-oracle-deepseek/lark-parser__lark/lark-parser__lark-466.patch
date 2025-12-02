@@ -1,0 +1,40 @@
+diff --git a/lark/visitors.py b/lark/visitors.py
+--- a/lark/visitors.py
++++ b/lark/visitors.py
+@@ -148,6 +148,15 @@
+         for subtree in tree.iter_subtrees():
+             self._call_userfunc(subtree)
+         return tree
++    
++    def visit_topdown(self, tree):
++        """Top-down visitor, non-recursive
++
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        for subtree in tree.iter_subtrees_topdown():
++            self._call_userfunc(subtree)
++        return tree
+ 
+ class Visitor_Recursive(VisitorBase):
+     """Bottom-up visitor, recursive
+@@ -162,6 +171,17 @@
+         f = getattr(self, tree.data, self.__default__)
+         f(tree)
+         return tree
++    
++    def visit_topdown(self, tree):
++        """Top-down visitor, recursive
++
++        Visits the tree, starting with the root and finally the leaves (top-down)
++        Calls its methods (provided by user via inheritance) according to tree.data
++        """
++        f = getattr(self, tree.data, self.__default__)
++        f(tree)
++        for child in tree.children:
++            if isinstance(child, Tree):
++                self.visit_topdown(child)
++        return tree
+ 
+ 
+ 
